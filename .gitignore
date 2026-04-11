@@ -1,0 +1,6 @@
+# 忽略VS Code工作区配置
+My_Marching_Map.code-workspace
+初步构想.txt
+
+# 忽略常见日志文件
+*.log
