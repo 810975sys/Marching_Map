@@ -1,5 +1,7 @@
 # 忽略VS Code工作区配置
-My_Marching_Map.code-workspace
+Marching_Map.code-workspace
+__pycache__/
+.venv/
 初步构想.txt
 
 # 忽略常见日志文件
