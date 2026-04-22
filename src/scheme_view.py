@@ -8,6 +8,7 @@
 """
 from PyQt6.QtWidgets import QGraphicsView
 from PyQt6.QtCore import Qt, QPointF
+from field_settings import SCALE_MIN, SCALE_MAX
 
 class SchemeView(QGraphicsView):
     def __init__(self, scene, parent=None):
@@ -26,7 +27,7 @@ class SchemeView(QGraphicsView):
         if modifiers & Qt.KeyboardModifier.ControlModifier:
             # Ctrl+滚轮缩放
             scale = s.scale * (1.1 ** delta)
-            scale = max(1, min(100, scale))  # 限制缩放范围
+            scale = max(SCALE_MIN, min(SCALE_MAX, scale))  # 限制缩放范围
             s.set_scale(scale)
             scene.update()
         elif modifiers & Qt.KeyboardModifier.ShiftModifier:
@@ -42,6 +43,10 @@ class SchemeView(QGraphicsView):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.MiddleButton:
+            self._dragging = True
+            self._last_pos = event.position()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        elif event.button() == Qt.MouseButton.RightButton:
             self._dragging = True
             self._last_pos = event.position()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
@@ -66,6 +71,10 @@ class SchemeView(QGraphicsView):
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.MiddleButton:
+            self._dragging = False
+            self._last_pos = None
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+        elif event.button() == Qt.MouseButton.RightButton:
             self._dragging = False
             self._last_pos = None
             self.setCursor(Qt.CursorShape.ArrowCursor)

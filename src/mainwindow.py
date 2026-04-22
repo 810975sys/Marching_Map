@@ -9,6 +9,13 @@ from PyQt6.QtCore import Qt
 
 # 导入自定义场景
 from scheme_scene import SchemeScene
+from field_settings import (
+    SCALE_MIN,
+    SCALE_MAX,
+    ZOOM_PERCENT_FACTOR,
+    ZOOM_PERCENT_MIN,
+    ZOOM_PERCENT_MAX,
+)
 
 class MainWindow(QMainWindow):
     def __init__(self, parent=None):
@@ -21,10 +28,11 @@ class MainWindow(QMainWindow):
         self.setupMainLayout()
         self.setWindowTitle("Marching Map Editor")
         self.resize(1200, 800)
+        self.showMaximized()
 
     def setupMenus(self):
         fileMenu = self.menuBar().addMenu("文件")
-        new = fileMenu.addAction("新建")
+        new = fileMenu.addAction("新建方案")
         new.setShortcut("Ctrl+N")
         open = fileMenu.addAction("打开")
         open.setShortcut("Ctrl+O")
@@ -42,6 +50,12 @@ class MainWindow(QMainWindow):
         undo.setShortcut("Ctrl+Z")
         redo = self.menuBar().addAction("重做")
         redo.setShortcut("Ctrl+Y")
+        
+        # 场地设置
+        groundMenu = self.menuBar().addMenu("场地设置")
+        groundMenu.addAction("导入")
+        groundMenu.addAction("保存")
+        groundMenu.addAction("修改")
 
         # 可扩展
         # viewMenu = self.menuBar().addMenu("视图")
@@ -117,7 +131,6 @@ class MainWindow(QMainWindow):
         from scheme_view import SchemeView
         self.scene = SchemeScene(self)
         self.view = SchemeView(self.scene, self)
-        # 初始居中显示场地
         # self.view.setScene(self.scene)
         # setCentralWidget 在 setupTimeline 里统一设置
 
@@ -184,10 +197,71 @@ class MainWindow(QMainWindow):
         """
         主窗口布局：上方为 self.view（场景视图），下方为 self.timelineWidget（时间轴）
         """
+        from PyQt6.QtWidgets import QSlider, QLabel, QHBoxLayout, QLineEdit
+
         mainLayout = QVBoxLayout()
         mainLayout.setContentsMargins(0, 0, 0, 0)
         mainLayout.setSpacing(0)
         mainLayout.addWidget(self.view)
+
+        # 缩放条区域（放在时间轴上方）
+        zoomLayout = QHBoxLayout()
+        zoomLayout.addStretch(1)
+        zoomLabel = QLabel("缩放：")
+        zoomLabel.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        zoomSlider = QSlider(Qt.Orientation.Horizontal)
+        zoomSlider.setMinimum(ZOOM_PERCENT_MIN)
+        zoomSlider.setMaximum(ZOOM_PERCENT_MAX)
+        zoomSlider.setValue(int(self.scene.field_settings.scale * ZOOM_PERCENT_FACTOR))  # scale=10~100 -> 50~500%
+        zoomSlider.setSingleStep(1)
+        zoomSlider.setFixedWidth(180)
+        zoomInput = QLineEdit(f"{zoomSlider.value()}")
+        zoomInput.setFixedWidth(35)
+        zoomInput.setAlignment(Qt.AlignmentFlag.AlignRight)
+        zoomInput.setToolTip("输入缩放百分比，回车或失焦生效")
+        percentLabel = QLabel("%")
+        percentLabel.setMinimumWidth(16)
+        percentLabel.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        zoomLayout.addWidget(zoomLabel)
+        zoomLayout.addWidget(zoomSlider)
+        zoomLayout.addWidget(zoomInput)
+        zoomLayout.addWidget(percentLabel)
+        zoomLayout.setContentsMargins(0, 0, 8, 4)
+
+        # 缩放条事件
+        def on_zoom_slider(val):
+            # 50~500 -> scale 10~100
+            scale = int(val / ZOOM_PERCENT_FACTOR)
+            scale = max(SCALE_MIN, min(SCALE_MAX, scale))
+            self.scene.field_settings.set_scale(scale)
+            zoomInput.setText(str(val))
+            self.scene.update()
+        zoomSlider.valueChanged.connect(on_zoom_slider)
+
+        def set_zoom_from_input():
+            text = zoomInput.text().strip()
+            try:
+                val = int(text)
+            except ValueError:
+                val = zoomSlider.value()
+            val = max(ZOOM_PERCENT_MIN, min(ZOOM_PERCENT_MAX, val))
+            zoomSlider.setValue(val)
+        zoomInput.returnPressed.connect(set_zoom_from_input)
+        zoomInput.editingFinished.connect(set_zoom_from_input)
+
+        # 反向联动：如果用Ctrl+滚轮缩放，也更新滑块
+        orig_set_scale = self.scene.field_settings.set_scale
+        def set_scale_and_update_slider(scale):
+            orig_set_scale(scale)
+            val = int(scale * ZOOM_PERCENT_FACTOR)
+            val = max(ZOOM_PERCENT_MIN, min(ZOOM_PERCENT_MAX, val))
+            zoomSlider.blockSignals(True)
+            zoomSlider.setValue(val)
+            zoomSlider.blockSignals(False)
+            zoomInput.setText(str(val))
+        self.scene.field_settings.set_scale = set_scale_and_update_slider
+
+        mainLayout.addLayout(zoomLayout)
         mainLayout.addWidget(self.timelineWidget)
         central = QWidget(self)
         central.setLayout(mainLayout)

@@ -8,31 +8,37 @@ from PyQt6.QtCore import QObject, QPointF, QRectF
 from PyQt6.QtGui import QColor, QPen, QFont, QPainter
 from PyQt6.QtWidgets import QGraphicsScene
 
+SCALE_MIN = 10
+SCALE_MAX = 100
+ZOOM_PERCENT_FACTOR = 5
+ZOOM_PERCENT_MIN = SCALE_MIN * ZOOM_PERCENT_FACTOR
+ZOOM_PERCENT_MAX = SCALE_MAX * ZOOM_PERCENT_FACTOR
+
 class FieldSettings:
     def __init__(self):
         # 网格参数
-        self.bg_grid_color = QColor(200, 255, 255)  # 背景网格颜色
+        self.bg_grid_color = QColor(128, 255, 255)  # 背景网格颜色
         self.bg_grid_width = 1  # 背景网格线宽
-        self.field_line_color = QColor(64, 64, 64)  # 行进场地经纬线颜色
+        self.field_line_color = QColor(128, 128, 128)  # 行进场地经纬线颜色
         self.field_line_width = 2  # 行进场地经纬线线宽
         self.bold_interval = 8  # 每8条经纬线绘制一条场地线
 
         # 场地参数
         self.field_width = 40   # 场地宽度（米）
         self.field_height = 30  # 场地高度（米）
-        self.scale = 18         # 显示缩放比例（像素/米）
-        self.offset = QPointF(53, 33) # 画布偏移量（像素）
+        self.scale = 22         # 显示缩放比例（像素/米）
+        self.offset = QPointF(0, 0) # 画布偏移量（像素）
         self.unit = 5           # 相邻场地格线间距（米）
         self.interval = 8       # 场地线加粗间隔（格数），每8条经纬线加粗一条场地线
         self.grid_step = self.unit/self.interval    # 网格绘制间距（米）
         
         # 坐标参数
         self.label_abs = True   # 坐标显示绝对值（True）还是相对值（False）
-        self.label_zoom = 0.5    # 坐标字体大小（pt）（与缩放值共同决定字体实际像素大小）
+        self.label_zoom = 1    # 坐标字体大小（pt）（与缩放值共同决定字体实际像素大小）
         
         self.top_display = (True, 0)    # 上侧坐标显示 (是否显示，是否翻转)
         self.bottom_display = (True, 0) # 下侧坐标显示
-        self.label_y_offset = -10       # 上下坐标偏移量，调整坐标距离边线的距离，单位像素
+        self.label_y_offset = -15       # 上下坐标偏移量，调整坐标距离边线的距离，单位像素
         self.label_y_cnt = 4            # 上下坐标显示数量（单侧，从0开始计数，另一边对称）
         self.label_y_zero_index = 4     # 从左起第几条场地线为0线（纵向）
         
@@ -56,7 +62,7 @@ class FieldSettings:
         self.center = QPointF(x, y)
 
     def set_scale(self, scale: float):
-        self.scale = scale
+        self.scale = max(SCALE_MIN, min(SCALE_MAX, scale))
 
     def set_offset(self, x: float, y: float):
         self.offset = QPointF(x, y)
@@ -90,11 +96,20 @@ class GridRenderer:
     def __init__(self, field_settings: FieldSettings):
         self.settings = field_settings
 
+    @staticmethod
+    def _crisp_pixel(value: float, pen_width: float) -> float:
+        """将轴对齐线条吸附到更稳定的像素位置。"""
+        if int(round(pen_width)) & 1 == 1:
+            return round(value) + 0.5
+        return round(value)
+
     def draw_background_grid(self, painter: QPainter, scene_rect: QRectF):
         s = self.settings
         painter.save()
         pen = QPen(s.bg_grid_color, s.bg_grid_width)
+        pen.setCosmetic(True)
         painter.setPen(pen)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         step = s.grid_step * s.scale
         offset_x = s.offset.x()
         offset_y = s.offset.y()
@@ -112,8 +127,8 @@ class GridRenderer:
         if x < left:
             x += step
         while x <= right:
-            x_int = round(x)
-            painter.drawLine(QPointF(x_int, top), QPointF(x_int, bottom))
+            x_draw = self._crisp_pixel(x, s.bg_grid_width)
+            painter.drawLine(QPointF(x_draw, top), QPointF(x_draw, bottom))
             x += step
         # 横向网格线
         y0 = field_top_px
@@ -121,8 +136,8 @@ class GridRenderer:
         if y < top:
             y += step
         while y <= bottom:
-            y_int = round(y)
-            painter.drawLine(QPointF(left, y_int), QPointF(right, y_int))
+            y_draw = self._crisp_pixel(y, s.bg_grid_width)
+            painter.drawLine(QPointF(left, y_draw), QPointF(right, y_draw))
             y += step
         painter.restore()
 
@@ -138,10 +153,13 @@ class GridRenderer:
         while x <= right + 1e-6:
             if idx % s.bold_interval == 0:
                 pen = QPen(s.field_line_color, s.field_line_width)
+                pen.setCosmetic(True)
                 painter.setPen(pen)
-                x_draw = round(x * s.scale) + offset_x
-                painter.drawLine(QPointF(x_draw, round(s.field_rect.top()*s.scale) + offset_y),
-                                 QPointF(x_draw, round(s.field_rect.bottom()*s.scale) + offset_y))
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+                x_draw = self._crisp_pixel(x * s.scale + offset_x, s.field_line_width)
+                y_top = self._crisp_pixel(s.field_rect.top() * s.scale + offset_y, 1)
+                y_bottom = self._crisp_pixel(s.field_rect.bottom() * s.scale + offset_y, 1)
+                painter.drawLine(QPointF(x_draw, y_top), QPointF(x_draw, y_bottom))
             x += s.grid_step
             idx += 1
         # 横向纬线
@@ -151,10 +169,13 @@ class GridRenderer:
         while y <= bottom + 1e-6:
             if idx % s.bold_interval == 0:
                 pen = QPen(s.field_line_color, s.field_line_width)
+                pen.setCosmetic(True)
                 painter.setPen(pen)
-                y_draw = round(y * s.scale) + offset_y
-                painter.drawLine(QPointF(round(s.field_rect.left()*s.scale) + offset_x, y_draw),
-                                 QPointF(round(s.field_rect.right()*s.scale) + offset_x, y_draw))
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+                y_draw = self._crisp_pixel(y * s.scale + offset_y, s.field_line_width)
+                x_left = self._crisp_pixel(s.field_rect.left() * s.scale + offset_x, 1)
+                x_right = self._crisp_pixel(s.field_rect.right() * s.scale + offset_x, 1)
+                painter.drawLine(QPointF(x_left, y_draw), QPointF(x_right, y_draw))
             y += s.grid_step
             idx += 1
         painter.restore()
@@ -169,6 +190,10 @@ class GridRenderer:
         metrics = painter.fontMetrics()
         offset_x = s.offset.x()
         offset_y = s.offset.y()
+        # label_y_offset 随 scale 适配，基准scale=18
+        base_offset = s.label_y_offset
+        offset_scale = s.scale / 18 if s.scale > 0 else 1
+        label_y_offset = base_offset * offset_scale
         # 上下数字（纵向粗线），0线可指定
         zero_x = s.field_rect.left() + s.label_y_zero_index * s.bold_interval * s.grid_step
         for k in range(s.label_y_cnt + 1):
@@ -177,8 +202,8 @@ class GridRenderer:
                 if x < s.field_rect.left() - 1e-6 or x > s.field_rect.right() + 1e-6:
                     continue
                 x_draw = x * s.scale + offset_x
-                y_top = s.field_rect.top()*s.scale + s.label_y_offset + offset_y
-                y_bottom = s.field_rect.bottom()*s.scale - s.label_y_offset + offset_y
+                y_top = s.field_rect.top()*s.scale + label_y_offset + offset_y
+                y_bottom = s.field_rect.bottom()*s.scale - label_y_offset + offset_y
                 label_num = sign * k * s.unit
                 if s.label_abs:
                     label = str(abs(label_num))
