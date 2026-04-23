@@ -29,17 +29,14 @@ class SchemeView(QGraphicsView):
             scale = s.scale * (1.1 ** delta)
             scale = max(SCALE_MIN, min(SCALE_MAX, scale))  # 限制缩放范围
             s.set_scale(scale)
-            scene.update()
         elif modifiers & Qt.KeyboardModifier.ShiftModifier:
             # Shift+滚轮左右平移
             offset = s.offset
             s.set_offset(offset.x() + delta * 10, offset.y())
-            scene.update()
         else:
             # 普通滚轮上下平移
             offset = s.offset
             s.set_offset(offset.x(), offset.y() + delta * 10)
-            scene.update()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.MiddleButton:
@@ -65,7 +62,6 @@ class SchemeView(QGraphicsView):
             offset = s.offset
             s.set_offset(offset.x() + dx, offset.y() + dy)
             self._last_pos = pos
-            scene.update()
         else:
             super().mouseMoveEvent(event)
 

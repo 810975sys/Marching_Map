@@ -9,8 +9,9 @@ from field_settings import FieldSettings, GridRenderer
 class SchemeScene(QGraphicsScene):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.field_settings = FieldSettings()
+        self.field_settings = FieldSettings(self)
         self.grid_renderer = GridRenderer(self.field_settings)
+        self.field_settings.changed.connect(self.update)
 
     def drawBackground(self, painter, rect):
         self.grid_renderer.draw_background_grid(painter, rect)

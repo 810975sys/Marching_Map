@@ -4,7 +4,7 @@
 - FieldSettings: 存储网格和场地参数
 - GridRenderer: 根据设置绘制网格和数字
 """
-from PyQt6.QtCore import QObject, QPointF, QRectF
+from PyQt6.QtCore import QObject, QPointF, QRectF, pyqtSignal
 from PyQt6.QtGui import QColor, QPen, QFont, QPainter
 from PyQt6.QtWidgets import QGraphicsScene
 
@@ -14,8 +14,11 @@ ZOOM_PERCENT_FACTOR = 5
 ZOOM_PERCENT_MIN = SCALE_MIN * ZOOM_PERCENT_FACTOR
 ZOOM_PERCENT_MAX = SCALE_MAX * ZOOM_PERCENT_FACTOR
 
-class FieldSettings:
-    def __init__(self):
+class FieldSettings(QObject):
+    changed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
         # 网格参数
         self.bg_grid_color = QColor(128, 255, 255)  # 背景网格颜色
         self.bg_grid_width = 1  # 背景网格线宽
@@ -24,13 +27,12 @@ class FieldSettings:
         self.bold_interval = 8  # 每8条经纬线绘制一条场地线
 
         # 场地参数
-        self.field_width = 40   # 场地宽度（米）
-        self.field_height = 30  # 场地高度（米）
+        self.field_width = 40   # 场地长度（米）
+        self.field_height = 30  # 场地宽度（米）
         self.scale = 22         # 显示缩放比例（像素/米）
         self.offset = QPointF(0, 0) # 画布偏移量（像素）
         self.unit = 5           # 相邻场地格线间距（米）
-        self.interval = 8       # 场地线加粗间隔（格数），每8条经纬线加粗一条场地线
-        self.grid_step = self.unit/self.interval    # 网格绘制间距（米）
+        self.grid_step = self.unit/self.bold_interval    # 网格绘制间距（米）
         
         # 坐标参数
         self.label_abs = True   # 坐标显示绝对值（True）还是相对值（False）
@@ -39,7 +41,7 @@ class FieldSettings:
         self.top_display = (True, 0)    # 上侧坐标显示 (是否显示，是否翻转)
         self.bottom_display = (True, 0) # 下侧坐标显示
         self.label_y_offset = -15       # 上下坐标偏移量，调整坐标距离边线的距离，单位像素
-        self.label_y_cnt = 4            # 上下坐标显示数量（单侧，从0开始计数，另一边对称）
+        self.label_y_cnt = 3            # 上下坐标显示数量（单侧，从0开始计数，另一边对称）
         self.label_y_zero_index = 4     # 从左起第几条场地线为0线（纵向）
         
         self.left_display = (True, 0)   # 左侧坐标显示
@@ -47,6 +49,26 @@ class FieldSettings:
         self.label_x_offset = -5        # 左右坐标偏移量，调整坐标距离边线的距离，单位像素
         self.label_x_cnt = 4            # 左右坐标显示数量（单侧，从0开始计数，另一边对称）
         self.label_x_zero_index = 3     # 从上起第几条场地线为0线（横向）
+        self.label_y_zero_step = self.label_y_zero_index * self.bold_interval
+        self.label_x_zero_step = self.label_x_zero_index * self.bold_interval
+
+    def _emit_changed(self):
+        self.changed.emit()
+
+    def _clamp_zero_step(self, step: int, limit: int) -> int:
+        return max(0, min(limit, int(step)))
+
+    def _zero_step_limit_x(self) -> int:
+        return int(round(self.field_width / self.grid_step))
+
+    def _zero_step_limit_y(self) -> int:
+        return int(round(self.field_height / self.grid_step))
+
+    @staticmethod
+    def format_value(value: float) -> str:
+        if abs(value - round(value)) < 1e-6:
+            return str(int(round(value)))
+        return f"{value:.2f}".rstrip("0").rstrip(".")
 
     @property
     def field_rect(self):
@@ -55,42 +77,92 @@ class FieldSettings:
         return QRectF(-w/2, -h/2, w, h)
 
     def set_field_size(self, width: int, height: int):
-        self.field_width = width
-        self.field_height = height
+        self.field_width = max(5, int(round(width / 5)) * 5)
+        self.field_height = max(5, int(round(height / 5)) * 5)
+        self.label_y_zero_step = self._clamp_zero_step(self.label_y_zero_step, self._zero_step_limit_x())
+        self.label_x_zero_step = self._clamp_zero_step(self.label_x_zero_step, self._zero_step_limit_y())
+        self._emit_changed()
 
     def set_center(self, x: float, y: float):
         self.center = QPointF(x, y)
 
     def set_scale(self, scale: float):
         self.scale = max(SCALE_MIN, min(SCALE_MAX, scale))
+        self._emit_changed()
 
     def set_offset(self, x: float, y: float):
         self.offset = QPointF(x, y)
+        self._emit_changed()
 
     def set_grid_step(self, step: float):
         self.grid_step = step
+        self._emit_changed()
 
     # 视觉参数接口
     def set_bg_grid_color(self, color: QColor):
         self.bg_grid_color = color
+        self._emit_changed()
 
     def set_bg_grid_width(self, width: int):
         self.bg_grid_width = width
+        self._emit_changed()
 
     def set_field_line_color(self, color: QColor):
         self.field_line_color = color
+        self._emit_changed()
 
     def set_field_line_width(self, width: int):
         self.field_line_width = width
+        self._emit_changed()
 
     def set_bold_interval(self, interval: int):
         self.bold_interval = interval
+        self.grid_step = self.unit / self.bold_interval
+        self.label_y_zero_step = self._clamp_zero_step(self.label_y_zero_step, self._zero_step_limit_x())
+        self.label_x_zero_step = self._clamp_zero_step(self.label_x_zero_step, self._zero_step_limit_y())
+        self._emit_changed()
+
+    def set_label_abs(self, enabled: bool):
+        self.label_abs = enabled
+        self._emit_changed()
+
+    def set_label_zoom(self, zoom: float):
+        self.label_zoom = max(0.1, float(zoom))
+        self._emit_changed()
+
+    def set_display_flags(self, top: bool, bottom: bool, left: bool, right: bool):
+        self.top_display = (top, self.top_display[1])
+        self.bottom_display = (bottom, self.bottom_display[1])
+        self.left_display = (left, self.left_display[1])
+        self.right_display = (right, self.right_display[1])
+        self._emit_changed()
+
+    def set_label_offsets(self, y_offset: int, x_offset: int):
+        self.label_y_offset = int(y_offset)
+        self.label_x_offset = int(x_offset)
+        self._emit_changed()
+
+    def set_label_counts(self, y_count: int, x_count: int):
+        self.label_y_cnt = max(0, int(y_count))
+        self.label_x_cnt = max(0, int(x_count))
+        self._emit_changed()
+
+    def set_label_y_zero_step(self, step: int):
+        self.label_y_zero_step = self._clamp_zero_step(step, self._zero_step_limit_x())
+        self.label_y_zero_index = self.label_y_zero_step / self.bold_interval
+        self._emit_changed()
+
+    def set_label_x_zero_step(self, step: int):
+        self.label_x_zero_step = self._clamp_zero_step(step, self._zero_step_limit_y())
+        self.label_x_zero_index = self.label_x_zero_step / self.bold_interval
+        self._emit_changed()
 
     def set_label_orientation(self, top_normal: bool, left_normal: bool, bottom_rotated: bool, right_rotated: bool):
         self.top_label_normal = top_normal
         self.left_label_normal = left_normal
         self.bottom_label_rotated = bottom_rotated
         self.right_label_rotated = right_rotated
+        self._emit_changed()
 
 class GridRenderer:
     def __init__(self, field_settings: FieldSettings):
@@ -195,7 +267,7 @@ class GridRenderer:
         offset_scale = s.scale / 18 if s.scale > 0 else 1
         label_y_offset = base_offset * offset_scale
         # 上下数字（纵向粗线），0线可指定
-        zero_x = s.field_rect.left() + s.label_y_zero_index * s.bold_interval * s.grid_step
+        zero_x = s.field_rect.left() + s.label_y_zero_step * s.grid_step
         for k in range(s.label_y_cnt + 1):
             for sign in (-1, 1):
                 x = zero_x + sign * k * s.bold_interval * s.grid_step
@@ -204,11 +276,11 @@ class GridRenderer:
                 x_draw = x * s.scale + offset_x
                 y_top = s.field_rect.top()*s.scale + label_y_offset + offset_y
                 y_bottom = s.field_rect.bottom()*s.scale - label_y_offset + offset_y
-                label_num = sign * k * s.unit
+                label_num = x - zero_x
                 if s.label_abs:
-                    label = str(abs(label_num))
+                    label = FieldSettings.format_value(abs(label_num))
                 else:
-                    label = str(label_num)
+                    label = FieldSettings.format_value(label_num)
                 text_width = metrics.horizontalAdvance(label)
                 text_height = metrics.height()
                 ascent = metrics.ascent()
@@ -235,7 +307,7 @@ class GridRenderer:
                         painter.drawText(QPointF(x_draw - text_width/2, y_bottom + ascent - text_height/2), label)
 
         # 左右数字（横向粗线），0线可指定
-        zero_y = s.field_rect.top() + s.label_x_zero_index * s.bold_interval * s.grid_step
+        zero_y = s.field_rect.top() + s.label_x_zero_step * s.grid_step
         for k in range(s.label_x_cnt + 1):
             for sign in (-1, 1):
                 y = zero_y + sign * k * s.bold_interval * s.grid_step
@@ -244,11 +316,11 @@ class GridRenderer:
                 y_draw = y * s.scale + offset_y
                 x_left = s.field_rect.left()*s.scale + s.label_x_offset + offset_x
                 x_right = s.field_rect.right()*s.scale - s.label_x_offset + offset_x
-                label_num = sign * k * s.unit
+                label_num = y - zero_y
                 if s.label_abs:
-                    text = str(abs(label_num))
+                    text = FieldSettings.format_value(abs(label_num))
                 else:
-                    text = str(label_num)
+                    text = FieldSettings.format_value(label_num)
                 text_width = metrics.horizontalAdvance(text)
                 text_height = metrics.height()
                 ascent = metrics.ascent()

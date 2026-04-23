@@ -16,6 +16,7 @@ from field_settings import (
     ZOOM_PERCENT_MIN,
     ZOOM_PERCENT_MAX,
 )
+from field_settings_panel import FieldSettingsDock
 
 class MainWindow(QMainWindow):
     def __init__(self, parent=None):
@@ -26,6 +27,7 @@ class MainWindow(QMainWindow):
         self.setupCentralView()
         self.setupTimeline()
         self.setupMainLayout()
+        self.setupFieldSettingsDock()
         self.setWindowTitle("Marching Map Editor")
         self.resize(1200, 800)
         self.showMaximized()
@@ -55,7 +57,7 @@ class MainWindow(QMainWindow):
         groundMenu = self.menuBar().addMenu("场地设置")
         groundMenu.addAction("导入")
         groundMenu.addAction("保存")
-        groundMenu.addAction("修改")
+        self.actionGroundModify = groundMenu.addAction("修改")
 
         # 可扩展
         # viewMenu = self.menuBar().addMenu("视图")
@@ -266,6 +268,21 @@ class MainWindow(QMainWindow):
         central = QWidget(self)
         central.setLayout(mainLayout)
         self.setCentralWidget(central)
+
+    def setupFieldSettingsDock(self):
+        self.fieldSettingsDock = FieldSettingsDock(self)
+        self.fieldSettingsDock.bind_scene(self.scene)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.fieldSettingsDock)
+        self.fieldSettingsDock.hide()
+        self.actionGroundModify.setCheckable(True)
+        self.actionGroundModify.toggled.connect(self.fieldSettingsDock.setVisible)
+        self.fieldSettingsDock.visibilityChanged.connect(self.actionGroundModify.setChecked)
+
+    def showFieldSettingsDock(self):
+        self.fieldSettingsDock.show()
+        self.fieldSettingsDock.raise_()
+        self.fieldSettingsDock.activateWindow()
+        self.actionGroundModify.setChecked(True)
         
 if __name__ == "__main__":
     app = QApplication(sys.argv)
