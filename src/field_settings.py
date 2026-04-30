@@ -6,7 +6,6 @@
 """
 from PyQt6.QtCore import QObject, QPointF, QRectF, pyqtSignal
 from PyQt6.QtGui import QColor, QPen, QFont, QPainter
-from PyQt6.QtWidgets import QGraphicsScene
 
 SCALE_MIN = 10
 SCALE_MAX = 100
@@ -15,6 +14,12 @@ ZOOM_PERCENT_MIN = SCALE_MIN * ZOOM_PERCENT_FACTOR
 ZOOM_PERCENT_MAX = SCALE_MAX * ZOOM_PERCENT_FACTOR
 
 class FieldSettings(QObject):
+    """场地参数模型。
+
+    负责统一存储网格、场地尺寸、坐标显示与缩放偏移，
+    并通过 `changed` 信号通知视图重绘。
+    """
+
     changed = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -38,21 +43,40 @@ class FieldSettings(QObject):
         self.label_abs = True   # 坐标显示绝对值（True）还是相对值（False）
         self.label_zoom = 1    # 坐标字体大小（pt）（与缩放值共同决定字体实际像素大小）
         
-        self.top_display = (True, 0)    # 上侧坐标显示 (是否显示，是否翻转)
-        self.bottom_display = (True, 0) # 下侧坐标显示
-        self.label_y_offset = -15       # 上下坐标偏移量，调整坐标距离边线的距离，单位像素
-        self.label_y_cnt = 3            # 上下坐标显示数量（单侧，从0开始计数，另一边对称）
+        self.top_display = (True, 0)    # 上侧 横坐标显示 (是否显示，是否翻转)
+        self.bottom_display = (True, 0) # 下侧 横坐标显示
+        self.label_y_offset = -15       # 上下侧 横坐标偏移量，调整坐标距离边线的距离，单位像素
+        self.label_y_cnt = 4            # 上下侧 横坐标显示数量（单侧，从0开始计数，另一边对称）
         self.label_y_zero_index = 4     # 从左起第几条场地线为0线（纵向）
         
-        self.left_display = (True, 0)   # 左侧坐标显示
-        self.right_display = (True, 0)  # 右侧坐标显示
-        self.label_x_offset = -5        # 左右坐标偏移量，调整坐标距离边线的距离，单位像素
-        self.label_x_cnt = 4            # 左右坐标显示数量（单侧，从0开始计数，另一边对称）
+        self.left_display = (True, 0)   # 左侧 纵坐标显示
+        self.right_display = (True, 0)  # 右侧 纵坐标显示
+        self.label_x_offset = -5        # 左右侧 纵坐标偏移量，调整坐标距离边线的距离，单位像素
+        self.label_x_cnt = 3            # 左右侧 纵坐标显示数量（单侧，从0开始计数，另一边对称）
         self.label_x_zero_index = 3     # 从上起第几条场地线为0线（横向）
         self.label_y_zero_step = self.label_y_zero_index * self.bold_interval
         self.label_x_zero_step = self.label_x_zero_index * self.bold_interval
 
+    @staticmethod
+    def _parse_color(value, fallback: QColor) -> QColor:
+        """把字符串颜色值解析为 `QColor`，失败则回退到默认值。"""
+        if isinstance(value, str):
+            color = QColor(value)
+            if color.isValid():
+                return color
+        return QColor(fallback)
+
+    @staticmethod
+    def _parse_display_tuple(value, fallback: tuple[bool, int]) -> tuple[bool, int]:
+        """解析四侧显示配置：(是否显示, 是否翻转)。"""
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            return (bool(value[0]), int(bool(value[1])))
+        if isinstance(value, bool):
+            return (value, fallback[1])
+        return fallback
+
     def _emit_changed(self):
+        """统一触发配置变更信号。"""
         self.changed.emit()
 
     def _clamp_zero_step(self, step: int, limit: int) -> int:
@@ -68,7 +92,7 @@ class FieldSettings(QObject):
     def format_value(value: float) -> str:
         if abs(value - round(value)) < 1e-6:
             return str(int(round(value)))
-        return f"{value:.2f}".rstrip("0").rstrip(".")
+        return f"{value:.3f}".rstrip("0").rstrip(".")
 
     @property
     def field_rect(self):
@@ -76,7 +100,77 @@ class FieldSettings(QObject):
         w, h = self.field_width, self.field_height
         return QRectF(-w/2, -h/2, w, h)
 
+    def to_dict(self) -> dict:
+        """序列化为可持久化字典。"""
+        return {
+            "bg_grid_color": self.bg_grid_color.name(),
+            "bg_grid_width": self.bg_grid_width,
+            "field_line_color": self.field_line_color.name(),
+            "field_line_width": self.field_line_width,
+            "bold_interval": self.bold_interval,
+            "field_width": self.field_width,
+            "field_height": self.field_height,
+            "label_abs": self.label_abs,
+            "label_zoom": self.label_zoom,
+            "top_display": [bool(self.top_display[0]), int(bool(self.top_display[1]))],
+            "bottom_display": [bool(self.bottom_display[0]), int(bool(self.bottom_display[1]))],
+            "left_display": [bool(self.left_display[0]), int(bool(self.left_display[1]))],
+            "right_display": [bool(self.right_display[0]), int(bool(self.right_display[1]))],
+            "label_y_offset": self.label_y_offset,
+            "label_x_offset": self.label_x_offset,
+            "label_y_cnt": self.label_y_cnt,
+            "label_x_cnt": self.label_x_cnt,
+            "label_y_zero_step": self.label_y_zero_step,
+            "label_x_zero_step": self.label_x_zero_step,
+        }
+
+    def load_from_dict(self, data: dict):
+        """从持久化字典恢复参数，并进行必要的边界修正。"""
+        if not isinstance(data, dict):
+            raise ValueError("场地设置文件格式无效")
+
+        self.bg_grid_color = self._parse_color(data.get("bg_grid_color"), self.bg_grid_color)
+        self.bg_grid_width = max(1, int(data.get("bg_grid_width", self.bg_grid_width)))
+        self.field_line_color = self._parse_color(data.get("field_line_color"), self.field_line_color)
+        self.field_line_width = max(1, int(data.get("field_line_width", self.field_line_width)))
+
+        bold_interval = int(data.get("bold_interval", self.bold_interval))
+        self.bold_interval = max(1, bold_interval)
+        self.grid_step = self.unit / self.bold_interval
+
+        field_width = int(data.get("field_width", self.field_width))
+        field_height = int(data.get("field_height", self.field_height))
+        self.field_width = max(5, int(round(field_width / 5)) * 5)
+        self.field_height = max(5, int(round(field_height / 5)) * 5)
+
+        self.label_abs = bool(data.get("label_abs", self.label_abs))
+        self.label_zoom = max(0.1, float(data.get("label_zoom", self.label_zoom)))
+
+        self.top_display = self._parse_display_tuple(data.get("top_display"), self.top_display)
+        self.bottom_display = self._parse_display_tuple(data.get("bottom_display"), self.bottom_display)
+        self.left_display = self._parse_display_tuple(data.get("left_display"), self.left_display)
+        self.right_display = self._parse_display_tuple(data.get("right_display"), self.right_display)
+
+        self.label_y_offset = int(data.get("label_y_offset", self.label_y_offset))
+        self.label_x_offset = int(data.get("label_x_offset", self.label_x_offset))
+        self.label_y_cnt = max(0, int(data.get("label_y_cnt", self.label_y_cnt)))
+        self.label_x_cnt = max(0, int(data.get("label_x_cnt", self.label_x_cnt)))
+
+        self.label_y_zero_step = self._clamp_zero_step(
+            int(data.get("label_y_zero_step", self.label_y_zero_step)),
+            self._zero_step_limit_x(),
+        )
+        self.label_x_zero_step = self._clamp_zero_step(
+            int(data.get("label_x_zero_step", self.label_x_zero_step)),
+            self._zero_step_limit_y(),
+        )
+        self.label_y_zero_index = self.label_y_zero_step / self.bold_interval
+        self.label_x_zero_index = self.label_x_zero_step / self.bold_interval
+
+        self._emit_changed()
+
     def set_field_size(self, width: int, height: int):
+        """设置场地长宽（按 5 米网格对齐）。"""
         self.field_width = max(5, int(round(width / 5)) * 5)
         self.field_height = max(5, int(round(height / 5)) * 5)
         self.label_y_zero_step = self._clamp_zero_step(self.label_y_zero_step, self._zero_step_limit_x())
@@ -87,10 +181,12 @@ class FieldSettings(QObject):
         self.center = QPointF(x, y)
 
     def set_scale(self, scale: float):
+        """设置缩放比例（受全局最小/最大值约束）。"""
         self.scale = max(SCALE_MIN, min(SCALE_MAX, scale))
         self._emit_changed()
 
     def set_offset(self, x: float, y: float):
+        """设置画布偏移（像素）。"""
         self.offset = QPointF(x, y)
         self._emit_changed()
 
@@ -156,15 +252,10 @@ class FieldSettings(QObject):
         self.label_x_zero_step = self._clamp_zero_step(step, self._zero_step_limit_y())
         self.label_x_zero_index = self.label_x_zero_step / self.bold_interval
         self._emit_changed()
-
-    def set_label_orientation(self, top_normal: bool, left_normal: bool, bottom_rotated: bool, right_rotated: bool):
-        self.top_label_normal = top_normal
-        self.left_label_normal = left_normal
-        self.bottom_label_rotated = bottom_rotated
-        self.right_label_rotated = right_rotated
-        self._emit_changed()
-
+    
 class GridRenderer:
+    """网格绘制器：根据 `FieldSettings` 绘制背景网格、粗线与坐标标签。"""
+
     def __init__(self, field_settings: FieldSettings):
         self.settings = field_settings
 
@@ -176,6 +267,7 @@ class GridRenderer:
         return round(value)
 
     def draw_background_grid(self, painter: QPainter, scene_rect: QRectF):
+        """绘制细网格背景。"""
         s = self.settings
         painter.save()
         pen = QPen(s.bg_grid_color, s.bg_grid_width)
@@ -214,6 +306,7 @@ class GridRenderer:
         painter.restore()
 
     def draw_field_lines(self, painter: QPainter):
+        """绘制场地粗经纬线。"""
         s = self.settings
         painter.save()
         offset_x = s.offset.x()
@@ -253,6 +346,7 @@ class GridRenderer:
         painter.restore()
 
     def draw_field_labels(self, painter: QPainter):
+        """绘制四侧坐标标签。"""
         s = self.settings
         painter.save()
         font = QFont()
@@ -284,7 +378,7 @@ class GridRenderer:
                 text_width = metrics.horizontalAdvance(label)
                 text_height = metrics.height()
                 ascent = metrics.ascent()
-                descent = metrics.descent()
+                # descent = metrics.descent()  # 未参与计算，保留注释便于后续排版调整。
                 # 上侧
                 if s.top_display[0]:
                     if s.top_display[1]:  # 翻转
@@ -324,7 +418,7 @@ class GridRenderer:
                 text_width = metrics.horizontalAdvance(text)
                 text_height = metrics.height()
                 ascent = metrics.ascent()
-                descent = metrics.descent()
+                # descent = metrics.descent()  # 未参与计算，保留注释便于后续排版调整。
                 # 左侧
                 if s.left_display[0]:
                     if s.left_display[1]:  # 翻转

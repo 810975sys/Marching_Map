@@ -2,7 +2,11 @@
 Marching_Map.code-workspace
 __pycache__/
 .venv/
-初步构想.txt
 
 # 忽略常见日志文件
 *.log
+
+# 忽略指定文件
+初步构想.txt
+阶段性工作日志.txt
+fields/

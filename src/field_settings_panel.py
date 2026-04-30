@@ -1,3 +1,11 @@
+"""场地设置侧边面板。
+
+主要职责：
+1. 将 `FieldSettings` 的关键参数映射到可编辑控件。
+2. 在用户修改控件时回写到 `FieldSettings`。
+3. 在 `FieldSettings.changed` 触发时刷新 UI，保持双向同步。
+"""
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
@@ -23,6 +31,8 @@ from field_settings import FieldSettings
 
 
 class FieldSettingsDock(QDockWidget):
+    """场地参数编辑面板（Dock 形式）。"""
+
     def __init__(self, parent=None):
         super().__init__("场地设置-修改", parent)
         self.setObjectName("fieldSettingsDock")
@@ -33,6 +43,7 @@ class FieldSettingsDock(QDockWidget):
         )
         self.setMinimumWidth(360)
 
+        # `_updating=True` 时说明正在程序化刷新控件，需屏蔽回写，避免循环触发。
         self._scene = None
         self._settings = None
         self._updating = False
@@ -51,18 +62,21 @@ class FieldSettingsDock(QDockWidget):
         self.setWidget(scroll)
 
     def bind_scene(self, scene):
+        """绑定场景对象并订阅设置变化信号。"""
         self._scene = scene
         self._settings = scene.field_settings
         self._settings.changed.connect(self.refresh_from_settings)
         self.refresh_from_settings()
 
     def _build_ui(self):
+        """组装面板分区：网格、坐标显示、0线位置。"""
         self._build_grid_group()
         self._build_field_group()
         self._build_coordinate_group()
         self.rootLayout.addStretch(1)
 
     def _build_grid_group(self):
+        """构建网格与场地尺寸相关控件。"""
         group = QGroupBox("网格与场地", self.content)
         form = QFormLayout(group)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
@@ -102,6 +116,7 @@ class FieldSettingsDock(QDockWidget):
         self.rootLayout.addWidget(group)
 
     def _build_field_group(self):
+        """构建坐标显示相关控件。"""
         group = QGroupBox("坐标显示", self.content)
         form = QFormLayout(group)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
@@ -163,6 +178,7 @@ class FieldSettingsDock(QDockWidget):
         self.rootLayout.addWidget(group)
 
     def _build_coordinate_group(self):
+        """构建 0 线滑块控制区。"""
         group = QGroupBox("0线位置", self.content)
         layout = QVBoxLayout(group)
         layout.setContentsMargins(10, 10, 10, 10)
@@ -195,16 +211,19 @@ class FieldSettingsDock(QDockWidget):
         self.rootLayout.addWidget(group)
 
     def _apply(self, method_name, value):
+        """通用回写入口：根据方法名把值写入 `FieldSettings`。"""
         if self._settings is None or self._updating:
             return
         getattr(self._settings, method_name)(value)
 
     def _apply_field_size(self):
+        """同步场地长宽。"""
         if self._settings is None or self._updating:
             return
         self._settings.set_field_size(self.fieldLengthSpin.value(), self.fieldHeightSpin.value())
 
     def _apply_display_flags(self):
+        """同步四侧坐标开关。"""
         if self._settings is None or self._updating:
             return
         self._settings.set_display_flags(
@@ -215,16 +234,19 @@ class FieldSettingsDock(QDockWidget):
         )
 
     def _apply_label_offsets(self):
+        """同步四侧坐标偏移。"""
         if self._settings is None or self._updating:
             return
         self._settings.set_label_offsets(self.yOffsetSpin.value(), self.xOffsetSpin.value())
 
     def _apply_label_counts(self):
+        """同步四侧坐标数量。"""
         if self._settings is None or self._updating:
             return
         self._settings.set_label_counts(self.yCountSpin.value(), self.xCountSpin.value())
 
     def _choose_bg_color(self):
+        """选择背景网格颜色。"""
         if self._settings is None or self._updating:
             return
         color = QColorDialog.getColor(self._settings.bg_grid_color, self, "选择背景网格颜色")
@@ -232,6 +254,7 @@ class FieldSettingsDock(QDockWidget):
             self._settings.set_bg_grid_color(color)
 
     def _choose_field_color(self):
+        """选择场地经纬线颜色。"""
         if self._settings is None or self._updating:
             return
         color = QColorDialog.getColor(self._settings.field_line_color, self, "选择行进场地颜色")
@@ -244,6 +267,7 @@ class FieldSettingsDock(QDockWidget):
         return "#000000" if brightness > 160 else "#ffffff"
 
     def _apply_color_button_style(self, button: QPushButton, color: QColor):
+        """根据颜色亮度设置按钮前景色，保证可读性。"""
         text_color = self._contrast_text_color(color)
         button.setText(color.name().upper())
         button.setStyleSheet(
@@ -251,6 +275,7 @@ class FieldSettingsDock(QDockWidget):
         )
 
     def refresh_from_settings(self):
+        """从 `FieldSettings` 拉取数据并刷新全部控件。"""
         if self._settings is None:
             return
         s = self._settings
@@ -297,6 +322,7 @@ class FieldSettingsDock(QDockWidget):
         self._updating = False
 
     def _update_zero_summary(self):
+        """更新 0 线当前位置文本（米）。"""
         if self._settings is None:
             return
         s = self._settings
@@ -308,6 +334,7 @@ class FieldSettingsDock(QDockWidget):
         )
 
     def _on_zero_y_changed(self, value):
+        """处理纵向 0 线滑块：按住 Shift 时吸附粗线。"""
         if self._settings is None or self._updating:
             return
         if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier:
@@ -319,6 +346,7 @@ class FieldSettingsDock(QDockWidget):
         self._update_zero_summary()
 
     def _on_zero_x_changed(self, value):
+        """处理横向 0 线滑块：按住 Shift 时吸附粗线。"""
         if self._settings is None or self._updating:
             return
         if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier:
