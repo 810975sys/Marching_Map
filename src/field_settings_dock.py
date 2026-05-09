@@ -1,9 +1,9 @@
 """场地设置侧边面板。
 
 主要职责：
-1. 将 `FieldSettings` 的关键参数映射到可编辑控件。
-2. 在用户修改控件时回写到 `FieldSettings`。
-3. 在 `FieldSettings.changed` 触发时刷新 UI，保持双向同步。
+1. 将 `FieldInfo` 的关键参数映射到可编辑控件。
+2. 在用户修改控件时回写到 `FieldInfo`。
+3. 在 `FieldInfo.changed` 触发时刷新 UI，保持双向同步。
 """
 
 from PyQt6.QtCore import Qt
@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from field_settings import FieldSettings
+from field_info import FieldInfo, format_value
 
 
 class FieldSettingsDock(QDockWidget):
@@ -38,35 +38,28 @@ class FieldSettingsDock(QDockWidget):
         self.setObjectName("fieldSettingsDock")
         self.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea)
         self.setFeatures(
-            QDockWidget.DockWidgetFeature.DockWidgetClosable
-            | QDockWidget.DockWidgetFeature.DockWidgetMovable
+            QDockWidget.DockWidgetFeature.DockWidgetClosable    # 可关闭
+            # | QDockWidget.DockWidgetFeature.DockWidgetMovable # 可移动
         )
         self.setMinimumWidth(360)
 
         # `_updating=True` 时说明正在程序化刷新控件，需屏蔽回写，避免循环触发。
-        self._scene = None
-        self._settings = None
-        self._updating = False
+        self._scene = None      # 绑定的场景对象，提供设置数据来源和回写接口。
+        self._field = None   # 当前绑定的 `FieldInfo` 对象，直接从场景获取；仅在 `refresh_from_settings` 中更新值。
+        self._updating = False  # 标志位：正在刷新控件时为 True，避免回写干扰；用户交互时为 False，允许回写生效。
 
-        self.content = QWidget(self)
-        self.rootLayout = QVBoxLayout(self.content)
+        self.content = QWidget(self)    # 面板容器，所有控件都放在这里；外层是一个 `QScrollArea`，以支持小屏幕时滚动查看。
+        self.rootLayout = QVBoxLayout(self.content) # 布局容器，垂直排列所有分区，底部有弹性空间。
         self.rootLayout.setContentsMargins(8, 8, 8, 8)
         self.rootLayout.setSpacing(10)
 
         self._build_ui()
 
-        scroll = QScrollArea(self)
+        scroll = QScrollArea(self)  # 外层滚动区域，包裹内容容器；当内容过高时显示滚动条。
         scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setWidget(self.content)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)  # 去掉滚动区域的边框，使界面更简洁。
+        scroll.setWidget(self.content)  # 设置滚动区域的内容容器为 `content`，所有控件都放在 `content` 中。
         self.setWidget(scroll)
-
-    def bind_scene(self, scene):
-        """绑定场景对象并订阅设置变化信号。"""
-        self._scene = scene
-        self._settings = scene.field_settings
-        self._settings.changed.connect(self.refresh_from_settings)
-        self.refresh_from_settings()
 
     def _build_ui(self):
         """组装面板分区：网格、坐标显示、0线位置。"""
@@ -74,6 +67,14 @@ class FieldSettingsDock(QDockWidget):
         self._build_field_group()
         self._build_coordinate_group()
         self.rootLayout.addStretch(1)
+
+    def bind_scene(self, scene):
+        """绑定场景对象
+        响应场地变化信号。"""
+        self._scene = scene
+        self._field = scene.field_info
+        self._field.changed.connect(self.refresh_from_settings)
+        self.refresh_from_settings()
 
     def _build_grid_group(self):
         """构建网格与场地尺寸相关控件。"""
@@ -86,7 +87,7 @@ class FieldSettingsDock(QDockWidget):
         form.addRow("背景网格颜色", self.bgColorButton)
 
         self.bgWidthSpin = QSpinBox(group)
-        self.bgWidthSpin.setRange(1, 20)
+        self.bgWidthSpin.setRange(1, 10)
         self.bgWidthSpin.setSingleStep(1)
         self.bgWidthSpin.valueChanged.connect(lambda value: self._apply("set_bg_grid_width", value))
         form.addRow("背景网格线宽", self.bgWidthSpin)
@@ -133,23 +134,28 @@ class FieldSettingsDock(QDockWidget):
         form.addRow("坐标字体大小", self.labelZoomSpin)
 
         display_row = QWidget(group)
+        # display_layout3 = QVBoxLayout(display_row)
         display_layout = QHBoxLayout(display_row)
         display_layout.setContentsMargins(0, 0, 0, 0)
         display_layout.setSpacing(8)
-        self.topDisplayCheck = QCheckBox("上", display_row)
-        self.bottomDisplayCheck = QCheckBox("下", display_row)
-        self.leftDisplayCheck = QCheckBox("左", display_row)
-        self.rightDisplayCheck = QCheckBox("右", display_row)
+        # display_layout2 = QHBoxLayout(display_row)
+        
+        self.top_label_display = QSpinBox(display_row)
+        self.bottom_label_display = QSpinBox(display_row)
+        self.left_label_display = QSpinBox(display_row)
+        self.right_label_display = QSpinBox(display_row)
         for checkbox in (
-            self.topDisplayCheck,
-            self.bottomDisplayCheck,
-            self.leftDisplayCheck,
-            self.rightDisplayCheck,
+            self.top_label_display,
+            self.bottom_label_display,
+            self.left_label_display,
+            self.right_label_display,
         ):
-            checkbox.toggled.connect(self._apply_display_flags)
+            checkbox.setRange(-1, 360)
+            checkbox.setSingleStep(1)
+            checkbox.valueChanged.connect(self._apply_display_flags)
             display_layout.addWidget(checkbox)
-        display_layout.addStretch(1)
-        form.addRow("四侧显示", display_row)
+        display_layout.addStretch(1)  # 让四个开关靠左排列，右侧留空
+        form.addRow("坐标角度", display_row)
 
         self.yOffsetSpin = QSpinBox(group)
         self.yOffsetSpin.setRange(-200, 200)
@@ -167,13 +173,13 @@ class FieldSettingsDock(QDockWidget):
         self.yCountSpin.setRange(0, 50)
         self.yCountSpin.setSingleStep(1)
         self.yCountSpin.valueChanged.connect(self._apply_label_counts)
-        form.addRow("上下显示数量", self.yCountSpin)
+        form.addRow("横坐标数量", self.yCountSpin)
 
         self.xCountSpin = QSpinBox(group)
         self.xCountSpin.setRange(0, 50)
         self.xCountSpin.setSingleStep(1)
         self.xCountSpin.valueChanged.connect(self._apply_label_counts)
-        form.addRow("左右显示数量", self.xCountSpin)
+        form.addRow("纵坐标数量", self.xCountSpin)
 
         self.rootLayout.addWidget(group)
 
@@ -211,74 +217,70 @@ class FieldSettingsDock(QDockWidget):
         self.rootLayout.addWidget(group)
 
     def _apply(self, method_name, value):
-        """通用回写入口：根据方法名把值写入 `FieldSettings`。"""
-        if self._settings is None or self._updating:
+        """通用回写入口：根据方法名把值写入 `FieldInfo`。"""
+        if self._field is None or self._updating:
             return
-        getattr(self._settings, method_name)(value)
+        getattr(self._field, method_name)(value)
 
     def _apply_field_size(self):
         """同步场地长宽。"""
-        if self._settings is None or self._updating:
+        if self._field is None or self._updating:
             return
-        self._settings.set_field_size(self.fieldLengthSpin.value(), self.fieldHeightSpin.value())
+        self._field.set_field_size(self.fieldLengthSpin.value(), self.fieldHeightSpin.value())
 
     def _apply_display_flags(self):
         """同步四侧坐标开关。"""
-        if self._settings is None or self._updating:
+        if self._field is None or self._updating:
             return
-        self._settings.set_display_flags(
-            self.topDisplayCheck.isChecked(),
-            self.bottomDisplayCheck.isChecked(),
-            self.leftDisplayCheck.isChecked(),
-            self.rightDisplayCheck.isChecked(),
+        self._field.set_label_display(
+            self.top_label_display.value(),
+            self.bottom_label_display.value(),
+            self.left_label_display.value(),
+            self.right_label_display.value(),
         )
 
     def _apply_label_offsets(self):
         """同步四侧坐标偏移。"""
-        if self._settings is None or self._updating:
+        if self._field is None or self._updating:
             return
-        self._settings.set_label_offsets(self.yOffsetSpin.value(), self.xOffsetSpin.value())
+        self._field.set_label_offsets(self.yOffsetSpin.value(), self.xOffsetSpin.value())
 
     def _apply_label_counts(self):
         """同步四侧坐标数量。"""
-        if self._settings is None or self._updating:
+        if self._field is None or self._updating:
             return
-        self._settings.set_label_counts(self.yCountSpin.value(), self.xCountSpin.value())
+        self._field.set_label_counts(self.yCountSpin.value(), self.xCountSpin.value())
 
     def _choose_bg_color(self):
         """选择背景网格颜色。"""
-        if self._settings is None or self._updating:
+        if self._field is None or self._updating:
             return
-        color = QColorDialog.getColor(self._settings.bg_grid_color, self, "选择背景网格颜色")
+        color = QColorDialog.getColor(self._field.bg_grid_color, self, "选择背景网格颜色")
         if color.isValid():
-            self._settings.set_bg_grid_color(color)
+            self._field.set_bg_grid_color(color)
 
     def _choose_field_color(self):
         """选择场地经纬线颜色。"""
-        if self._settings is None or self._updating:
+        if self._field is None or self._updating:
             return
-        color = QColorDialog.getColor(self._settings.field_line_color, self, "选择行进场地颜色")
+        color = QColorDialog.getColor(self._field.field_line_color, self, "选择行进场地颜色")
         if color.isValid():
-            self._settings.set_field_line_color(color)
-
-    @staticmethod
-    def _contrast_text_color(color: QColor) -> str:
-        brightness = (color.red() * 299 + color.green() * 587 + color.blue() * 114) / 1000
-        return "#000000" if brightness > 160 else "#ffffff"
+            self._field.set_field_line_color(color)
 
     def _apply_color_button_style(self, button: QPushButton, color: QColor):
         """根据颜色亮度设置按钮前景色，保证可读性。"""
-        text_color = self._contrast_text_color(color)
+        brightness = (color.red() * 299 + color.green() * 587 + color.blue() * 114) / 1000
+        text_color = "#000000" if brightness > 160 else "#ffffff"
         button.setText(color.name().upper())
         button.setStyleSheet(
             f"background-color: {color.name()}; color: {text_color}; border: 1px solid #666666; padding: 4px 10px;"
         )
 
     def refresh_from_settings(self):
-        """从 `FieldSettings` 拉取数据并刷新全部控件。"""
-        if self._settings is None:
+        """从 `FieldInfo` 拉取数据并刷新全部控件。"""
+        if self._field is None:
             return
-        s = self._settings
+        s = self._field
         self._updating = True
 
         self._apply_color_button_style(self.bgColorButton, s.bg_grid_color)
@@ -293,10 +295,10 @@ class FieldSettingsDock(QDockWidget):
         self.labelAbsCheck.setChecked(s.label_abs)
         self.labelZoomSpin.setValue(s.label_zoom)
 
-        self.topDisplayCheck.setChecked(s.top_display[0])
-        self.bottomDisplayCheck.setChecked(s.bottom_display[0])
-        self.leftDisplayCheck.setChecked(s.left_display[0])
-        self.rightDisplayCheck.setChecked(s.right_display[0])
+        self.top_label_display.setValue(s.top_display)
+        self.bottom_label_display.setValue(s.bottom_display)
+        self.left_label_display.setValue(s.left_display)
+        self.right_label_display.setValue(s.right_display)
 
         self.yOffsetSpin.setValue(s.label_y_offset)
         self.xOffsetSpin.setValue(s.label_x_offset)
@@ -313,46 +315,46 @@ class FieldSettingsDock(QDockWidget):
         self.zeroXSlider.setValue(s.label_x_zero_step)
 
         self.zeroYSummary.setText(
-            f"当前位置：{FieldSettings.format_value(s.label_y_zero_step * s.grid_step)}m"
+            f"当前位置：{format_value(s.label_y_zero_step * s.grid_step)}m"
         )
         self.zeroXSummary.setText(
-            f"当前位置：{FieldSettings.format_value(s.label_x_zero_step * s.grid_step)}m"
+            f"当前位置：{format_value(s.label_x_zero_step * s.grid_step)}m"
         )
 
         self._updating = False
 
     def _update_zero_summary(self):
         """更新 0 线当前位置文本（米）。"""
-        if self._settings is None:
+        if self._field is None:
             return
-        s = self._settings
+        s = self._field
         self.zeroYSummary.setText(
-            f"当前位置：{FieldSettings.format_value(self.zeroYSlider.value() * s.grid_step)}m"
+            f"当前位置：{format_value(self.zeroYSlider.value() * s.grid_step)}m"
         )
         self.zeroXSummary.setText(
-            f"当前位置：{FieldSettings.format_value(self.zeroXSlider.value() * s.grid_step)}m"
+            f"当前位置：{format_value(self.zeroXSlider.value() * s.grid_step)}m"
         )
 
     def _on_zero_y_changed(self, value):
         """处理纵向 0 线滑块：按住 Shift 时吸附粗线。"""
-        if self._settings is None or self._updating:
+        if self._field is None or self._updating:
             return
         if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier:
-            value = round(value / self._settings.bold_interval) * self._settings.bold_interval
+            value = round(value / self._field.bold_interval) * self._field.bold_interval
             self.zeroYSlider.blockSignals(True)
             self.zeroYSlider.setValue(value)
             self.zeroYSlider.blockSignals(False)
-        self._settings.set_label_y_zero_step(value)
+        self._field.set_label_y_zero_step(value)
         self._update_zero_summary()
 
     def _on_zero_x_changed(self, value):
         """处理横向 0 线滑块：按住 Shift 时吸附粗线。"""
-        if self._settings is None or self._updating:
+        if self._field is None or self._updating:
             return
         if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier:
-            value = round(value / self._settings.bold_interval) * self._settings.bold_interval
+            value = round(value / self._field.bold_interval) * self._field.bold_interval
             self.zeroXSlider.blockSignals(True)
             self.zeroXSlider.setValue(value)
             self.zeroXSlider.blockSignals(False)
-        self._settings.set_label_x_zero_step(value)
+        self._field.set_label_x_zero_step(value)
         self._update_zero_summary()

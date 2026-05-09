@@ -1,58 +1,66 @@
 import sys
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QToolBar,
-    QVBoxLayout, QWidget,
+    QVBoxLayout, QWidget, QFileDialog, 
     QHBoxLayout, QPushButton, QSizePolicy, QToolButton, QGridLayout, QFrame,
-    QLabel, QLineEdit, QSlider
+    QLabel, QLineEdit, QSlider, QButtonGroup, QDialog,
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon
+from pathlib import Path
 
 # 导入自定义场景
-from scheme_scene import SchemeScene
-from field_settings import (
+from field_info import (
     SCALE_MIN,
     SCALE_MAX,
     ZOOM_PERCENT_FACTOR,
     ZOOM_PERCENT_MIN,
     ZOOM_PERCENT_MAX,
+    _field_default_dir, 
+    saveFieldInfo, 
+    loadFieldInfo, 
 )
-from field_settings_panel import FieldSettingsDock
-from timeline_widget import TimelineWidget
-from mainwindow_docks import DrawingControlDock, TimelineScrollArea, ToolOptionDock
+from field_move import FieldMove
+from scheme_scene import SchemeScene
+from field_settings_dock import FieldSettingsDock
+from timeline_widget import TimelineWidget, TimelineScrollArea
+# from mainwindow_docks import DrawingControlDock, TimelineScrollArea, ToolOptionDock
+from drawing_control_dock import DrawingControlDock
 from mainwindow_notice import MainWindowNotice
-from mainwindow_field_settings import MainWindowFieldSettings
+from field_info import _field_default_dir
 
-
-class MainWindow(MainWindowNotice, MainWindowFieldSettings, QMainWindow):
+class MainWindow(MainWindowNotice, QMainWindow):
     """主窗口：组织菜单、场景、时间轴与各类控制台。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         # 工具栏按钮映射：工具名 -> QToolButton
-        self.toolButtons = {}
+        self.toolButtons = {}   # 保存工具按钮引用，便于根据工具名更新按钮状态
         self.activeToolName = "框选"
-        self.pendingToolName = None
-        self._sampling_tools = {"线段", "弧", "曲线/折线", "圆", "多边形", "填充四边形"}
-        self._dialog_required_tools = {
-            "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形",
-            "调整", "旋转", "跟随", "路径", "间隔行进",
-            "标签", "文本", "箭头",
-        }
+        # self.pendingToolName = None
+        self._sampling_tools = {"线段", "弧", "曲线/折线", "圆", "多边形", "填充四边形"}    # 需要在绘制控制台显示采样设置的工具
+        # self._dialog_required_tools = {
+        #     "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形",
+        #     "调整", "旋转", "跟随", "路径", "间隔行进",
+        #     "标签", "文本", "箭头",
+        # }
         self._drawing_tools = {"点", "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形"}
-        self.setupMenus()
-        self.setupToolBar_()
+        self.select_tools = {"选择", "框选"}
+        self.setupMenus()   # 菜单栏
+        self.setupToolBar()    # 工具栏
         # self.setupDockWidgets()
-        self.setupCentralView()
-        self.setupTimeline()
-        self.setupInteractions()
-        self.setupMainLayout()
-        self.setupFieldSettingsDock()
-        self.setupToolOptionDock()
-        self.setupDrawingControlDock()
+        self.setupCentralView() # 主场景视图
+        self.setupTimeline()    # 底部时间轴
+        self.setupInteractions()    # 信号与槽绑定
+        self.setupMainLayout()  # 主窗口整体布局
+        self.setupFieldSettingsDock()   # 场地设置浮动面板
+        # self.setupToolOptionDock()      # 工具选项浮动面板
+        self.setupDrawingControlDock()  # 绘制控制浮动面板
+        
         self.setWindowTitle("Marching Map Editor")
         self.resize(1200, 800)
-        self.showMaximized()
+        self.showMaximized() # 默认最大化窗口
+
 
     def setupMenus(self):
         """创建主菜单及快捷操作。"""
@@ -79,37 +87,59 @@ class MainWindow(MainWindowNotice, MainWindowFieldSettings, QMainWindow):
         redo.setShortcut("Ctrl+Y")
 
         # 场地设置
-        groundMenu = self.menuBar().addMenu("场地设置")
+        groundMenu = self.menuBar().addMenu("场地")
         self.actionGroundImport = groundMenu.addAction("导入")
-        self.actionGroundImport.triggered.connect(self.importFieldSettings)
+        self.actionGroundImport.triggered.connect(self._load_field_info)
         self.actionGroundSave = groundMenu.addAction("保存")
-        self.actionGroundSave.triggered.connect(self.saveFieldSettings)
+        self.actionGroundSave.triggered.connect(self._save_field_info)
         self.actionGroundModify = groundMenu.addAction("修改")
 
-        del_player = self.menuBar().addAction("删除点位")
-        del_player.setShortcut("Delete")
+        self.actionDeletePoint = self.menuBar().addAction("删除点位")
+        self.actionDeletePoint.setShortcut("Delete")
+        self.actionDeletePoint.setEnabled(False)
+        self.actionDeletePoint.triggered.connect(self._on_delete_points_triggered)
 
         # 菜单栏右侧非阻塞提示。
         self.setup_menu_notice()
+        
+    def _save_field_info(self):
+        try:
+            default_path = _field_default_dir() / "field_settings.json"
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "保存场地设置",
+                str(default_path),
+                "JSON 文件 (*.json)",
+            )
+            if not file_path:
+                return
 
-        # 可扩展
-        # viewMenu = self.menuBar().addMenu("视图")
+            saveFieldInfo(self.scene.field_info, file_path)
+            self._show_menu_notice("保存成功！")
+        except Exception as e:
+            self._show_menu_notice(f"保存失败：{e}", failed=True)
+            # print(f"Error saving field info: {e}")
 
-    # def setupToolBar(self):
-    #     # 工具分组，遇到分隔符就新建一行
-    #     tool_groups = [
-    #         ["框选", "套索", "选择整组"],
-    #         ["点", "直线", "弧", "曲线", "矩形", "圆", "多边形"],
-    #         ["调整", "旋转", "跟随", "路径"],
-    #         ["标签", "文本"]
-    #     ]
-    #     for idx, group in enumerate(tool_groups):
-    #         toolBar = QToolBar(f"工具栏{idx+1}", self)
-    #         for action in group:
-    #             toolBar.addAction(action)
-    #         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolBar)
+    def _load_field_info(self):
+        try:
+            default_path = _field_default_dir() / "field_settings.json"
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "导入场地设置",
+                str(default_path),
+                "JSON 文件 (*.json)",
+            )
+            if not file_path:
+                return
 
-    def setupToolBar_(self):
+            loadFieldInfo(self.scene.field_info, Path(file_path))
+            # self.scene.set_field_info(field_info)
+            self._show_menu_notice("导入成功！")
+        except Exception as e:
+            self._show_menu_notice(f"导入失败：{e}", failed=True)
+            # print(f"Error loading field info: {e}")
+    
+    def setupToolBar(self):
         """
         自定义多行分组工具栏示例：每组工具用QWidget+QGridLayout实现多行，组间用竖直分割线分隔，整体放在主窗口顶部。
         保留目前的分组与布局设置。
@@ -117,77 +147,111 @@ class MainWindow(MainWindowNotice, MainWindowFieldSettings, QMainWindow):
         rows = 2  # 每组工具的行数
         # 工具分组及布局（每组：按钮文本列表，行数，列数）
         tool_groups = [
-            ['组选', '框选', '套索'],  # 选择工具
+            ['选择', '框选'],  # 选择工具
             ['点', '线段', '弧', '曲线/折线', '填充四边形', '圆', '多边形'],  # 绘制工具
-            ['调整', '旋转', '跟随', '路径', '间隔行进'],  # 变换工具
+            ['调整', '跟随', '路径', '间隔行进'],  # 变换工具
             ['标签', '文本', '箭头']  # 标注工具
         ]
         
-        container = QWidget(self)
-        h_layout = QHBoxLayout()
-        h_layout.setContentsMargins(0, 0, 0, 0)
-        h_layout.setSpacing(8)
+        # 创建按钮组并设为互斥模式，确保工具按钮单选
+        self.toolButtonGroup = QButtonGroup(self)
+        self.toolButtonGroup.setExclusive(True)
+        
+        container = QWidget(self)   # 实例化窗口容器，放置工具按钮和分割线
+        h_layout = QHBoxLayout()    # 水平布局容器，组间用竖线分隔
+        h_layout.setContentsMargins(0, 0, 0, 0) # 去掉外边距，让工具栏紧贴边缘
+        h_layout.setSpacing(8)  # 组间水平间距，分割线宽度会占用部分空间，无需过大
 
+        # 根据工具分组创建按钮，并添加到布局中
         for idx, group in enumerate(tool_groups):
             # 组间添加竖直分割线（最后一组不加）
             if idx > 0: 
-                line = QFrame()
-                line.setFrameShape(QFrame.Shape.VLine)
-                line.setFrameShadow(QFrame.Shadow.Sunken)
-                h_layout.addWidget(line)
-                
+                line = QFrame() # 实例化竖直分割线
+                line.setFrameShape(QFrame.Shape.VLine)      # 竖线
+                line.setFrameShadow(QFrame.Shadow.Sunken)   # 凹陷效果
+                h_layout.addWidget(line)    # 添加分割线到布局
+            
             cols = (len(group) + rows - 1) // rows  # 计算列数
-            group_widget = QWidget()
-            grid = QGridLayout()
-            grid.setContentsMargins(0, 0, 0, 0)
-            grid.setSpacing(2)
+            group_widget = QWidget()    # 实例化工具组容器
+            grid = QGridLayout()        # 实例化布局控件
+            grid.setContentsMargins(0, 0, 0, 0) # 去掉内边距，让按钮紧凑排列
+            grid.setSpacing(2)          # 设置按钮间距
+            
+            # 创建工具按钮，设置为可切换状态，并连接点击事件
             for i, name in enumerate(group):
-                btn = QToolButton()
-                btn.setText(name)
-                btn.setCheckable(True)
-                btn.clicked.connect(lambda checked, tool_name=name: self.onToolButtonClicked(tool_name, checked))
-                self.toolButtons[name] = btn
-                grid.addWidget(btn, i // cols, i % cols)
-            group_widget.setLayout(grid)
-            h_layout.addWidget(group_widget)
-        container.setLayout(h_layout)
+                btn = QToolButton()     # 实例化按钮
+                btn.setText(name)       # 设置按钮文本
+                btn.setCheckable(True)  # 使按钮可切换状态
+                # 连接点击事件，传递工具名和选中状态
+                btn.clicked.connect(lambda checked=False, tool_name=name: self.onToolButtonClicked(tool_name))
+                self.toolButtons[name] = btn    # 保存按钮引用，便于后续状态更新
+                self.toolButtonGroup.addButton(btn)         # 将按钮添加到按钮组
+                grid.addWidget(btn, i // cols, i % cols)    # 添加按钮到网格布局，自动换行
+            group_widget.setLayout(grid)        # 设置组容器布局
+            h_layout.addWidget(group_widget)    # 添加组容器到水平布局
+        container.setLayout(h_layout)           # 设置总容器布局
+        
         # 用QToolBar包裹，便于后续扩展
-        toolBar = QToolBar("自定义工具栏", self)
-        toolBar.addWidget(container)
-        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolBar)
+        toolBar = QToolBar("自定义工具栏", self)    # 创建工具栏
+        toolBar.addWidget(container)    # 将自定义布局的容器添加到工具栏
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolBar) # 将工具栏添加到主窗口顶部
 
+        # 初始化时设置默认工具状态
         if self.activeToolName in self.toolButtons:
             self.toolButtons[self.activeToolName].setChecked(True)
 
-    # def setupDockWidgets(self):
-    #     self.propertyDock = QDockWidget("属性", self)
-    #     self.propertyDock.setWidget(QWidget())  # 后续替换为属性面板
-    #     self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.propertyDock)
+    def onToolButtonClicked(self, tool_name: str):
+        """处理工具栏按钮点击，并在需要时转到浮动控制台确认。"""
+        # if not checked:
+        #     if self.activeToolName == tool_name and tool_name in self.toolButtons:
+        #         self.toolButtons[tool_name].setChecked(True)
+        #     return
+        tool_text = {
+            '点': "点击绘制参考点；拖动空心矩形可对单点进行修正。",
+            '线段': "确定线段起止点；拖动空心矩形可对单点进行修正。",
+            '弧': "确定弧的起止点和弧上任意一点；拖动空心矩形可对单点进行修正。",
+            '圆': "确定圆心和圆上任意一点；拖动空心矩形可对单点进行修正。",
+            '多边形': "确定多边形中心点及一个顶点；拖动空心矩形可对单点进行修正。",
+            '填充四边形': "确定填充四边形三个顶点；拖动空心矩形可对单点进行修正。",
+            '曲线/折线': "确定曲线/折线的经过点；拖动空心矩形可对单点进行修正。"
+        }
+        self.drawingControlDock.statusLabel.setText(tool_text.get(tool_name, ""))
 
-    #     self.layerDock = QDockWidget("图层", self)
-    #     self.layerDock.setWidget(QWidget())  # 后续替换为图层面板
-    #     self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.layerDock)
-
+        self._apply_active_tool(tool_name)
+        self.drawingControlDock.setSamplingToolVisible(tool_name if tool_name in self._sampling_tools else None, tool_name in self._sampling_tools)
+        self.drawingControlDock.setCurveModeVisible(tool_name == "曲线/折线")
+        self.drawingControlDock.setDraftActive(tool_name == "点")
+        if tool_name in self._sampling_tools:
+            self.drawingControlDock.sync_sampling_settings(tool_name)
+        self.drawingControlDock.confirmButton.setEnabled(False)
+        self.drawingControlDock.cancelButton.setEnabled(False)
+        
+        if tool_name in self.select_tools:
+            self.drawingControlDock.hide()
+        else:
+            self.drawingControlDock.show()
+        self._positionDrawingControlDock()
+        self.drawingControlDock.raise_()
+        
     def setupCentralView(self):
         """创建场景与视图。"""
-        from scheme_view import SchemeView
         self.scene = SchemeScene(self)
-        self.view = SchemeView(self.scene, self)
+        self.view = FieldMove(self.scene, self)
         # self.view.setScene(self.scene)
         # setCentralWidget 在 setupTimeline 里统一设置
 
     def setupTimeline(self):
         """创建底部时间轴与播放控制区。"""
         # 时间轴主容器
-        self.timelineWidget = QWidget(self)
-        self.timelineWidget.setFixedHeight(72)
-        self.timelineWidget.setStyleSheet("background:#f0f0f0;")
+        self.timelineWidget = QWidget(self)     # 实例化窗口容器
+        self.timelineWidget.setFixedHeight(72)  # 设置时间轴区域高度，确保足够显示工具按钮和时间轴内容
+        self.timelineWidget.setStyleSheet("background:#f0f0f0;")    # 设置背景色
 
         # 左侧动画播放组件区域
         self.animControlWidget = QWidget(self.timelineWidget)
         animLayout = QHBoxLayout()
-        animLayout.setContentsMargins(8, 0, 8, 0)
-        animLayout.setSpacing(4)
+        animLayout.setContentsMargins(8, 0, 8, 0)   # 设置内边距，让按钮不贴边显示
+        animLayout.setSpacing(4)    # 设置按钮间距
         # 预留播放、暂停、前进、后退等按钮
         self.btnPlayPause = QPushButton("▶", self.animControlWidget)
         self.btnPlayPause.setFixedSize(48, 32)  # 加宽主播放按钮
@@ -209,20 +273,20 @@ class MainWindow(MainWindowNotice, MainWindowFieldSettings, QMainWindow):
                 self.btnPlayPause.setText("⏸")
             else:
                 self.btnPlayPause.setText("▶")
-        self.btnPlayPause.clicked.connect(toggle_play_pause)
-        self.animControlWidget.setLayout(animLayout)
-        self.animControlWidget.setFixedWidth(160)
-        self.animControlWidget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self.btnPlayPause.clicked.connect(toggle_play_pause)    # 绑定按钮点击事件
+        self.animControlWidget.setLayout(animLayout)    # 设置布局
+        self.animControlWidget.setFixedWidth(160)       # 设置固定宽度，确保播放控制区大小稳定
+        self.animControlWidget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)    # 水平固定，垂直扩展
 
         # 右侧时间轴主控件（横向滚动，不压缩每拍宽度）
         self.timelineMainWidget = TimelineWidget(self.timelineWidget)
         self.timelineScrollArea = TimelineScrollArea(self.timelineWidget)
-        self.timelineScrollArea.setWidget(self.timelineMainWidget)
-        self.timelineScrollArea.setWidgetResizable(False)
-        self.timelineScrollArea.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.timelineScrollArea.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.timelineScrollArea.setFrameShape(QFrame.Shape.NoFrame)
-        self.timelineScrollArea.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.timelineScrollArea.setWidget(self.timelineMainWidget)  # 将时间轴主控件放入滚动区域
+        self.timelineScrollArea.setWidgetResizable(False)           # 不允许自动调整大小，保持每拍固定宽度，启用水平滚动条
+        self.timelineScrollArea.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)  # 需要时显示水平滚动条
+        self.timelineScrollArea.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)   # 始终隐藏垂直滚动条
+        self.timelineScrollArea.setFrameShape(QFrame.Shape.NoFrame) # 去掉滚动区域边框
+        self.timelineScrollArea.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)   # 水平扩展，垂直扩展，填满剩余空间
 
         # 水平布局：左动画控件 + 右时间轴
         timelineLayout = QHBoxLayout()
@@ -242,88 +306,25 @@ class MainWindow(MainWindowNotice, MainWindowFieldSettings, QMainWindow):
         """绑定时间轴、场景和控制台信号。"""
         self.timelineMainWidget.nodeSelected.connect(self.onTimelineNodeSelected)
         self.timelineMainWidget.currentBeatChanged.connect(self.scene.set_preview_beat)
+        self.timelineMainWidget.currentBeatChanged.connect(self.updateDrawToolAvailability)
         self.timelineMainWidget.nodeAdded.connect(self.scene.on_node_added)
         self.timelineMainWidget.nodeInserted.connect(self.scene.on_node_inserted)
         self.timelineMainWidget.nodeDeleted.connect(self.onTimelineNodeDeleted)
+        
         self.scene.selectedPointsChanged.connect(self.onSelectedPointsChanged)
         self.scene.draftStarted.connect(self.onDraftStarted)
         self.scene.draftFinished.connect(self.onDraftFinished)
-        self.scene.lineSegmentPointCountChanged.connect(self.onLineSegmentPointCountChanged)
-        self.scene.lineSegmentSpacingChanged.connect(self.onLineSegmentSpacingChanged)
+        # self.scene.lineSegmentPointCountChanged.connect(self.onLineSegmentPointCountChanged)
+        # self.scene.lineSegmentSpacingChanged.connect(self.onLineSegmentSpacingChanged)
         self.scene.samplingPointCountChanged.connect(self.onSamplingPointCountChanged)
         self.scene.samplingSpacingChanged.connect(self.onSamplingSpacingChanged)
-        self.scene.samplingShiftSpacingChanged.connect(self.onSamplingShiftSpacingChanged)
-        self.scene.samplingShiftPointCountChanged.connect(self.onSamplingShiftPointCountChanged)
+        self.scene.samplingShiftSpacingChanged.connect(self.onSampling2ndSpacingChanged)
+        self.scene.samplingShiftPointCountChanged.connect(self.onSampling2ndPointCountChanged)
 
         self.scene.set_active_tool(self.activeToolName)
-        self.onTimelineNodeSelected(self.timelineMainWidget.selected_node)
+        self.onTimelineNodeSelected(self.timelineMainWidget.selected_node)  # 根据当前时间轴选中节点初始化场景状态
         # 初始化场景预览拍位，确保启动时状态与时间轴一致。
         self.scene.set_preview_beat(self.timelineMainWidget.current_beat)
-
-    def onToolButtonClicked(self, tool_name: str, checked: bool):
-        """处理工具栏按钮点击，并在需要时转到浮动控制台确认。"""
-        if not checked:
-            if self.activeToolName == tool_name and tool_name in self.toolButtons:
-                self.toolButtons[tool_name].setChecked(True)
-            return
-
-        if tool_name == "点":
-            self.drawingControlDock.statusLabel.setText("点击绘制参考点，拖动空心矩形可对单点进行修正。")
-        elif tool_name == '线段':
-            self.drawingControlDock.statusLabel.setText("确定线段起止点，拖动空心矩形可对单点进行修正。")
-        elif tool_name == '弧':
-            self.drawingControlDock.statusLabel.setText("确定弧的起止点和弧上任意一点，拖动空心矩形可对单点进行修正。")
-        elif tool_name == '圆':
-            self.drawingControlDock.statusLabel.setText("确定圆心和圆上任意一点，拖动空心矩形可对单点进行修正。")
-        elif tool_name == '多边形':
-            self.drawingControlDock.statusLabel.setText("确定多边形中心点及一个顶点，拖动空心矩形可对单点进行修正。")
-        elif tool_name == '填充四边形':
-            self.drawingControlDock.statusLabel.setText("确定填充四边形三个顶点，拖动空心矩形可对单点进行修正。")
-        elif tool_name == '曲线/折线':
-            self.drawingControlDock.statusLabel.setText("确定曲线/折线的经过点，拖动空心矩形可对单点进行修正。")
-
-        if tool_name == "点":
-            self.pendingToolName = None
-            self.toolOptionDock.hide()
-            self._apply_active_tool(tool_name)
-            self.drawingControlDock.setSamplingToolVisible(None, False)
-            self.drawingControlDock.setCurveModeVisible(False)
-            self.drawingControlDock.setDraftActive(True)
-            self.drawingControlDock.confirmButton.setEnabled(False)
-            self.drawingControlDock.cancelButton.setEnabled(False)
-            self.drawingControlDock.show()
-            self._positionDrawingControlDock()
-            self.drawingControlDock.raise_()
-            return
-
-        if tool_name in self._drawing_tools:
-            self.pendingToolName = None
-            self.toolOptionDock.hide()
-            self._apply_active_tool(tool_name)
-            self.drawingControlDock.setSamplingToolVisible(tool_name if tool_name in self._sampling_tools else None, tool_name in self._sampling_tools)
-            self.drawingControlDock.setCurveModeVisible(tool_name == "曲线/折线")
-            self.drawingControlDock.setDraftActive(False)
-            if tool_name in self._sampling_tools:
-                self.drawingControlDock.sync_sampling_settings(tool_name)
-            self.drawingControlDock.confirmButton.setEnabled(False)
-            self.drawingControlDock.cancelButton.setEnabled(False)
-            self.drawingControlDock.show()
-            self._positionDrawingControlDock()
-            self.drawingControlDock.raise_()
-            return
-        
-        # if tool_name in self._dialog_required_tools:
-        #     self.pendingToolName = tool_name
-        #     self._sync_tool_button_states(self.activeToolName)
-        #     self.toolOptionDock.titleLabel.setText(f"待配置工具：{tool_name}")
-        #     self.toolOptionDock.show()
-        #     self.toolOptionDock.raise_()
-        #     return
-
-        self._apply_active_tool(tool_name)
-        if hasattr(self, "drawingControlDock"):
-            self.drawingControlDock.setSamplingToolVisible(None, False)
-            self.drawingControlDock.setCurveModeVisible(False)
 
     def _sync_tool_button_states(self, checked_tool: str):
         """同步工具按钮选中状态，避免递归触发信号。"""
@@ -336,8 +337,8 @@ class MainWindow(MainWindowNotice, MainWindowFieldSettings, QMainWindow):
         """应用工具切换到场景，并更新按钮状态。"""
         self._sync_tool_button_states(tool_name)
         self.activeToolName = tool_name
-        if hasattr(self, "scene"):
-            self.scene.set_active_tool(tool_name)
+        # if hasattr(self, "scene"):
+        self.scene.set_active_tool(tool_name)
 
     def _set_active_tool(self, tool_name: str):
         """通过按钮点击触发工具切换，保留现有行为。"""
@@ -356,32 +357,37 @@ class MainWindow(MainWindowNotice, MainWindowFieldSettings, QMainWindow):
     def onSelectedPointsChanged(self, selected_count: int):
         """场景选中点位变化后，刷新绘制与变换工具可用状态。"""
         self.updateContextToolAvailability(self.timelineMainWidget.selected_node, int(selected_count))
+        # 启用/禁用 删除点位 菜单
+        self.actionDeletePoint.setEnabled(int(selected_count) > 0)
 
-    def onLineSegmentPointCountChanged(self, point_count: int):
-        """线段自动布点数量变化时，同步控制台显示。"""
-        if not hasattr(self, "drawingControlDock"):
-            return
-        if self.activeToolName != "线段":
+
+    def onSamplingPointCountChanged(self, tool_name: str, point_count: int):
+        """采样点数自动变化时，同步控制台显示。"""
+        # if not hasattr(self, "drawingControlDock"):
+        #     return
+        if tool_name not in self._sampling_tools or tool_name != self.activeToolName:
             return
         if getattr(self.drawingControlDock, "linePointCountAutoButton", None) is not None and self.drawingControlDock.linePointCountAutoButton.isChecked():
-            self.drawingControlDock.sync_sampling_settings("线段")
+            self.drawingControlDock.sync_sampling_settings(tool_name)
             return
+        self.drawingControlDock.setSamplingTool(tool_name)
         self.drawingControlDock.setLinePointCount(int(point_count))
 
-    def onLineSegmentSpacingChanged(self, spacing: float):
-        """线段自动间隔变化时，同步控制台显示。"""
-        if not hasattr(self, "drawingControlDock"):
+    def onSamplingSpacingChanged(self, tool_name: str, spacing: float):
+        """圆、弧、多边形等采样间隔自动变化时，同步控制台显示。"""
+        # if not hasattr(self, "drawingControlDock"):
+        #     return
+        if tool_name not in self._sampling_tools or tool_name != self.activeToolName:
             return
-        if self.activeToolName != "线段":
-            return
+        self.drawingControlDock.setSamplingTool(tool_name)
         self.drawingControlDock.lineSpacingSpin.blockSignals(True)
         self.drawingControlDock.lineSpacingSpin.setValue(float(spacing))
         self.drawingControlDock.lineSpacingSpin.blockSignals(False)
 
-    def onSamplingShiftPointCountChanged(self, tool_name: str, point_count: int):
+    def onSampling2ndPointCountChanged(self, tool_name: str, point_count: int):
         """填充四边形的 P0-P2 点位个数变化时，同步控制台显示。"""
-        if not hasattr(self, "drawingControlDock"):
-            return
+        # if not hasattr(self, "drawingControlDock"):
+        #     return
         if self.activeToolName != tool_name:
             return
         if tool_name != "填充四边形":
@@ -393,37 +399,10 @@ class MainWindow(MainWindowNotice, MainWindowFieldSettings, QMainWindow):
         self.drawingControlDock.lineShiftPointCountSpin.setValue(int(point_count))
         self.drawingControlDock.lineShiftPointCountSpin.blockSignals(False)
 
-    def onSamplingPointCountChanged(self, tool_name: str, point_count: int):
-        """圆、弧、多边形等采样点数自动变化时，同步控制台显示。"""
-        if not hasattr(self, "drawingControlDock"):
-            return
-        if tool_name not in self._sampling_tools or tool_name == "线段":
-            return
-        if self.activeToolName != tool_name:
-            return
-        if getattr(self.drawingControlDock, "linePointCountAutoButton", None) is not None and self.drawingControlDock.linePointCountAutoButton.isChecked():
-            self.drawingControlDock.sync_sampling_settings(tool_name)
-            return
-        self.drawingControlDock.setSamplingTool(tool_name)
-        self.drawingControlDock.setLinePointCount(int(point_count))
-
-    def onSamplingSpacingChanged(self, tool_name: str, spacing: float):
-        """圆、弧、多边形等采样间隔自动变化时，同步控制台显示。"""
-        if not hasattr(self, "drawingControlDock"):
-            return
-        if tool_name not in self._sampling_tools or tool_name == "线段":
-            return
-        if self.activeToolName != tool_name:
-            return
-        self.drawingControlDock.setSamplingTool(tool_name)
-        self.drawingControlDock.lineSpacingSpin.blockSignals(True)
-        self.drawingControlDock.lineSpacingSpin.setValue(float(spacing))
-        self.drawingControlDock.lineSpacingSpin.blockSignals(False)
-
-    def onSamplingShiftSpacingChanged(self, tool_name: str, spacing: float):
+    def onSampling2ndSpacingChanged(self, tool_name: str, spacing: float):
         """填充四边形的第二方向间隔变化时，同步控制台显示。"""
-        if not hasattr(self, "drawingControlDock"):
-            return
+        # if not hasattr(self, "drawingControlDock"):
+        #     return
         if self.activeToolName != tool_name:
             return
         # 仅在填充四边形工具时生效
@@ -434,11 +413,19 @@ class MainWindow(MainWindowNotice, MainWindowFieldSettings, QMainWindow):
         self.drawingControlDock.lineShiftSpacingSpin.blockSignals(False)
 
     def onTimelineNodeDeleted(self, deleted_index: int):
-        """节点删除后同步场景数据并重置选中状态。"""
+        """方案图节点删除后同步场景数据并重置选中状态。"""
         # 关键：时间轴删除只是拍数与索引变化，场景里的 node_points/node_shapes
         # 也必须按同样规则重排，否则会出现“拍数对了但点位串位”的问题。
         self.scene.on_node_deleted(deleted_index)
         self.onTimelineNodeSelected(self.timelineMainWidget.selected_node)
+
+    def updateDrawToolAvailability(self, beat: int, has_selection: bool = False):
+        """根据当前节拍和选中点位数量，控制绘制工具可用性。"""
+        is_p0 = int(beat) == 0
+        for name in ["点", "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形"]:
+            btn = self.toolButtons.get(name)
+            if btn is not None:
+                btn.setEnabled(is_p0 or has_selection)
 
     def updateContextToolAvailability(self, node_index: int, selected_count: int):
         """根据当前节点和选中点位数量，控制绘制与变换工具可用性。"""
@@ -446,19 +433,18 @@ class MainWindow(MainWindowNotice, MainWindowFieldSettings, QMainWindow):
         has_selection = int(selected_count) > 0
 
         drawing_tools = ["点", "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形"]
-        transform_tools = ["调整", "旋转", "跟随", "路径", "间隔行进"]
+        transform_tools = ["调整", "跟随", "路径", "间隔行进"]
         p0_forbidden_transform_tools = {"跟随", "路径", "间隔行进"}
 
-        for name in drawing_tools:
-            btn = self.toolButtons.get(name)
-            if btn is not None:
-                btn.setEnabled(is_p0 or has_selection)
+        self.updateDrawToolAvailability(node_index, has_selection)
 
+        # P0 时禁止部分变换工具，其他节点无选中时禁止所有变换工具
         for name in transform_tools:
             btn = self.toolButtons.get(name)
             if btn is not None:
                 btn.setEnabled(has_selection and not (is_p0 and name in p0_forbidden_transform_tools))
 
+        # 自动切换工具：如果当前工具不可用，且没有选中点位，则切换到框选；如果在P0且当前工具在P0禁止列表中，也切换到框选。
         if not (is_p0 or has_selection) and self.activeToolName in drawing_tools + transform_tools:
             self._set_active_tool("框选")
         elif is_p0 and self.activeToolName in p0_forbidden_transform_tools:
@@ -481,7 +467,7 @@ class MainWindow(MainWindowNotice, MainWindowFieldSettings, QMainWindow):
         zoomSlider = QSlider(Qt.Orientation.Horizontal)
         zoomSlider.setMinimum(ZOOM_PERCENT_MIN)
         zoomSlider.setMaximum(ZOOM_PERCENT_MAX)
-        zoomSlider.setValue(int(self.scene.field_settings.scale * ZOOM_PERCENT_FACTOR))  # scale=10~100 -> 50~500%
+        zoomSlider.setValue(int(self.scene.field_info.scale * ZOOM_PERCENT_FACTOR))  # scale=10~100 -> 50~500%
         zoomSlider.setSingleStep(1)
         zoomSlider.setFixedWidth(180)
         zoomInput = QLineEdit(f"{zoomSlider.value()}")
@@ -498,16 +484,19 @@ class MainWindow(MainWindowNotice, MainWindowFieldSettings, QMainWindow):
         zoomLayout.setContentsMargins(0, 0, 8, 4)
 
         # 缩放条事件
+        orig_set_scale = self.scene.field_info.set_scale
         def on_zoom_slider(val):
+            """根据滑块值设置缩放，并更新输入框显示。"""
             # 50~500 -> scale 10~100
             scale = int(val / ZOOM_PERCENT_FACTOR)
             scale = max(SCALE_MIN, min(SCALE_MAX, scale))
-            self.scene.field_settings.set_scale(scale)
+            orig_set_scale(scale)
             zoomInput.setText(str(val))
             self.scene.update()
         zoomSlider.valueChanged.connect(on_zoom_slider)
 
         def set_zoom_from_input():
+            """从输入框设置缩放，回车或失焦时生效。"""
             text = zoomInput.text().strip()
             try:
                 val = int(text)
@@ -519,8 +508,8 @@ class MainWindow(MainWindowNotice, MainWindowFieldSettings, QMainWindow):
         zoomInput.editingFinished.connect(set_zoom_from_input)
 
         # 反向联动：如果用Ctrl+滚轮缩放，也更新滑块
-        orig_set_scale = self.scene.field_settings.set_scale
         def set_scale_and_update_slider(scale):
+            """在设置缩放的同时更新滑块位置，保持UI同步。"""
             orig_set_scale(scale)
             val = int(scale * ZOOM_PERCENT_FACTOR)
             val = max(ZOOM_PERCENT_MIN, min(ZOOM_PERCENT_MAX, val))
@@ -528,7 +517,7 @@ class MainWindow(MainWindowNotice, MainWindowFieldSettings, QMainWindow):
             zoomSlider.setValue(val)
             zoomSlider.blockSignals(False)
             zoomInput.setText(str(val))
-        self.scene.field_settings.set_scale = set_scale_and_update_slider
+        self.scene.field_info.set_scale = set_scale_and_update_slider
 
         mainLayout.addLayout(zoomLayout)
         mainLayout.addWidget(self.timelineWidget)
@@ -546,37 +535,6 @@ class MainWindow(MainWindowNotice, MainWindowFieldSettings, QMainWindow):
         self.actionGroundModify.toggled.connect(self.fieldSettingsDock.setVisible)
         self.fieldSettingsDock.visibilityChanged.connect(self.actionGroundModify.setChecked)
 
-    # def showFieldSettingsDock(self):
-    #     """显示并激活场地参数编辑面板。"""
-    #     # 历史辅助方法：当前通过菜单 actionGroundModify.toggled 控制显隐，无调用方。
-    #     self.fieldSettingsDock.show()
-    #     self.fieldSettingsDock.raise_()
-    #     self.fieldSettingsDock.activateWindow()
-    #     self.actionGroundModify.setChecked(True)
-
-    def setupToolOptionDock(self):
-        """创建工具配置浮动控制台。"""
-        self.toolOptionDock = ToolOptionDock(self)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.toolOptionDock)
-        self.toolOptionDock.hide()
-        self.toolOptionDock.applyButton.clicked.connect(self.applyPendingTool)
-        self.toolOptionDock.cancelButton.clicked.connect(self.cancelPendingTool)
-
-    def applyPendingTool(self):
-        """应用待确认的工具切换。"""
-        if not self.pendingToolName:
-            return
-        tool_name = self.pendingToolName
-        self.pendingToolName = None
-        self._apply_active_tool(tool_name)
-        self.toolOptionDock.titleLabel.setText("待配置工具：无")
-
-    def cancelPendingTool(self):
-        """取消待确认的工具切换，恢复当前工具。"""
-        self.pendingToolName = None
-        self._sync_tool_button_states(self.activeToolName)
-        self.toolOptionDock.titleLabel.setText("待配置工具：无")
-
     def setupDrawingControlDock(self):
         """创建绘制确认浮动控制台。"""
         self.drawingControlDock = DrawingControlDock(self)
@@ -591,12 +549,46 @@ class MainWindow(MainWindowNotice, MainWindowFieldSettings, QMainWindow):
         self.drawingControlDock.confirmButton.clicked.connect(self.scene.confirm_current_drawing)
         self.drawingControlDock.cancelButton.clicked.connect(self.scene.cancel_current_drawing)
 
+    def _on_delete_points_triggered(self):
+        """响应菜单删除点位：弹出确认对话框，确认后调用场景删除方法。"""
+        ok = self._confirm_delete_points_dialog(len(self.scene._selected_point_ids))
+        if not ok:
+            return
+        # 执行删除
+        try:
+            self.scene.delete_selected_points()
+            # 同步 UI 状态
+            self._show_menu_notice("删除成功！")
+        except Exception as e:
+            self._show_menu_notice(f"删除失败：{e}", failed=True)
+
+    def _confirm_delete_points_dialog(self, count: int) -> bool:
+        """显示确认对话框，返回 True 表示确认删除，False 表示取消。"""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("确认删除点位")
+        layout = QVBoxLayout()
+        label = QLabel(f"确认删除选中的 {count} 个点位？此操作不可撤销。")
+        layout.addWidget(label)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch(1)
+        cancel_btn = QPushButton("取消", dlg)
+        confirm_btn = QPushButton("确认", dlg)
+        confirm_btn.setStyleSheet("background:#d9534f;color:white;")
+        cancel_btn.clicked.connect(dlg.reject)
+        confirm_btn.clicked.connect(dlg.accept)
+        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(confirm_btn)
+        layout.addLayout(btn_layout)
+        dlg.setLayout(layout)
+        return dlg.exec() == QDialog.DialogCode.Accepted
+
     def _positionDrawingControlDock(self):
         """将绘制控制台放到绘图区左上角。"""
-        if not hasattr(self, "drawingControlDock"):
-            return
-        if not hasattr(self, "view"):
-            return
+        # if not hasattr(self, "drawingControlDock"):
+        #     return
+        # if not hasattr(self, "view"):
+        #     return
         dock = self.drawingControlDock
         if not dock.isFloating():
             dock.setFloating(True)
@@ -654,11 +646,6 @@ class MainWindow(MainWindowNotice, MainWindowFieldSettings, QMainWindow):
         self.drawingControlDock.confirmButton.setEnabled(False)
         self.drawingControlDock.cancelButton.setEnabled(False)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if hasattr(self, "drawingControlDock") and self.drawingControlDock.isVisible():
-            self._positionDrawingControlDock()
-        
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()

@@ -27,7 +27,7 @@
 
 ### 2. 图形交互模块（基于 PyQt QGraphicsView 框架）
 - **SchemeScene**：继承 QGraphicsScene，管理所有图元（网格、点位、矩形、文本等）。
-- **SchemeView**：继承 QGraphicsView，处理鼠标/键盘交互（框选、拖动画布、缩放、绘制工具等）。
+- **FieldMove**：继承 QGraphicsView，处理鼠标/键盘交互（框选、拖动画布、缩放、绘制工具等）。
 - **自定义图元（CustomGraphicsItem）**：
   - `PointItem`：表示一个点位，含编号、所属组、坐标（场景坐标）。
   - `LineItem`、`RectItem`、`CircleItem`、`ArcItem`、`PolygonItem` 等。
@@ -36,7 +36,7 @@
 
 ### 3. 方案与时间轴模块
 - **SchemeDocument**：整个方案的数据容器，包含：
-  - 场地设置（`FieldSettings`）
+  - 场地设置（`FieldInfo`）
   - 拍数序列（`List[int] beats_between_figures`）
   - 方案图列表（`List[SchemeFigure] figures`）
 - **SchemeFigure**：单张方案图，包含：
@@ -48,8 +48,8 @@
 - **TimelineWidget**：底部时间轴控件，显示各方案图节点，支持点击跳转、插入、删除、调整拍数。
 
 ### 4. 场地与网格模块
-- **FieldSettings**：存储背景网格颜色/粗细、行进场地经纬线颜色/粗细/加粗规则、数字朝向、缩放比例等。
-- **GridRenderer**：负责根据 `FieldSettings` 和当前缩放比例，在 `SchemeScene` 中动态绘制/刷新网格线及外侧数字。不存为图元，而是直接绘制在场景背景层（重写 `drawBackground`）或作为静态图元（效率更高可动态重建）。
+- **FieldInfo**：存储背景网格颜色/粗细、行进场地经纬线颜色/粗细/加粗规则、数字朝向、缩放比例等。
+- **GridRenderer**：负责根据 `FieldInfo` 和当前缩放比例，在 `SchemeScene` 中动态绘制/刷新网格线及外侧数字。不存为图元，而是直接绘制在场景背景层（重写 `drawBackground`）或作为静态图元（效率更高可动态重建）。
 
 ### 5. 编辑与变换模块
 - **SelectionManager**：管理当前选中的图元集合（支持框选、套索）。
@@ -74,7 +74,7 @@ from PyQt6.QtCore import QObject, QPointF
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import QGraphicsEllipseItem
 
-class FieldSettings:
+class FieldInfo:
   def __init__(self):
     self.bg_grid_color = QColor(220, 220, 220)
     self.bg_grid_width = 1
@@ -122,7 +122,7 @@ class SchemeFigure:
 class SchemeDocument(QObject):
   def __init__(self):
     super().__init__()
-    self.field = FieldSettings()
+    self.field = FieldInfo()
     self.beats_between = []  # 长度 = figures.size() - 1
     self.figures = []
 
@@ -169,7 +169,7 @@ class SchemeDocument(QObject):
 ### 图形视图框架的集成
 - `SchemeScene` 持有指向当前 `SchemeDocument` 的引用，以及当前显示的 `figure_index`。
 - 当切换方案图时，`SchemeScene` 清空并重新构建图元：
-  - 根据 `FieldSettings` 绘制静态网格（可放在 `drawBackground` 中）。
+  - 根据 `FieldInfo` 绘制静态网格（可放在 `drawBackground` 中）。
   - 加载当前 `SchemeFigure` 中的点位（`PointItem`）、形状、文本。
   - 同时加载上一张图的点位（用半透明样式）。
 - 用户在场景中拖拽/添加点位时，实时更新 `SchemeFigure` 的数据，并标记 `is_manual_modified = True`，同时触发 `propagate_changes`。
@@ -179,7 +179,7 @@ class SchemeDocument(QObject):
 ## 四、关键技术与实现要点
 
 ### 1. 网格绘制与缩放
-- **背景网格与行进场地**：在 `SchemeScene::drawBackground` 中，根据 `FieldSettings.scale` 计算实际格线间距，绘制所有线。这样可以保持线宽不受视图缩放影响（因为 `drawBackground` 使用场景坐标系，线宽由画笔决定，视图缩放时线宽不变）。
+- **背景网格与行进场地**：在 `SchemeScene::drawBackground` 中，根据 `FieldInfo.scale` 计算实际格线间距，绘制所有线。这样可以保持线宽不受视图缩放影响（因为 `drawBackground` 使用场景坐标系，线宽由画笔决定，视图缩放时线宽不变）。
 - **外侧数字**：作为 `QGraphicsSimpleTextItem` 放置在场景边缘，但其位置需要随缩放比例重新计算（或在 `drawBackground` 中直接绘制文本）。
 
 ### 2. 点位吸附

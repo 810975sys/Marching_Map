@@ -1,11 +1,16 @@
-from PyQt6.QtCore import QTimer, Qt
-from PyQt6.QtWidgets import QLabel
+"""
+非阻塞提示
+在主窗口菜单栏右上角显示非阻塞提示
+"""
 
+from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtWidgets import QLabel, QSizePolicy
 
 class MainWindowNotice:
     """主窗口菜单栏右上角的非阻塞提示逻辑。"""
 
     def setup_menu_notice(self):
+        """初始化提示标签"""
         self.menuNoticeLabel = QLabel("", self)
         self.menuNoticeLabel.setMinimumWidth(140)
         self.menuNoticeLabel.setStyleSheet("color: #1f5e9c; padding-right: 8px;")
@@ -30,7 +35,6 @@ class MainWindowNotice:
             available,
         )
         self.menuNoticeLabel.setText(elided)
-        # self.menuNoticeLabel.setToolTip(text)
 
     def _show_menu_notice(self, text: str, failed: bool = False, timeout_ms: int = 3500):
         """在菜单栏右上角显示非阻塞提示，超时后自动清除。"""

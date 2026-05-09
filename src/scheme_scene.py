@@ -1,6 +1,5 @@
-# scheme_scene.py
 """
-自定义场地场景，负责网格与场地的绘制。
+绘制方案图
 """
 import math
 
@@ -14,43 +13,48 @@ from PyQt6.QtWidgets import (
     QGraphicsSimpleTextItem,
 )
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QPainterPath, QPen, QPolygonF
-from field_settings import FieldSettings, GridRenderer
+from PyQt6.QtGui import QBrush, QColor, QPainterPath, QPen, QPolygonF, QFont
+from field_info import FieldInfo
+from field_renderer import GridRenderer
 from scene_items import PerformerPointItem, ReferenceHandleItem
-from scheme_scene_data import SchemeSceneDataMixin
+from scheme_scene_data import SchemeSceneData
 
+def _distance(p1: tuple[float, float], p2: tuple[float, float]) -> float:
+    """计算两点之间的欧几里得距离。"""
+    return math.hypot(p2[0] - p1[0], p2[1] - p1[1])
 
-class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
+class SchemeScene(SchemeSceneData, QGraphicsScene):
     """主绘图场景：管理节点点位、图形草稿与渲染。"""
-
     # 通知主窗口更新“绘制控制台”状态，替代阻塞式弹窗。
-    draftStarted = pyqtSignal(str)
-    draftFinished = pyqtSignal()
-    selectedPointsChanged = pyqtSignal(int)
-    lineSegmentPointCountChanged = pyqtSignal(int)
-    lineSegmentSpacingChanged = pyqtSignal(float)
-    samplingPointCountChanged = pyqtSignal(str, int)
-    samplingSpacingChanged = pyqtSignal(str, float)
-    samplingShiftSpacingChanged = pyqtSignal(str, float)
-    samplingShiftPointCountChanged = pyqtSignal(str, int)
+    draftStarted = pyqtSignal(str)  # 工具名称
+    draftFinished = pyqtSignal()    # 无参数，表示草稿结束（确认或取消）
+    selectedPointsChanged = pyqtSignal(int) # 当前选中点位数量
+    # lineSegmentPointCountChanged = pyqtSignal(int)  # 线段工具采样点位数量
+    # lineSegmentSpacingChanged = pyqtSignal(float)   # 线段工具采样间距
+    
+    samplingPointCountChanged = pyqtSignal(str, int)    # 工具名称和采样点位数量
+    samplingSpacingChanged = pyqtSignal(str, float)     # 工具名称和采样间距
+    
+    samplingShiftSpacingChanged = pyqtSignal(str, float)    # 工具名称和Shift状态下采样间距
+    samplingShiftPointCountChanged = pyqtSignal(str, int)   # 工具名称和Shift状态下采样点位数量
 
     _single_click_tools = {"点", "线段", "弧", "填充四边形", "圆", "多边形"}
 
     def __init__(self, parent=None):
         super().__init__(parent)
         # 场地参数与网格绘制器。
-        self.field_settings = FieldSettings(self)
-        self.grid_renderer = GridRenderer(self.field_settings)
-        self.field_settings.changed.connect(self._on_field_settings_changed)
-        self._current_items = []
-        self._previous_items = []
-        self._label_items = []
-        self.setup_scene_data()
-        self._draft_tool_name = None
-        self._draft_reference_points = []
-        self._draft_preview_items = []
-        self._pending_preview_items = []
-        self._draft_handle_items = []
+        self.field_info = FieldInfo(self)
+        self.grid_renderer = GridRenderer(self.field_info)  # 场地网格绘制器，依赖场地参数进行绘制。
+        self.field_info.changed.connect(self._on_field_settings_changed)    # 场地参数变化时刷新场景显示。
+        self._current_items = []    # 当前显示的点位图元列表，用于快速清除与重建。每次切换节点或工具时会重建。
+        self._previous_items = []   # 上一个节点的点位图元列表，仅在切换节点时保留；切换工具时会立即清除。
+        self._label_items = []      # 当前显示的标签图元列表，用于快速清除与重建。每次切换节点或工具时会重建。
+        self.setup_scene_data()     # 初始化场景数据结构
+        self._draft_tool_name = None    # 当前正在使用的绘图工具名称，None表示无草稿状态；非None表示草稿状态，值为对应工具名称。
+        self._draft_reference_points = []   # 当前绘图草稿的参考点坐标列表
+        self._draft_preview_items = []      # 当前绘图草稿的预览图元列表
+        self._pending_preview_items = []    # 当前未确认阶段的参考线预览图元列表（如曲线/折线工具在输入至少2个点位后的实时预览）
+        self._draft_handle_items = []       # 当前绘图草稿的可拖动参考点图元列表（如曲线/折线工具在输入至少2个点位后的可调整参考点）
         # 曲线模式：'polyline' 或 'curve'，默认为折线(polyline)
         self._curve_mode = 'polyline'
         self._sampling_tools = {"线段", "弧", "曲线/折线", "圆", "多边形", "填充四边形"}
@@ -70,20 +74,31 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
             tool_name: dict(self._sampling_defaults)
             for tool_name in self._sampling_tools
         }
-        self._updating_draft_handles = False
-        self._selection_rect_item = None
-        self._selection_start_scene = None
-        self._selection_current_scene = None
-        self._point_items_by_id = {}
-        self._label_items_by_id = {}
+        self._updating_draft_handles = False    # 标记当前是否正在批量更新草稿参考点手柄位置，以避免在更新过程中触发不必要的回调与重绘。
+        self._selection_rect_item = None        # 框选工具的选区矩形图元，随鼠标拖动动态调整位置与大小；仅在框选工具激活时存在，切换工具时会被清除。
+        self._selection_start_position = None      # 框选工具的起始场景坐标，记录鼠标按下时的位置，用于计算选区矩形；仅在框选工具激活时有效，切换工具时会被清除。
+        self._selection_current_position = None    # 框选工具的当前场景坐标，记录鼠标拖动时的位置，用于计算选区矩形；仅在框选工具激活时有效，切换工具时会被清除。
+        self._selection_link_items = []     # 选中点位之间的连线图元，仅连接每个组内被选中的点。
+        self._point_items_by_id = {}    # 当前显示的点位图元字典，key为点位ID，value为对应的 PerformerPointItem 图元；用于快速定位与更新特定点位的图元。
+        self._label_items_by_id = {}    # 当前显示的标签图元字典，key为点位ID，value为对应的 QGraphicsSimpleTextItem 图元；用于快速定位与更新特定点位的标签图元。
 
         # 固定为启动时的初始场景大小，避免新增图元导致 sceneRect 自动变化。
-        initial_field_rect = self.field_settings.field_rect
-        # initial_scale = float(self.field_settings.scale)
+        initial_field_rect = self.field_info.field_rect
+        # initial_scale = float(self.field_info.scale)
         # width_px = float(initial_field_rect.width()) * initial_scale
         # height_px = float(initial_field_rect.height()) * initial_scale
         # margin = max(width_px, height_px) * 0.5 + 200.0
         self.setSceneRect(initial_field_rect)
+        
+        # 上一点位的绘制参数（用于预览上一节点的点位）
+        self.pre_point_radius = 2.0
+        self.pre_point_color = QColor("#444444")  # alpha 值控制透明度（0-255，值越大越不透明）
+        
+        # 点位label绘制参数
+        self.label_color = QColor("#000000")
+        self.label_size = 12    # label 字体大小
+        self.label_offset = 15  # label 相对于点位的距离
+        self.label_pos = 6     # label 相对于点位的角度 以15°为单位，上限为24（360°），默认12（120° 下侧）
 
     def _on_field_settings_changed(self):
         """场地配置变化后刷新场景绘制。"""
@@ -97,26 +112,48 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         self.grid_renderer.draw_field_labels(painter)
 
     def _clear_overlay_items(self):
-        for item in self._current_items + self._previous_items + self._label_items:
+        """清除当前所有点位与标签图元，准备重建。"""
+        for item in self._current_items + self._previous_items + self._label_items + self._selection_link_items:
             self.removeItem(item)
         self._current_items = []
         self._previous_items = []
         self._label_items = []
+        self._selection_link_items = []
         self._point_items_by_id = {}
         self._label_items_by_id = {}
 
+    def set_active_tool(self, tool_name: str):
+        """切换当前工具并清空临时草稿。"""
+        self.active_tool = tool_name
+        self._pending_points = []   # 清空草稿点位
+        self._selected_point_ids.clear()    # 清空选中点位
+        self._clear_selection_rect()    # 清除框选工具的选区矩形和相关状态
+        self._clear_draft()             # 清除绘图工具的草稿图形
+        self._render_points_for_active_node()   # 切换工具后刷新显示，确保界面状态与工具一致
+
+    def set_active_node(self, node_index: int):
+        """切换当前时间轴节点并刷新显示。"""
+        self.active_node = max(0, int(node_index))  # 确保节点索引非负
+        self.ensure_node_exists(self.active_node)   # 确保目标节点存在，若不存在则初始化
+        self._pending_points = []   # 清空草稿点位
+        self._selected_point_ids.clear()
+        self._clear_selection_rect()
+        self._clear_draft()
+        self._render_points_for_active_node()
 
     def _clear_selection_rect(self):
+        """清除框选工具的选区矩形和相关状态。"""
         if self._selection_rect_item is not None:
             self.removeItem(self._selection_rect_item)
             self._selection_rect_item = None
-        self._selection_start_scene = None
-        self._selection_current_scene = None
+        self._selection_start_position = None
+        self._selection_current_position = None
 
     def _update_selection_rect_item(self):
-        if self._selection_start_scene is None or self._selection_current_scene is None:
+        """更新框选工具的选区矩形图元位置与大小。"""
+        if self._selection_start_position is None or self._selection_current_position is None:
             return
-        rect = QRectF(self._selection_start_scene, self._selection_current_scene).normalized()
+        rect = QRectF(self._selection_start_position, self._selection_current_position).normalized()
         if self._selection_rect_item is None:
             self._selection_rect_item = QGraphicsRectItem(rect)
             self._selection_rect_item.setPen(QPen(QColor("#d35400"), 1.2, Qt.PenStyle.DashLine))
@@ -126,35 +163,114 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         else:
             self._selection_rect_item.setRect(rect)
 
-    def _select_points_in_scene_rect(self, scene_rect: QRectF):
+    def _select_points_in_scene_rect(self, scene_rect: QRectF, tool_name: str):
+        """根据给定的场景矩形框选点位，更新选中状态并刷新显示。"""
         if scene_rect.width() <= 1e-6 and scene_rect.height() <= 1e-6:
             return
         selected_ids = set()
+        select_groups = set()
         for point in self.node_points.get(self.active_node, []):
+            point_id = int(point['id'])
+            if point_id in selected_ids:
+                continue
             pos = self._field_to_scene(point["x"], point["y"])
             if scene_rect.contains(pos):
-                selected_ids.add(int(point["id"]))
+                selected_ids.add(point_id)
+                point_group = point.get("group_id")
+                if point_group is not None:
+                    select_groups.add(int(point_group))
+
+        if tool_name == '选择':
+            for group_id in select_groups:
+                group_info = self.group_to_point[group_id]
+                for group_point_id in group_info.get("point_ids", []):
+                    selected_ids.add(int(group_point_id))
+
         self._selected_point_ids = selected_ids
         self._refresh_point_selection_visuals()
 
     def _refresh_point_selection_visuals(self):
+        """刷新当前点位图元的选中状态视觉效果，并发出选中点位数量变化信号。"""
         for point_id, item in self._point_items_by_id.items():
             item.set_selected_visual(point_id in self._selected_point_ids)
+        self._refresh_selected_group_links()
         self.selectedPointsChanged.emit(len(self._selected_point_ids))
 
+    def _clear_selection_link_items(self):
+        """清除选中点位之间的连线图元。"""
+        for item in self._selection_link_items:
+            self.removeItem(item)
+        self._selection_link_items = []
+
+    def _refresh_selected_group_links(self):
+        """根据当前选中点位重建组内连线，只连接每组中被选中的点。"""
+        self._clear_selection_link_items()
+        if not self._selected_point_ids:
+            return
+
+        # 连接同一组内被选中的点位，使用不透明绿色线条。
+        pen = QPen(QColor("#f39c12"), 3, Qt.PenStyle.SolidLine)
+        pen.setCosmetic(True)
+
+        for group_info in self.group_to_point:
+            point_ids = [int(point_id) for point_id in group_info.get("point_ids", [])]
+            selected_in_group = [point_id for point_id in point_ids if point_id in self._selected_point_ids]
+            if len(selected_in_group) < 2:
+                continue
+
+            previous_point_id = selected_in_group[0]
+            for current_point_id in selected_in_group[1:]:
+                previous_item = self._point_items_by_id.get(previous_point_id)
+                current_item = self._point_items_by_id.get(current_point_id)
+                if previous_item is not None and current_item is not None:
+                    previous_pos = previous_item.scenePos()
+                    current_pos = current_item.scenePos()
+                    line_item = QGraphicsLineItem(
+                        previous_pos.x(),
+                        previous_pos.y(),
+                        current_pos.x(),
+                        current_pos.y(),
+                    )
+                    line_item.setPen(pen)
+                    line_item.setZValue(180)
+                    self.addItem(line_item)
+                    self._selection_link_items.append(line_item)
+                previous_point_id = current_point_id
+
     def _find_point_by_id(self, point_id: int) -> dict | None:
+        """根据点位ID查找当前节点中的点位数据字典"""
         for point in self.node_points.get(self.active_node, []):
             if int(point.get("id", -1)) == int(point_id):
                 return point
         return None
 
+    def _group_point_ids_for_point_id(self, point_id: int) -> list[int]:
+        """获取指定点位所属组的全部点位 ID；若点位未归组则返回空列表。"""
+        point = self._find_point_by_id(point_id)
+        if point is None:
+            return []
+
+        group_value = point.get("group_id")
+        if group_value is None:
+            return []
+
+        group_id = int(group_value)
+        if group_id < 0 or group_id >= len(self.group_to_point):
+            return []
+
+        group_info = self.group_to_point[group_id]
+        return [int(group_point_id) for group_point_id in group_info.get("point_ids", [])]
+
     def _can_drag_performer_point(self) -> bool:
-        # 查看功能允许在任意拍位浏览；但拖拽写回仅允许发生在“当前节点拍位”上。
-        # 这样可避免在中间插值预览拍位误改真实节点点位。
-        return self.active_tool == "框选" and self._is_current_beat_editable()
+        """
+        查看功能允许在任意拍位浏览
+            但拖拽写回仅允许发生在“当前节点拍位”上。
+            可避免在中间插值预览拍位误改真实节点点位。
+        """
+        return self.active_tool in {"框选", '选择'} and self._is_current_beat_editable()
 
     def _on_performer_point_moved(self, point_id: int, scene_pos: QPointF) -> QPointF:
-        # 预览拍位下禁止写回真实数据，只返回当前位置。
+        """预览拍位下禁止写回真实数据，只返回当前位置。"""
         if not self._is_current_beat_editable():
             return scene_pos
 
@@ -176,18 +292,28 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         label = self._label_items_by_id.get(int(point_id))
         if label is not None:
             pos = self._field_to_scene(x, y)
-            label.setPos(pos.x() + 6, pos.y() - 14)
+            # 使用与创建时相同的参数计算偏移（角度以15°为单位）
+            angle_deg = (int(self.label_pos) % 24) * 15
+            angle_rad = math.radians(angle_deg)
+            dx = math.cos(angle_rad) * float(self.label_offset)
+            dy = math.sin(angle_rad) * float(self.label_offset)
+            br = label.boundingRect()
+            label.setPos(pos.x() + dx - br.width() / 2.0, pos.y() + dy - br.height() / 2.0)
+
+        if int(point_id) in self._selected_point_ids:
+            self._refresh_selected_group_links()
 
         return self._field_to_scene(x, y)
 
-    def _on_performer_point_released(self, point_id: int):
-        # _ = point_id  # 仅为占位消警告，当前无实际用途。
+    def _on_performer_point_released(self, point_id: int | None = None):
+        """预览拍位下禁止写回真实数据，直接返回；当前节点拍位上则标记节点为手动编辑过并触发后续自动调整。"""
         if not self._is_current_beat_editable():
             return
         self._mark_node_manual(self.active_node)
         self._recalculate_following_auto_nodes(self.active_node)
 
     def _clear_draft(self):
+        """清空绘制草稿"""
         had_draft = bool(self._draft_tool_name or self._draft_reference_points)
         self._draft_tool_name = None
         self._draft_reference_points = []
@@ -197,12 +323,14 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
             self.draftFinished.emit()
 
     def _clear_draft_items(self):
+        """清除当前草稿相关的所有图元"""
         for item in self._draft_preview_items + self._draft_handle_items:
             self.removeItem(item)
         self._draft_preview_items = []
         self._draft_handle_items = []
 
     def _clear_pending_preview_items(self):
+        """清除待确认参考点的预览图元"""
         for item in self._pending_preview_items:
             self.removeItem(item)
         self._pending_preview_items = []
@@ -294,6 +422,7 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         return item
 
     def _draw_pending_reference_preview(self):
+        """绘制未确认阶段的参考线预览（当前用于曲线/折线工具）。"""
         self._clear_pending_preview_items()
         item = self._pending_reference_graphic_item()
         if item is not None:
@@ -313,10 +442,8 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
                 self.addItem(dot)
                 self._pending_preview_items.append(dot)
 
-    # def _two_step_spacing(self) -> float:
-    #     return max(1e-9, float(self.field_settings.grid_step) * 2.0)
-
     def _dedupe_points(self, points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        """根据坐标值去重，避免重复点位导致的图元重叠与性能问题。"""
         unique = []
         seen = set()
         for x, y in points:
@@ -327,26 +454,10 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
             unique.append((x, y))
         return unique
 
-    @staticmethod
-    def _distance(p1: tuple[float, float], p2: tuple[float, float]) -> float:
-        return math.hypot(p2[0] - p1[0], p2[1] - p1[1])
-
-    def _sample_line_points(self, p1: tuple[float, float], p2: tuple[float, float], spacing: float) -> list[tuple[float, float]]:
-        dist = self._distance(p1, p2)
-        if dist <= 1e-9:
-            return [p1]
-        steps = int(dist // spacing)
-        ux = (p2[0] - p1[0]) / dist
-        uy = (p2[1] - p1[1]) / dist
-        points = []
-        for index in range(steps + 1):
-            distance = spacing * index
-            points.append((p1[0] + ux * distance, p1[1] + uy * distance))
-        return points
-
     def _sample_line_points_with_count(self, p1: tuple[float, float], p2: tuple[float, float], spacing: float, point_count: int) -> list[tuple[float, float]]:
+        """在线段上以固定间距和点位数量采样点位，包含起点但不包含终点；当点位数量过少时优先保证间距。"""
         count = max(1, int(point_count))
-        dist = self._distance(p1, p2)
+        dist = _distance(p1, p2)
         if dist <= 1e-9:
             return [p1]
         ux = (p2[0] - p1[0]) / dist
@@ -357,6 +468,7 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         ) for index in range(count)]
 
     def _sample_polyline_points(self, points: list[tuple[float, float]], spacing: float) -> list[tuple[float, float]]:
+        """在线段上以固定间距采样点位，包含起点但不包含终点。"""
         if len(points) < 2:
             return points[:]
         sampled = [points[0]]
@@ -365,7 +477,7 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         for idx in range(len(points) - 1):
             start = points[idx]
             end = points[idx + 1]
-            segment_length = self._distance(start, end)
+            segment_length = _distance(start, end)
             if segment_length <= 1e-9:
                 continue
             while next_target <= traveled + segment_length + 1e-9:
@@ -380,6 +492,7 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         return sampled
 
     def _sample_polyline_points_with_count(self, points: list[tuple[float, float]], point_count: int) -> list[tuple[float, float]]:
+        """在线段上以固定间距和点位数量采样点位，包含起点但不包含终点；当点位数量过少时优先保证间距。"""
         if len(points) < 2:
             return points[:]
         count = max(1, int(point_count))
@@ -389,7 +502,7 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         segment_lengths = []
         total_length = 0.0
         for idx in range(len(points) - 1):
-            seg_len = self._distance(points[idx], points[idx + 1])
+            seg_len = _distance(points[idx], points[idx + 1])
             segment_lengths.append(seg_len)
             total_length += seg_len
         if total_length <= 1e-9:
@@ -420,6 +533,7 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         return sampled[:count]
 
     def _sample_polyline_points_with_count_and_spacing(self, points: list[tuple[float, float]], point_count: int, spacing: float) -> list[tuple[float, float]]:
+        """在线段上以固定间距和点位数量采样点位，包含起点但不包含终点；当点位数量过少时优先保证间距；当点位数量过多时优先保证数量。"""
         if len(points) < 2:
             return points[:]
 
@@ -430,7 +544,7 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         segment_lengths = []
         total_length = 0.0
         for idx in range(len(points) - 1):
-            seg_len = self._distance(points[idx], points[idx + 1])
+            seg_len = _distance(points[idx], points[idx + 1])
             segment_lengths.append(seg_len)
             total_length += seg_len
 
@@ -482,34 +596,15 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
 
     def _sample_curve_points(self, points: list[tuple[float, float]], spacing: float) -> list[tuple[float, float]]:
         """基于 Catmull-Rom 样条生成平滑曲线并按 spacing 重新等距采样（返回 field 坐标点）。"""
-        if len(points) < 2:
-            return points[:]
-
-        dense = []
-        n = len(points)
-        for i in range(n - 1):
-            p0 = points[i - 1] if i - 1 >= 0 else points[i]
-            p1 = points[i]
-            p2 = points[i + 1]
-            p3 = points[i + 2] if i + 2 < n else points[i + 1]
-
-            seg_len = max(1e-9, self._distance(p1, p2))
-            # 根据段长度和采样间隔决定密集采样步数
-            steps = max(6, int(seg_len / max(1e-9, spacing * 0.25)))
-            for s in range(steps):
-                t = s / steps
-                t2 = t * t
-                t3 = t2 * t
-                x = 0.5 * ((2 * p1[0]) + (-p0[0] + p2[0]) * t + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3)
-                y = 0.5 * ((2 * p1[1]) + (-p0[1] + p2[1]) * t + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)
-                dense.append((x, y))
-        dense.append(points[-1])
+        dense = self._build_dense_curve_points(points, spacing)
+        if len(dense) < 2:
+            return dense[:]
 
         # 将密集曲线点按 spacing 等距重采样（复用折线采样实现）
         return self._sample_polyline_points(dense, spacing)
 
-    def _sample_curve_points_with_count(self, points: list[tuple[float, float]], point_count: int) -> list[tuple[float, float]]:
-        """基于 Catmull-Rom 样条生成平滑曲线，并按目标点数重新采样。"""
+    def _build_dense_curve_points(self, points: list[tuple[float, float]], spacing_hint: float) -> list[tuple[float, float]]:
+        """生成 Catmull-Rom 曲线的密集折线点，为不同采样策略提供统一输入。"""
         if len(points) < 2:
             return points[:]
 
@@ -521,8 +616,9 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
             p2 = points[i + 1]
             p3 = points[i + 2] if i + 2 < n else points[i + 1]
 
-            seg_len = max(1e-9, self._distance(p1, p2))
-            steps = max(6, int(seg_len / max(1e-9, float(self.field_settings.grid_step) * 0.25)))
+            seg_len = max(1e-9, _distance(p1, p2))
+            # 根据段长度和采样间隔决定密集采样步数
+            steps = max(6, int(seg_len / max(1e-9, spacing_hint * 0.25)))
             for s in range(steps):
                 t = s / steps
                 t2 = t * t
@@ -531,6 +627,13 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
                 y = 0.5 * ((2 * p1[1]) + (-p0[1] + p2[1]) * t + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)
                 dense.append((x, y))
         dense.append(points[-1])
+        return dense
+
+    def _sample_curve_points_with_count(self, points: list[tuple[float, float]], point_count: int) -> list[tuple[float, float]]:
+        """基于 Catmull-Rom 样条生成平滑曲线，并按目标点数重新采样。"""
+        dense = self._build_dense_curve_points(points, float(self.field_info.grid_step))
+        if len(dense) < 2:
+            return dense[:]
 
         return self._sample_polyline_points_with_count(dense, point_count)
 
@@ -548,13 +651,17 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         self.update()
 
     def _sample_circle_points(self, center: tuple[float, float], radius_point: tuple[float, float], spacing: float) -> list[tuple[float, float]]:
+        """圆绘制点位预览"""
         cx, cy, radius = self._circle_from_two_points(center, radius_point)
         if radius <= 1e-9:
             return [center]
         circumference = 2.0 * math.pi * radius
         # 从第二个参考点开始，沿逆时针方向按固定弧长步进生成点位。
         # 若末尾剩余弧长不足 spacing，则不生成接近起点的最后一个点，避免尾段过短。
-        point_count = int(circumference // max(1e-9, spacing))
+        # 原实现（向下取整）：
+        # point_count = int(circumference // max(1e-9, spacing))
+        # 改为四舍五入以与按点数采样的生成规则保持一致性
+        point_count = max(1, int(round(circumference / max(1e-9, spacing))))
         if point_count <= 0:
             return [radius_point]
 
@@ -567,6 +674,7 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         return points
 
     def _sample_circle_points_with_count(self, center: tuple[float, float], radius_point: tuple[float, float], point_count: int) -> list[tuple[float, float]]:
+        """圆绘制点位预览（按点位数量采样）"""
         cx, cy, radius = self._circle_from_two_points(center, radius_point)
         if radius <= 1e-9:
             return [center]
@@ -582,6 +690,7 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         return points
 
     def _sample_arc_points(self, start: tuple[float, float], through: tuple[float, float], end: tuple[float, float], spacing: float) -> list[tuple[float, float]]:
+        """弧绘制点位预览，基于三点确定的圆弧生成点位。"""
         center = self._circumcenter(start, through, end)
         if center is None:
             # 退化为折线时，按整段折线连续等距采样（只保证起点落点）。
@@ -634,12 +743,13 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         return points
 
     def _sample_arc_points_with_count(self, start: tuple[float, float], through: tuple[float, float], end: tuple[float, float], point_count: int) -> list[tuple[float, float]]:
+        """弧绘制点位预览，基于三点确定的圆弧生成点位（按点位数量采样）。"""
         center = self._circumcenter(start, through, end)
         if center is None:
             count = max(1, int(point_count))
             if count == 1:
                 return [start]
-            total_length = self._distance(start, through) + self._distance(through, end)
+            total_length = _distance(start, through) + _distance(through, end)
             spacing = max(1e-9, total_length / (count - 1))
             return self._sample_polyline_points([start, through, end], spacing)
 
@@ -757,82 +867,6 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
 
         return points
 
-    def _sample_rectangle_fill_points(self, a: tuple[float, float], b: tuple[float, float], c: tuple[float, float], spacing: float) -> list[tuple[float, float]]:
-        ax, ay = a
-        bx, by = b
-        cx, cy = c
-        base_dx, base_dy = bx - ax, by - ay
-        shift_dx, shift_dy = cx - ax, cy - ay
-        base_len = math.hypot(base_dx, base_dy)
-        shift_len = math.hypot(shift_dx, shift_dy)
-        if base_len <= 1e-9 or shift_len <= 1e-9:
-            return [a, b, c]
-
-        # 此处的间距用于基线方向；若提供则缩进部分可以使用不同的间距。
-        base_step_count = int(base_len // spacing)
-        shift_step_count = int(shift_len // spacing)
-
-        base_unit_x = base_dx / base_len
-        base_unit_y = base_dy / base_len
-        shift_unit_x = shift_dx / shift_len
-        shift_unit_y = shift_dy / shift_len
-
-        base_line = [(
-            ax + base_unit_x * spacing * index,
-            ay + base_unit_y * spacing * index,
-        ) for index in range(base_step_count + 1)]
-
-        points = []
-        for shift_index in range(shift_step_count + 1):
-            shift_distance = spacing * shift_index
-            if shift_distance > shift_len + 1e-9:
-                break
-            row = [(
-                px + shift_unit_x * shift_distance,
-                py + shift_unit_y * shift_distance,
-            ) for px, py in base_line]
-            points.extend(row)
-
-        return points or [a, b, c]
-
-    # def _sample_rectangle_fill_points_two_spacing(self, a: tuple[float, float], b: tuple[float, float], c: tuple[float, float], spacing_base: float, spacing_shift: float) -> list[tuple[float, float]]:
-    #     """按两个方向不同间隔采样填充四边形点位（field 单位）。"""
-    #     ax, ay = a
-    #     bx, by = b
-    #     cx, cy = c
-    #     base_dx, base_dy = bx - ax, by - ay
-    #     shift_dx, shift_dy = cx - ax, cy - ay
-    #     base_len = math.hypot(base_dx, base_dy)
-    #     shift_len = math.hypot(shift_dx, shift_dy)
-    #     if base_len <= 1e-9 or shift_len <= 1e-9:
-    #         return [a, b, c]
-
-    #     base_unit_x = base_dx / base_len
-    #     base_unit_y = base_dy / base_len
-    #     shift_unit_x = shift_dx / shift_len
-    #     shift_unit_y = shift_dy / shift_len
-
-    #     base_step_count = int(base_len // spacing_base)
-    #     shift_step_count = int(shift_len // spacing_shift)
-
-    #     base_line = [(
-    #         ax + base_unit_x * spacing_base * index,
-    #         ay + base_unit_y * spacing_base * index,
-    #     ) for index in range(base_step_count + 1)]
-
-    #     points = []
-    #     for shift_index in range(shift_step_count + 1):
-    #         shift_distance = spacing_shift * shift_index
-    #         if shift_distance > shift_len + 1e-9:
-    #             break
-    #         row = [(
-    #             px + shift_unit_x * shift_distance,
-    #             py + shift_unit_y * shift_distance,
-    #         ) for px, py in base_line]
-    #         points.extend(row)
-
-    #     return points or [a, b, c]
-
     def _sample_rectangle_fill_points_with_counts(self, a: tuple[float, float], b: tuple[float, float], c: tuple[float, float], spacing_base: float, spacing_shift: float, base_point_count: int, shift_point_count: int) -> list[tuple[float, float]]:
         """按两个方向的点位个数与间隔采样填充四边形点位。"""
         ax, ay = a
@@ -869,13 +903,66 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         return points or [a, b, c]
 
     def _sample_polygon_perimeter_points(self, center: tuple[float, float], radius_point: tuple[float, float], spacing: float) -> list[tuple[float, float]]:
+        """多边形绘制点位预览"""
         vertices = self._make_polygon_points(center, radius_point, self._polygon_side_count("多边形"))
         if not vertices:
             return []
-        points = self._sample_polyline_points(vertices + [vertices[0]], spacing)
+        points = self._sample_closed_polyline_points_with_spacing(vertices, spacing)
         return points
 
+    def _sample_closed_polyline_points_with_spacing(self, points: list[tuple[float, float]], spacing: float) -> list[tuple[float, float]]:
+        """按固定间距采样闭合折线：包含起点，不包含回到起点的闭合末点。"""
+        if len(points) < 2:
+            return points[:]
+
+        spacing = max(1e-9, float(spacing))
+        loop = points + [points[0]]
+        segment_lengths = []
+        total_length = 0.0
+        for idx in range(len(loop) - 1):
+            seg_len = _distance(loop[idx], loop[idx + 1])
+            segment_lengths.append(seg_len)
+            total_length += seg_len
+
+        if total_length <= 1e-9:
+            return [points[0]]
+
+        # 原实现（向下取整）会在间距换算成点数时产生末尾差异：
+        # count = int(total_length // spacing)
+        # 改为四舍五入以与按点数采样保持一致
+        count = max(1, int(round(total_length / spacing)))
+        if count <= 0:
+            return [points[0]]
+
+        sampled = [loop[0]]
+        traveled = 0.0
+        segment_index = 0
+        for index in range(1, count):
+            target = spacing * index
+            while segment_index < len(segment_lengths) and target > traveled + segment_lengths[segment_index] + 1e-9:
+                traveled += segment_lengths[segment_index]
+                segment_index += 1
+
+            if segment_index >= len(segment_lengths):
+                break
+
+            seg_len = segment_lengths[segment_index]
+            if seg_len <= 1e-9:
+                continue
+
+            start = loop[segment_index]
+            end = loop[segment_index + 1]
+            distance_on_segment = target - traveled
+            t = max(0.0, min(1.0, distance_on_segment / seg_len))
+            sampled.append((
+                start[0] + (end[0] - start[0]) * t,
+                start[1] + (end[1] - start[1]) * t,
+            ))
+
+        return sampled
+
     def _sample_closed_polyline_points_with_count(self, points: list[tuple[float, float]], point_count: int) -> list[tuple[float, float]]:
+        """按点位个数采样闭合折线点位"""
         if len(points) < 2:
             return points[:]
         count = max(1, int(point_count))
@@ -886,7 +973,7 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         total_length = 0.0
         segment_lengths = []
         for idx in range(len(loop) - 1):
-            seg_len = self._distance(loop[idx], loop[idx + 1])
+            seg_len = _distance(loop[idx], loop[idx + 1])
             segment_lengths.append(seg_len)
             total_length += seg_len
         if total_length <= 1e-9:
@@ -914,77 +1001,91 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         return sampled[:count]
 
     def _sample_polygon_perimeter_points_with_count(self, center: tuple[float, float], radius_point: tuple[float, float], point_count: int) -> list[tuple[float, float]]:
+        """按点位个数采样多边形周长点位"""
         vertices = self._make_polygon_points(center, radius_point, self._polygon_side_count("多边形"))
         if not vertices:
             return []
         return self._sample_closed_polyline_points_with_count(vertices, point_count)
 
     def _generate_performer_points(self, tool_name: str, refs: list[tuple[float, float]]) -> list[tuple[float, float]]:
-        spacing = max(1e-9, float(self.field_settings.grid_step) * 2.0)
+        """根据当前草稿工具和参考点生成最终的执行点位列表（field 坐标）。"""
+        spacing = max(1e-9, float(self.field_info.grid_step) * 2.0)
         if tool_name == "点" and refs:
             return self._dedupe_points(refs)
         if tool_name in self._sampling_tools and len(refs) >= 2:
             state = self._sampling_state(tool_name)
-            line_spacing = max(1e-9, float(self.field_settings.grid_step) * float(state["spacing_steps"]))
+            line_spacing = max(1e-9, float(self.field_info.grid_step) * float(state["spacing_steps"]))
             point_count = max(1, int(state["point_count"]))
 
             if tool_name == "线段":
-                return self._dedupe_points(self._sample_line_points_with_count(refs[0], refs[1], line_spacing, point_count))
-            if tool_name == "弧":
+                # 统一线段为折线/多段线的采样逻辑：将两点视为一段折线，复用折线/曲线采样函数
+                is_curve = False
+                # 与曲线/折线分支保持一致的优先级：手动间距+手动点数 -> 手动点数 -> 手动间距 -> 自动间距
+                if state.get("spacing_manual", False) and state.get("point_count_manual", False):
+                    return self._dedupe_points(self._sample_polyline_points_with_count_and_spacing(refs, point_count, line_spacing))
+                if state.get("spacing_manual", False):
+                    return self._dedupe_points(self._sample_polyline_points(refs, line_spacing))
+                if state.get("point_count_manual", False):
+                    return self._dedupe_points(self._sample_polyline_points_with_count(refs, point_count))
+                return self._dedupe_points(self._sample_polyline_points(refs, line_spacing))
+            elif tool_name == "弧":
                 if state.get("point_count_manual", False) and state.get("spacing_manual", False):
                     return self._dedupe_points(self._sample_arc_points_with_count_and_spacing(refs[0], refs[2], refs[1], point_count, line_spacing))
                 if state.get("point_count_manual", False):
                     return self._dedupe_points(self._sample_arc_points_with_count(refs[0], refs[2], refs[1], point_count))
+                # return self._dedupe_points(self._sample_arc_points(refs[0], refs[2], refs[1], spacing))
                 return self._dedupe_points(self._sample_arc_points(refs[0], refs[2], refs[1], line_spacing))
-            if tool_name == "圆":
+            elif tool_name == "圆":
                 if state["point_count_manual"]:
                     return self._dedupe_points(self._sample_circle_points_with_count(refs[0], refs[1], point_count))
                 return self._dedupe_points(self._sample_circle_points(refs[0], refs[1], line_spacing))
-            if tool_name == "多边形":
+            elif tool_name == "多边形":
                 if state["point_count_manual"]:
                     return self._dedupe_points(self._sample_polygon_perimeter_points_with_count(refs[0], refs[1], point_count))
                 return self._dedupe_points(self._sample_polygon_perimeter_points(refs[0], refs[1], line_spacing))
-        if tool_name == "弧" and len(refs) >= 3:
-            # 弧工具参考点语义：端点1、端点2、弧上一点。
-            return self._dedupe_points(self._sample_arc_points(refs[0], refs[2], refs[1], spacing))
-        if tool_name == "曲线/折线" and len(refs) >= 2:
-            is_curve = getattr(self, '_curve_mode', 'polyline') == 'curve'
-            if state["spacing_manual"] and state["point_count_manual"]:
-                if is_curve:
-                    dense_curve = self._sample_curve_points(refs, line_spacing)
-                    return self._dedupe_points(self._sample_polyline_points_with_count_and_spacing(dense_curve, point_count, line_spacing))
-                return self._dedupe_points(self._sample_polyline_points_with_count_and_spacing(refs, point_count, line_spacing))
-            if state["spacing_manual"]:
+        # if tool_name == "弧" and len(refs) >= 3:
+        #     # 弧工具参考点语义：端点1、端点2、弧上一点。
+        #     return self._dedupe_points(self._sample_arc_points(refs[0], refs[2], refs[1], spacing))
+            elif tool_name == "曲线/折线" and len(refs) >= 2:
+                is_curve = getattr(self, '_curve_mode', 'polyline') == 'curve'
+                if state["spacing_manual"] and state["point_count_manual"]:
+                    if is_curve:
+                        # dense_curve = self._sample_curve_points(refs, line_spacing)
+                        dense_curve = self._build_dense_curve_points(refs, line_spacing)
+                        return self._dedupe_points(self._sample_polyline_points_with_count_and_spacing(dense_curve, point_count, line_spacing))
+                    return self._dedupe_points(self._sample_polyline_points_with_count_and_spacing(refs, point_count, line_spacing))
+                if state["spacing_manual"]:
+                    if is_curve:
+                        return self._dedupe_points(self._sample_curve_points(refs, line_spacing))
+                    return self._dedupe_points(self._sample_polyline_points(refs, line_spacing))
+                if state["point_count_manual"]:
+                    if is_curve:
+                        return self._dedupe_points(self._sample_curve_points_with_count(refs, point_count))
+                    return self._dedupe_points(self._sample_polyline_points_with_count(refs, point_count))
                 if is_curve:
                     return self._dedupe_points(self._sample_curve_points(refs, line_spacing))
                 return self._dedupe_points(self._sample_polyline_points(refs, line_spacing))
-            if state["point_count_manual"]:
-                if is_curve:
-                    return self._dedupe_points(self._sample_curve_points_with_count(refs, point_count))
-                return self._dedupe_points(self._sample_polyline_points_with_count(refs, point_count))
-            if is_curve:
-                return self._dedupe_points(self._sample_curve_points(refs, line_spacing))
-            return self._dedupe_points(self._sample_polyline_points(refs, line_spacing))
-        if tool_name == "填充四边形" and len(refs) >= 3:
-            state = self._sampling_state(tool_name)
-            base_spacing = max(1e-9, float(self.field_settings.grid_step) * float(state.get("spacing_steps", 2.0)))
-            shift_spacing = max(1e-9, float(self.field_settings.grid_step) * float(state.get("spacing_steps_shift", state.get("spacing_steps", 2.0))))
-            base_point_count = int(state.get("point_count", 1))
-            shift_point_count = int(state.get("point_count_shift", 1))
-            return self._dedupe_points(
-                self._sample_rectangle_fill_points_with_counts(
-                    refs[0],
-                    refs[1],
-                    refs[2],
-                    base_spacing,
-                    shift_spacing,
-                    base_point_count,
-                    shift_point_count,
+            elif tool_name == "填充四边形" and len(refs) >= 3:
+                state = self._sampling_state(tool_name)
+                base_spacing = max(1e-9, float(self.field_info.grid_step) * float(state.get("spacing_steps", 2.0)))
+                shift_spacing = max(1e-9, float(self.field_info.grid_step) * float(state.get("spacing_steps_shift", state.get("spacing_steps", 2.0))))
+                base_point_count = int(state.get("point_count", 1))
+                shift_point_count = int(state.get("point_count_shift", 1))
+                return self._dedupe_points(
+                    self._sample_rectangle_fill_points_with_counts(
+                        refs[0],
+                        refs[1],
+                        refs[2],
+                        base_spacing,
+                        shift_spacing,
+                        base_point_count,
+                        shift_point_count,
+                    )
                 )
-            )
         return []
 
     def _reference_graphic_item(self):
+        """根据当前草稿工具和参考点生成草稿参考图形的 QGraphicsItem（field 坐标转换为 scene 坐标）。仅用于草稿预览显示，不参与最终点位计算。"""
         if not self._draft_tool_name or self._draft_tool_name == "点" or not self._draft_reference_points:
             return None
 
@@ -1075,7 +1176,7 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
 
         if self._draft_tool_name == "圆" and len(refs) >= 2:
             center = self._field_to_scene(*refs[0])
-            radius = self._distance(refs[0], refs[1]) * float(self.field_settings.scale)
+            radius = _distance(refs[0], refs[1]) * float(self.field_info.scale)
             item = QGraphicsEllipseItem(center.x() - radius, center.y() - radius, radius * 2, radius * 2)
             item.setPen(pen)
             item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
@@ -1083,7 +1184,7 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
 
         if self._draft_tool_name == "多边形" and len(refs) >= 2:
             center = self._field_to_scene(*refs[0])
-            radius = self._distance(refs[0], refs[1]) * float(self.field_settings.scale)
+            radius = _distance(refs[0], refs[1]) * float(self.field_info.scale)
             item = QGraphicsEllipseItem(center.x() - radius, center.y() - radius, radius * 2, radius * 2)
             item.setPen(pen)
             item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
@@ -1098,12 +1199,13 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         self._clear_pending_preview_items()
         if tool_name in self._sampling_tools:
             self._sync_sampling_auto_values_from_draft(tool_name)
-        if tool_name == "线段":
-            self._sync_line_segment_auto_values_from_draft()
+        # if tool_name == "线段":
+        #     self._sync_line_segment_auto_values_from_draft()
         self._render_points_for_active_node()
         self.draftStarted.emit(tool_name)
 
     def _on_reference_handle_moved(self, index: int, scene_pos: QPointF) -> QPointF:
+        """草稿参考点被移动时的回调，用于更新参考点位置和草稿预览图形。返回更新后的 scene_pos（可能被吸附）。"""
         if self._updating_draft_handles:
             return scene_pos
         if index < 0 or index >= len(self._draft_reference_points):
@@ -1112,8 +1214,8 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         x, y = self._snap_field_point(x, y)
         snapped_scene_pos = self._field_to_scene(x, y)
         self._draft_reference_points[index] = (x, y)
-        if self._draft_tool_name == "线段":
-            self._sync_line_segment_auto_values_from_draft()
+        # if self._draft_tool_name == "线段":
+        #     self._sync_line_segment_auto_values_from_draft()
         if self._draft_tool_name in self._sampling_tools:
             self._sync_sampling_auto_values_from_draft(self._draft_tool_name)
         QTimer.singleShot(0, self._refresh_reference_overlay_for_active_tool)
@@ -1125,7 +1227,7 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         refs = list(self._draft_reference_points)
         had_draft = bool(self._draft_tool_name or self._draft_reference_points)
 
-        # 曲线/折线可直接用 pending 参考点确认（无需右键进入 draft）。
+        # 曲线/折线可直接用 pending 参考点确认。
         if (not tool_name or not refs) and self.active_tool == "曲线/折线" and len(self._pending_points) >= 2:
             tool_name = "曲线/折线"
             refs = list(self._pending_points)
@@ -1137,13 +1239,11 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
                 self.draftFinished.emit()
             self._render_points_for_active_node()
             return
-
-        generated = self._generate_performer_points(tool_name, refs)
-        current_points = self.node_points.setdefault(self.active_node, [])
+        
+        generated = self._generate_performer_points(tool_name, refs)    # 生成最终点位列表（field 坐标）
+        current_points = self.node_points.setdefault(self.active_node, [])  # 当前节点的点位列表
         new_point_ids = []
-        group_id = None
-        if tool_name == "点":
-            group_id = self._next_group_id
+        group_id = len(self.group_to_point)
         for x, y in generated:
             if self._position_occupied(x, y):
                 continue
@@ -1155,22 +1255,16 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
             self._next_point_id += 1
             new_point_ids.append(point_id)
 
-        if group_id is not None and new_point_ids:
-            self.point_groups.append({
-                "id": group_id,
-                "node": self.active_node,
-                "tool": tool_name,
-                "point_ids": new_point_ids,
-                "leader_id": new_point_ids[0],
+        if new_point_ids:
+            # 添加到分组中
+            self.node_to_group[self.active_node].add(group_id)
+            self.group_to_point.append({
+                "point_ids": new_point_ids, # 组内点位 ID 列表
+                "leader": True,  # leader 点位为正向第一个
             })
-            self._next_group_id += 1
-
-        if tool_name == "曲线/折线":
-            self.reset_sampling_defaults(tool_name)
-        elif tool_name in self._sampling_tools:
-            self.reset_sampling_auto(tool_name)
 
         # 确认后丢弃参考点缓存，下一次绘制重新输入。
+        self.reset_sampling_defaults(tool_name)
         self._pending_points = []
         self._draft_reference_points = []
         self._mark_node_manual(self.active_node)
@@ -1189,31 +1283,32 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         if self.active_tool in self._sampling_tools:
             tools_to_reset.add(self.active_tool)
         for t in tools_to_reset:
-            if t == "曲线/折线":
-                self.reset_sampling_defaults(t)
-            else:
-                self.reset_sampling_auto(t)
+            self.reset_sampling_defaults(t)
         self._pending_points = []
         self._clear_draft()
         self.draftFinished.emit()
         self._render_points_for_active_node()
 
     def _field_to_scene(self, x: float, y: float) -> QPointF:
-        s = self.field_settings
+        """将 field 坐标转换为 scene 坐标用于显示。"""
+        s = self.field_info
         return QPointF(x * s.scale + s.offset.x(), y * s.scale + s.offset.y())
 
     def _scene_to_field(self, scene_pos: QPointF) -> tuple[float, float]:
-        s = self.field_settings
+        """将 scene 坐标转换为 field 坐标用于计算。"""
+        s = self.field_info
         scale = s.scale if abs(s.scale) > 1e-9 else 1.0
         x = (scene_pos.x() - s.offset.x()) / scale
         y = (scene_pos.y() - s.offset.y()) / scale
         return x, y
 
     def _snap_field_point(self, x: float, y: float) -> tuple[float, float]:
-        step = max(1e-9, float(self.field_settings.grid_step))
+        """将 field 坐标吸附到网格点。"""
+        step = max(1e-9, float(self.field_info.grid_step))
         return (round(x / step) * step, round(y / step) * step)
 
     def _sampling_state(self, tool_name: str) -> dict:
+        """获取指定工具的采样状态字典，包含当前的点数与间隔设置以及自动/手动状态。"""
         if tool_name not in self._sampling_tools:
             tool_name = "线段"
         if tool_name not in self._sampling_settings:
@@ -1240,7 +1335,7 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
             state["spacing_manual"] = True
             return
 
-        # 若两项同时为手动（即都不是自动），仅对圆与多边形默认启用点数自动以保证至少有一项自动适配；
+        # 仅对圆与多边形,若两项同时为手动（即都不是自动），默认启用点数自动以保证至少有一项自动适配；
         # 对其他图形保持用户手动设置不变，避免影响现有行为。
         if not point_auto and not spacing_auto:
             tname = tool_name or ""
@@ -1261,6 +1356,7 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         point_auto = not bool(state.get("point_count_shift_manual", False))
         spacing_auto = not bool(state.get("spacing_shift_manual", False))
         if not (point_auto and spacing_auto):
+            # 两项不同时为自动，无需调整
             return
 
         if changed == "point_count_shift_auto":
@@ -1272,100 +1368,69 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         # 兜底：保留“点数自动”，把“间隔”落为手动。
         state["spacing_shift_manual"] = True
 
-    def sampling_settings(self, tool_name: str) -> tuple[int, float]:
-        state = self._sampling_state(tool_name)
-        return int(state["point_count"]), float(state["spacing_steps"])
-
     def sampling_shift_point_count(self, tool_name: str) -> int:
+        """获取填充四边形第二方向（P0-P2）的点位个数设置。"""
         state = self._sampling_state(tool_name)
         return int(state.get("point_count_shift", 1))
 
+    def sampling_settings(self, tool_name: str) -> tuple[int, float]:
+        """获取指定工具的采样点位个数与采样间距。"""
+        state = self._sampling_state(tool_name)
+        return int(state.get("point_count", 1)), float(state.get("spacing_steps", 2.0))
+
     def polygon_side_count(self, tool_name: str) -> int:
+        """获取多边形工具的边数设置。"""
         state = self._sampling_state(tool_name)
         return max(2, int(state.get("polygon_sides", 6)))
 
     def _polygon_side_count(self, tool_name: str) -> int:
+        """获取多边形工具的边数设置的内部方法，保证返回值至少为 2。"""
         return self.polygon_side_count(tool_name)
 
     def is_sampling_point_count_auto(self, tool_name: str) -> bool:
+        """获取指定工具的采样点位个数设置是否为自动。"""
         return not bool(self._sampling_state(tool_name)["point_count_manual"])
 
     def is_sampling_spacing_auto(self, tool_name: str) -> bool:
+        """获取指定工具的采样间距是否为自动。"""
         return not bool(self._sampling_state(tool_name)["spacing_manual"])
 
     def is_sampling_point_count_shift_auto(self, tool_name: str) -> bool:
+        """获取填充四边形第二方向（P0-P2）的点位个数设置是否为自动。"""
         return not bool(self._sampling_state(tool_name).get("point_count_shift_manual", False))
 
-    def line_segment_settings(self) -> tuple[int, float]:
-        return self.sampling_settings("线段")
-
-    def is_line_segment_point_count_auto(self) -> bool:
-        return self.is_sampling_point_count_auto("线段")
-
-    def is_line_segment_spacing_auto(self) -> bool:
-        return self.is_sampling_spacing_auto("线段")
-
-    @property
-    def _line_segment_point_count(self):
-        return int(self._sampling_state("线段")["point_count"])
-
-    @_line_segment_point_count.setter
-    def _line_segment_point_count(self, value):
-        self._sampling_state("线段")["point_count"] = max(1, int(value))
-
-    @property
-    def _line_segment_point_count_manual(self):
-        return bool(self._sampling_state("线段")["point_count_manual"])
-
-    @_line_segment_point_count_manual.setter
-    def _line_segment_point_count_manual(self, value):
-        self._sampling_state("线段")["point_count_manual"] = bool(value)
-
-    @property
-    def _line_segment_spacing_steps(self):
-        return float(self._sampling_state("线段")["spacing_steps"])
-
-    @_line_segment_spacing_steps.setter
-    def _line_segment_spacing_steps(self, value):
-        self._sampling_state("线段")["spacing_steps"] = max(0.001, float(value))
-
-    @property
-    def _line_segment_spacing_manual(self):
-        return bool(self._sampling_state("线段")["spacing_manual"])
-
-    @_line_segment_spacing_manual.setter
-    def _line_segment_spacing_manual(self, value):
-        self._sampling_state("线段")["spacing_manual"] = bool(value)
-
     def _emit_sampling_point_count_changed(self, tool_name: str, point_count: int):
+        """发出采样点位个数改变的信号。"""
         point_count = max(1, int(point_count))
         self.samplingPointCountChanged.emit(tool_name, point_count)
-        if tool_name == "线段":
-            self.lineSegmentPointCountChanged.emit(point_count)
+        # if tool_name == "线段":
+        #     self.lineSegmentPointCountChanged.emit(point_count)
 
     def _emit_sampling_shift_point_count_changed(self, tool_name: str, point_count: int):
+        """发出填充四边形第二方向（P0-P2）采样点位个数改变的信号。"""
         point_count = max(1, int(point_count))
         self.samplingShiftPointCountChanged.emit(tool_name, point_count)
         # no special-case for line segments
 
     def _emit_sampling_spacing_changed(self, tool_name: str, spacing_steps: float):
+        """发出采样间距改变的信号。spacing_steps 是 field 网格单位的倍数。"""
         spacing_steps = max(0.001, float(spacing_steps))
         self.samplingSpacingChanged.emit(tool_name, spacing_steps)
-        if tool_name == "线段":
-            self.lineSegmentSpacingChanged.emit(spacing_steps)
+        # if tool_name == "线段":
+        #     self.lineSegmentSpacingChanged.emit(spacing_steps)
 
     def _sampling_length_for_tool(self, tool_name: str, refs: list[tuple[float, float]]) -> float:
         if tool_name == "线段" and len(refs) >= 2:
-            return self._distance(refs[0], refs[1])
+            return _distance(refs[0], refs[1])
         if tool_name == "曲线/折线" and len(refs) >= 2:
             total = 0.0
             for idx in range(len(refs) - 1):
-                total += self._distance(refs[idx], refs[idx + 1])
+                total += _distance(refs[idx], refs[idx + 1])
             return total
         if tool_name == "弧" and len(refs) >= 3:
             center = self._circumcenter(refs[0], refs[2], refs[1])
             if center is None:
-                return self._distance(refs[0], refs[2]) + self._distance(refs[2], refs[1])
+                return _distance(refs[0], refs[2]) + _distance(refs[2], refs[1])
             cx, cy = center
             radius = math.hypot(refs[0][0] - cx, refs[0][1] - cy)
             if radius <= 1e-9:
@@ -1395,7 +1460,7 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
                 total_delta = -((s - e) % tau)
             return abs(total_delta) * radius
         if tool_name == "圆" and len(refs) >= 2:
-            radius = self._distance(refs[0], refs[1])
+            radius = _distance(refs[0], refs[1])
             return 2.0 * math.pi * radius
         if tool_name == "多边形" and len(refs) >= 2:
             vertices = self._make_polygon_points(refs[0], refs[1], self._polygon_side_count(tool_name))
@@ -1404,30 +1469,34 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
             total = 0.0
             loop = vertices + [vertices[0]]
             for idx in range(len(loop) - 1):
-                total += self._distance(loop[idx], loop[idx + 1])
+                total += _distance(loop[idx], loop[idx + 1])
             return total
         if tool_name == "填充四边形":
             # 基线方向长度（P0-P1）用于自动计算 P0-P1 方向的点位个数/间隔
             if len(refs) >= 2:
-                return self._distance(refs[0], refs[1])
+                return _distance(refs[0], refs[1])
             return 0.0
         return 0.0
 
     def _sampling_auto_point_count_for_refs(self, tool_name: str, refs: list[tuple[float, float]]) -> int:
         state = self._sampling_state(tool_name)
-        spacing = max(1e-9, float(self.field_settings.grid_step) * float(state["spacing_steps"]))
+        spacing = max(1e-9, float(self.field_info.grid_step) * float(state["spacing_steps"]))
         length = self._sampling_length_for_tool(tool_name, refs)
         if length <= 1e-9:
             return max(1, int(state["point_count"]))
-        if tool_name == "圆" or tool_name == "多边形":
-            return max(1, int(length // spacing))
+        # 原实现：对圆/多边形使用向下取整 floor，会导致与按点数采样产生末尾点位差异。
+        # if tool_name in {"圆", "多边形"}:
+        #     return max(1, int(length // spacing))
+        # 改为使用四舍五入，使 spacing->point_count 与 point_count->spacing 更可逆，末尾点位一致性更好。
+        if tool_name in {"圆", "多边形"}:
+            return max(1, int(round(length / spacing)))
         return max(1, int(length // spacing) + 1)
 
     def _sampling_auto_point_count_shift_for_refs(self, tool_name: str, refs: list[tuple[float, float]]) -> int:
         """计算填充四边形第二方向（P0-P2）的自动点数。"""
         # 默认复用基线 spacing 来估算，除非额外逻辑需要。
         state = self._sampling_state(tool_name)
-        spacing_shift = max(1e-9, float(self.field_settings.grid_step) * float(state.get("spacing_steps_shift", state.get("spacing_steps", 2.0))))
+        spacing_shift = max(1e-9, float(self.field_info.grid_step) * float(state.get("spacing_steps_shift", state.get("spacing_steps", 2.0))))
         # P0-P2 长度为 shift_len
         if tool_name != "填充四边形" or len(refs) < 3:
             return max(1, int(state.get("point_count_shift", 1)))
@@ -1453,36 +1522,45 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         point_count = max(1, int(state.get("point_count_shift", 1)))
         if length <= 1e-9 or point_count <= 1:
             return max(0.001, float(state.get("spacing_steps_shift", state.get("spacing_steps", 2.0))))
-        return max(0.001, float(length / (point_count - 1) / float(self.field_settings.grid_step)))
+        return max(0.001, float(length / (point_count - 1) / float(self.field_info.grid_step)))
 
     def _sampling_auto_spacing_steps_for_refs(self, tool_name: str, refs: list[tuple[float, float]]) -> float:
+        """计算指定工具在当前参考点下的自动间距步数（field 网格单位的倍数）。根据工具类型和自动规则不同，可能基于长度与点数的关系进行计算。对于填充四边形，如果行方向（P0-P1）为自动间距，则独立计算列方向（P0-P2）的自动间距。"""
         state = self._sampling_state(tool_name)
         length = self._sampling_length_for_tool(tool_name, refs)
         point_count = max(1, int(state["point_count"]))
         if length <= 1e-9:
             return max(0.001, float(state["spacing_steps"]))
-        if tool_name == "圆" or tool_name == "多边形":
+        if tool_name in {"圆", "多边形"}:
             if point_count <= 0:
                 return max(0.001, float(state["spacing_steps"]))
-            return max(0.001, float(length / point_count / float(self.field_settings.grid_step)))
+            return max(0.001, float(length / point_count / float(self.field_info.grid_step)))
         if point_count <= 1:
             return max(0.001, float(state["spacing_steps"]))
-        return max(0.001, float(length / (point_count - 1) / float(self.field_settings.grid_step)))
+        return max(0.001, float(length / (point_count - 1) / float(self.field_info.grid_step)))
 
     def _sync_sampling_auto_values_from_draft(self, tool_name: str):
+        """根据当前草稿参考点和工具，自动计算并同步采样工具的自动点数与间距设置。仅在对应设置为自动时才会更新。"""
         if tool_name not in self._sampling_tools:
             return
-
+        
+        # 计算自动值时优先使用草稿参考点；
+        #   如果草稿参考点不足以计算（如线段少于2点），
+        #   则退回使用 pending 参考点（如鼠标点击位置等）进行计算，
+        #   以保证在草稿输入过程中自动值能够及时响应用户操作。
         refs = self._draft_reference_points
         if len(refs) < 2 and self.active_tool == tool_name:
             refs = self._pending_points
 
         state = self._sampling_state(tool_name)
+        # 自动适配点位个数
         if not state["point_count_manual"]:
             point_count = self._sampling_auto_point_count_for_refs(tool_name, refs)
             if point_count != state["point_count"]:
                 state["point_count"] = point_count
             self._emit_sampling_point_count_changed(tool_name, point_count)
+        
+        # 自动适配间距
         if not state["spacing_manual"] and state["point_count_manual"]:
             spacing_steps = self._sampling_auto_spacing_steps_for_refs(tool_name, refs)
             if abs(spacing_steps - float(state["spacing_steps"])) > 1e-9:
@@ -1506,22 +1584,19 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
                 self._emit_sampling_shift_spacing_changed(tool_name, spacing_shift)
 
     def _emit_sampling_shift_spacing_changed(self, tool_name: str, spacing_steps: float):
+        """发出填充四边形第二方向（P0-P2）采样间距改变的信号。spacing_steps 是 field 网格单位的倍数。"""
         spacing_steps = max(0.001, float(spacing_steps))
         self.samplingShiftSpacingChanged.emit(tool_name, spacing_steps)
 
-    def _sampling_point_count_manual(self, tool_name: str) -> bool:
-        return bool(self._sampling_state(tool_name)["point_count_manual"])
-
-    def _sampling_spacing_manual(self, tool_name: str) -> bool:
-        return bool(self._sampling_state(tool_name)["spacing_manual"])
-
     def set_sampling_point_count(self, tool_name: str, point_count: int):
+        """设置指定工具的采样点位个数，并切换到手动模式。point_count 会被自动修正为至少 1。"""
         state = self._sampling_state(tool_name)
         state["point_count"] = max(1, int(point_count))
         state["point_count_manual"] = True
         self._refresh_draft_preview_for_active_tool()
 
     def set_sampling_point_count_shift(self, tool_name: str, point_count: int):
+        """设置填充四边形第二方向（P0-P2）的采样点位个数，并切换到手动模式。point_count 会被自动修正为至少 1。"""
         state = self._sampling_state(tool_name)
         state["point_count_shift"] = max(1, int(point_count))
         state["point_count_shift_manual"] = True
@@ -1529,6 +1604,7 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         self._emit_sampling_shift_point_count_changed(tool_name, int(point_count))
 
     def set_sampling_point_count_auto_enabled(self, tool_name: str, enabled: bool):
+        """设置指定工具的采样点位个数自动启用或禁用。启用自动时会根据当前草稿参考点自动计算点数；禁用自动会保持当前点数不变并切换到手动模式。"""
         state = self._sampling_state(tool_name)
         state["point_count_manual"] = not bool(enabled)
         self._enforce_sampling_auto_rule(
@@ -1541,15 +1617,16 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         self._refresh_draft_preview_for_active_tool()
 
     def set_sampling_point_count_shift_auto_enabled(self, tool_name: str, enabled: bool):
+        """设置填充四边形第二方向（P0-P2）的采样点位个数自动启用或禁用。启用自动时会根据当前草稿参考点自动计算点数；禁用自动会保持当前点数不变并切换到手动模式。"""
         state = self._sampling_state(tool_name)
         state["point_count_shift_manual"] = not bool(enabled)
         if enabled:
-            self._enforce_sampling_shift_auto_rule(state, changed="point_count_shift_auto")
-        if enabled:
-            self._sync_sampling_auto_values_from_draft(tool_name)
+            self._sync_sampling_auto_values_from_draft(tool_name)   # 设置第一方向
+            self._enforce_sampling_shift_auto_rule(state, changed="point_count_shift_auto") # 设置第二方向
         self._refresh_draft_preview_for_active_tool()
 
     def set_sampling_spacing(self, tool_name: str, spacing_steps: float):
+        """设置指定工具的采样间距，并切换到手动模式。spacing_steps 是 field 网格单位的倍数，会被自动修正为至少 0.001。"""
         state = self._sampling_state(tool_name)
         state["spacing_steps"] = max(0.001, float(spacing_steps))
         state["spacing_manual"] = True
@@ -1557,6 +1634,7 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         self._refresh_draft_preview_for_active_tool()
 
     def set_sampling_spacing_auto_enabled(self, tool_name: str, enabled: bool):
+        """设置指定工具的采样间距自动启用或禁用。启用自动时会根据当前草稿参考点自动计算间距；禁用自动会保持当前间距不变并切换到手动模式。"""
         state = self._sampling_state(tool_name)
         state["spacing_manual"] = not bool(enabled)
         self._enforce_sampling_auto_rule(
@@ -1569,117 +1647,57 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         self._refresh_draft_preview_for_active_tool()
 
     def sampling_shift_spacing(self, tool_name: str) -> float:
+        """获取填充四边形第二方向（P0-P2）的采样间距设置。spacing_steps 是 field 网格单位的倍数。"""
         state = self._sampling_state(tool_name)
         return float(state.get("spacing_steps_shift", state.get("spacing_steps", 2.0)))
 
     def is_sampling_shift_auto(self, tool_name: str) -> bool:
+        """获取填充四边形第二方向（P0-P2）的采样间距设置是否为自动。"""
         return not bool(self._sampling_state(tool_name).get("spacing_shift_manual", False))
 
     def set_sampling_spacing_shift(self, tool_name: str, spacing_steps: float):
+        """设置填充四边形第二方向（P0-P2）的采样间距，并切换到手动模式。spacing_steps 是 field 网格单位的倍数，会被自动修正为至少 0.001。"""
         state = self._sampling_state(tool_name)
         state["spacing_steps_shift"] = max(0.001, float(spacing_steps))
         state["spacing_shift_manual"] = True
         self._refresh_draft_preview_for_active_tool()
 
     def set_sampling_shift_auto_enabled(self, tool_name: str, enabled: bool):
+        """设置填充四边形第二方向（P0-P2）的采样间距自动启用或禁用。启用自动时会根据当前草稿参考点自动计算间距；禁用自动会保持当前间距不变并切换到手动模式。"""
         state = self._sampling_state(tool_name)
         state["spacing_shift_manual"] = not bool(enabled)
         if enabled:
-            self._enforce_sampling_shift_auto_rule(state, changed="spacing_shift_auto")
-        if enabled:
-            self._sync_sampling_auto_values_from_draft(tool_name)
+            self._sync_sampling_auto_values_from_draft(tool_name)   # 设置第一方向
+            self._enforce_sampling_shift_auto_rule(state, changed="spacing_shift_auto") # 设置第二方向
         self._refresh_draft_preview_for_active_tool()
 
     def set_polygon_side_count(self, tool_name: str, side_count: int):
+        """设置多边形工具的边数，并切换到手动模式。side_count 会被自动修正为至少 2。"""
         state = self._sampling_state(tool_name)
         state["polygon_sides"] = max(2, int(side_count))
         self._sync_sampling_auto_values_from_draft(tool_name)
         self._refresh_draft_preview_for_active_tool()
 
-    def reset_sampling_auto(self, tool_name: str):
-        state = self._sampling_state(tool_name)
-        # 点位个数自动开启，间距自动关闭并恢复为默认 2 步间隔
-        state["point_count_manual"] = False
-        state["spacing_manual"] = True
-        state["spacing_steps"] = 2.0
-        # 对于填充四边形，第二方向也设置为手动默认值
-        if tool_name == "填充四边形":
-            state["spacing_shift_manual"] = True
-            state["spacing_steps_shift"] = float(state.get("spacing_steps", 2.0))
-        # 同步并通知 UI 当前的自动/手动状态与默认值
-        self._emit_sampling_point_count_changed(tool_name, int(state.get("point_count", 1)))
-        self._emit_sampling_spacing_changed(tool_name, float(state.get("spacing_steps", 2.0)))
-        if tool_name == "填充四边形":
-            self._emit_sampling_shift_spacing_changed(tool_name, float(state.get("spacing_steps_shift", state.get("spacing_steps", 2.0))))
-
     def reset_sampling_defaults(self, tool_name: str):
+        """重置指定工具的采样设置为默认值：点位个数自动（自动计算点数），间距设为默认 2 步并由用户手动控制。对于填充四边形，第二方向（P0-P2）的点位个数和间距也会一并切换到默认设置。此方法通常在确认草稿后调用，以恢复默认行为。"""
         state = self._sampling_state(tool_name)
-        state["point_count"] = 1
+        # state["point_count"] = 1
         # 默认行为：点位个数自动（自动计算点数），间距设为默认 2 步并由用户手动控制
         state["point_count_manual"] = False
         state["spacing_steps"] = 2.0
         state["spacing_manual"] = True
-        # 若为填充四边形，第二方向也默认手动 2 步间隔
-        if tool_name == "填充四边形":
-            state["spacing_steps_shift"] = 2.0
-            state["spacing_shift_manual"] = True
         self._emit_sampling_point_count_changed(tool_name, 1)
         self._emit_sampling_spacing_changed(tool_name, 2.0)
+        # 若为填充四边形，第二方向也默认手动 2 步间隔
         if tool_name == "填充四边形":
+            state['point_count_shift_manual'] = False
+            state["spacing_steps_shift"] = 2.0
+            state["spacing_shift_manual"] = True
+            self._emit_sampling_shift_point_count_changed(tool_name, 1)
             self._emit_sampling_shift_spacing_changed(tool_name, 2.0)
 
-    def _line_segment_auto_point_count(self) -> int:
-        refs = self._draft_reference_points
-        if len(refs) < 2 and self.active_tool == "线段":
-            refs = self._pending_points
-        if len(refs) < 2:
-            return max(1, int(self._line_segment_point_count))
-        spacing = max(1e-9, float(self.field_settings.grid_step) * float(self._line_segment_spacing_steps))
-        distance = self._distance(refs[0], refs[1])
-        if distance <= 1e-9:
-            return 1
-        return max(1, int(distance // spacing) + 1)
-
-    def _line_segment_auto_spacing_steps(self) -> float:
-        refs = self._draft_reference_points
-        if len(refs) < 2 and self.active_tool == "线段":
-            refs = self._pending_points
-        if len(refs) < 2:
-            return max(0.001, float(self._line_segment_spacing_steps))
-
-        distance = self._distance(refs[0], refs[1])
-        if distance <= 1e-9:
-            return max(0.001, float(self._line_segment_spacing_steps))
-
-        if self._line_segment_point_count_manual:
-            count = max(1, int(self._line_segment_point_count))
-            if count <= 1:
-                return max(0.001, float(self._line_segment_spacing_steps))
-            spacing_steps = distance / (float(self.field_settings.grid_step) * float(count - 1))
-            return max(0.001, float(spacing_steps))
-
-        return max(0.001, float(self._line_segment_spacing_steps))
-
-    def _sync_line_segment_auto_values_from_draft(self):
-        if self._draft_tool_name != "线段" and self.active_tool != "线段":
-            return
-
-        if not self._line_segment_point_count_manual:
-            point_count = self._line_segment_auto_point_count()
-            if point_count != self._line_segment_point_count:
-                self._line_segment_point_count = point_count
-            self.lineSegmentPointCountChanged.emit(point_count)
-
-        if not self._line_segment_spacing_manual and self._line_segment_point_count_manual:
-            spacing_steps = self._line_segment_auto_spacing_steps()
-            if abs(spacing_steps - self._line_segment_spacing_steps) > 1e-9:
-                self._line_segment_spacing_steps = spacing_steps
-            self.lineSegmentSpacingChanged.emit(spacing_steps)
-
-    def _sync_line_segment_point_count_from_draft(self):
-        self._sync_line_segment_auto_values_from_draft()
-
     def _refresh_draft_preview_for_active_tool(self):
+        """根据当前活动工具和草稿状态，刷新草稿预览的显示。对于采样工具，如果当前草稿工具是采样工具，则同步自动设置并重绘草稿叠加层；如果当前活动工具是采样工具且存在待定参考点，则清除草稿项并重绘待定参考点的预览。此方法通常在相关设置改变或草稿状态更新时调用，以确保草稿预览与当前设置和状态保持一致。"""
         if self._draft_tool_name in self._sampling_tools:
             self._sync_sampling_auto_values_from_draft(self._draft_tool_name)
             self._draw_draft_overlay()
@@ -1687,52 +1705,16 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
             return
 
         if self.active_tool in self._sampling_tools and self._pending_points:
+            # 原逻辑仅重绘预览，未先同步自动值。
+            # self._clear_draft_items()
+            self._sync_sampling_auto_values_from_draft(self.active_tool)
             self._clear_draft_items()
             self._draw_pending_reference_preview()
             self._draw_pending_reference_points()
             self.update()
 
-    def set_line_segment_point_count(self, point_limit: int):
-        self._line_segment_point_count = max(1, int(point_limit))
-        self._line_segment_point_count_manual = True
-        self._refresh_draft_preview_for_active_tool()
-
-    def set_line_segment_point_count_auto_enabled(self, enabled: bool):
-        self._line_segment_point_count_manual = not bool(enabled)
-        if enabled:
-            self._sync_line_segment_auto_values_from_draft()
-        self._refresh_draft_preview_for_active_tool()
-
-    def set_line_segment_spacing(self, spacing: float):
-        self._line_segment_spacing_steps = max(0.001, float(spacing))
-        self._line_segment_spacing_manual = True
-        self._sync_line_segment_point_count_from_draft()
-        self._refresh_draft_preview_for_active_tool()
-
-    def set_line_segment_spacing_auto_enabled(self, enabled: bool):
-        self._line_segment_spacing_manual = not bool(enabled)
-        if enabled:
-            if self._line_segment_point_count_manual:
-                self._sync_line_segment_auto_values_from_draft()
-            else:
-                self._line_segment_spacing_steps = 2.0
-                self._sync_line_segment_auto_values_from_draft()
-        self._refresh_draft_preview_for_active_tool()
-
-    def reset_line_segment_point_count_auto(self):
-        self._line_segment_point_count_manual = False
-        self._sync_line_segment_point_count_from_draft()
-
-    def _shape_color(self, ghost: bool) -> tuple[QPen, QBrush]:
-        if ghost:
-            pen = QPen(QColor(60, 60, 60, 120), 1)
-            brush = QBrush(QColor(90, 90, 90, 35))
-        else:
-            pen = QPen(QColor("#1f5e9c"), 1.5)
-            brush = QBrush(QColor(255, 255, 255, 12))
-        return pen, brush
-
     def _make_polygon_points(self, center: tuple[float, float], radius_point: tuple[float, float], sides: int) -> list[tuple[float, float]]:
+        """根据中心点、半径点和边数，计算正多边形的顶点坐标。中心点和半径点定义了多边形的大小和初始方向，边数决定了多边形的形状。返回一个包含所有顶点坐标的列表。如果半径过小（小于等于 1e-9），则返回一个空列表；如果边数不足 2，则自动修正为至少 2。"""
         cx, cy = center
         rx, ry = radius_point
         radius = math.hypot(rx - cx, ry - cy)
@@ -1747,12 +1729,14 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         return points
 
     def _circle_from_two_points(self, center: tuple[float, float], radius_point: tuple[float, float]) -> tuple[float, float, float]:
+        """根据中心点和半径点，计算圆的参数（中心坐标和半径）。中心点定义了圆心的位置，半径点定义了圆的大小。返回一个包含圆心坐标和半径的元组。如果半径过小（小于等于 1e-9），则半径会被修正为 0。"""
         cx, cy = center
         rx, ry = radius_point
         radius = math.hypot(rx - cx, ry - cy)
         return cx, cy, radius
 
     def _rectangle_from_three_points(self, a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]) -> list[tuple[float, float]]:
+        """根据三个点计算矩形的顶点坐标。返回一个包含所有顶点坐标的列表。"""
         ax, ay = a
         bx, by = b
         cx, cy = c
@@ -1761,6 +1745,7 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         return [a, b, (dx, dy), c]
 
     def _circumcenter(self, p1: tuple[float, float], p2: tuple[float, float], p3: tuple[float, float]) -> tuple[float, float] | None:
+        """计算三角形的外心坐标。外心是三角形三个顶点的垂直平分线的交点，也是通过这三个点的圆的圆心。返回一个包含外心坐标的元组，如果三个点共线则返回 None。"""
         x1, y1 = p1
         x2, y2 = p2
         x3, y3 = p3
@@ -1772,6 +1757,7 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         return ux, uy
 
     def _arc_path_from_three_points(self, start: tuple[float, float], through: tuple[float, float], end: tuple[float, float]) -> QPainterPath:
+        """根据起点、过渡点和终点，计算通过这三个点的圆弧路径。首先计算三点的外心作为圆心，然后根据圆心和起点计算半径，最后根据起点、过渡点和终点计算起始角度、过渡角度和结束角度，并确定弧线的方向（顺时针或逆时针）。返回一个 QPainterPath 对象表示该圆弧路径。如果三点共线，则返回一条连接起点、过渡点和终点的折线路径。"""
         center = self._circumcenter(start, through, end)
         path = QPainterPath()
         path.moveTo(QPointF(*start))
@@ -1818,162 +1804,13 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         path.arcTo(rect, start_angle, span)
         return path
 
-    def _shape_to_item(self, shape: dict, ghost: bool):
-        pen, brush = self._shape_color(ghost)
-        shape_type = shape.get("type")
-
-        if shape_type == "line":
-            p1 = self._field_to_scene(*shape["points"][0])
-            p2 = self._field_to_scene(*shape["points"][1])
-            item = QGraphicsLineItem(p1.x(), p1.y(), p2.x(), p2.y())
-            item.setPen(pen)
-            return item
-
-        if shape_type == "circle":
-            cx, cy = self._field_to_scene(*shape["center"])
-            radius = float(shape["radius"]) * float(self.field_settings.scale)
-            item = QGraphicsEllipseItem(cx.x() - radius, cy.y() - radius, radius * 2, radius * 2)
-            item.setPen(pen)
-            item.setBrush(brush)
-            return item
-
-        if shape_type in {"rect", "polygon"}:
-            polygon = QPolygonF([
-                self._field_to_scene(x, y)
-                for x, y in shape["points"]
-            ])
-            item = QGraphicsPolygonItem(polygon)
-            item.setPen(pen)
-            item.setBrush(brush)
-            return item
-
-        if shape_type in {"polyline", "arc"}:
-            path = QPainterPath()
-            if shape_type == "polyline":
-                points = shape["points"]
-                if points:
-                    start = self._field_to_scene(*points[0])
-                    path.moveTo(start)
-                    for x, y in points[1:]:
-                        path.lineTo(self._field_to_scene(x, y))
-            else:
-                scene_points = [self._field_to_scene(x, y) for x, y in shape["points"]]
-                path = self._arc_path_from_three_points(
-                    (scene_points[0].x(), scene_points[0].y()),
-                    (scene_points[1].x(), scene_points[1].y()),
-                    (scene_points[2].x(), scene_points[2].y()),
-                )
-            item = QGraphicsPathItem(path)
-            item.setPen(pen)
-            return item
-
-        return None
-
-    def _draw_shape(self, shape: dict, ghost: bool):
-        item = self._shape_to_item(shape, ghost)
-        if item is None:
-            return
-        self.addItem(item)
-        target_list = self._previous_items if ghost else self._current_items
-        target_list.append(item)
-
-    def _draw_preview_points(self):
-        if not self._pending_points:
-            return
-
-        preview_pen = QPen(QColor("#d35400"), 1, Qt.PenStyle.DashLine)
-        preview_item = None
-
-        scene_pending = [self._field_to_scene(x, y) for x, y in self._pending_points]
-
-        if self.active_tool == "线段" and len(scene_pending) >= 1:
-            p1 = scene_pending[0]
-            p2 = scene_pending[-1]
-            preview_item = QGraphicsLineItem(p1.x(), p1.y(), p2.x(), p2.y())
-            preview_item.setPen(preview_pen)
-        elif self.active_tool == "圆" and len(self._pending_points) >= 1:
-            cx, cy = scene_pending[0].x(), scene_pending[0].y()
-            rx, ry = scene_pending[-1].x(), scene_pending[-1].y()
-            radius = math.hypot(rx - cx, ry - cy)
-            preview_item = QGraphicsEllipseItem(cx - radius, cy - radius, radius * 2, radius * 2)
-            preview_item.setPen(preview_pen)
-            preview_item.setBrush(QBrush(QColor(255, 165, 0, 30)))
-        elif self.active_tool == "填充四边形" and len(self._pending_points) >= 2:
-            points = self._rectangle_from_three_points(self._pending_points[0], self._pending_points[1], self._pending_points[-1])
-            if len(points) == 4:
-                polygon = QPolygonF([self._field_to_scene(x, y) for x, y in points])
-                preview_item = QGraphicsPolygonItem(polygon)
-                preview_item.setPen(preview_pen)
-                preview_item.setBrush(QBrush(QColor(255, 165, 0, 30)))
-        elif self.active_tool == "多边形" and len(self._pending_points) >= 2:
-            points = self._make_polygon_points(self._pending_points[0], self._pending_points[-1], self._polygon_side_count("多边形"))
-            if points:
-                polygon = QPolygonF([self._field_to_scene(x, y) for x, y in points])
-                preview_item = QGraphicsPolygonItem(polygon)
-                preview_item.setPen(preview_pen)
-                preview_item.setBrush(QBrush(QColor(255, 165, 0, 30)))
-        elif self.active_tool == "弧" and len(self._pending_points) >= 2:
-            if len(self._pending_points) >= 3:
-                start_scene = self._field_to_scene(*self._pending_points[0])
-                end_scene = self._field_to_scene(*self._pending_points[1])
-                through_scene = self._field_to_scene(*self._pending_points[2])
-                path = self._arc_path_from_three_points(
-                    (start_scene.x(), start_scene.y()),
-                    (through_scene.x(), through_scene.y()),
-                    (end_scene.x(), end_scene.y()),
-                )
-            else:
-                path = QPainterPath()
-                path.moveTo(scene_pending[0])
-                path.lineTo(scene_pending[-1])
-            preview_item = QGraphicsPathItem(path)
-            preview_item.setPen(preview_pen)
-        elif self.active_tool == "曲线/折线" and len(self._pending_points) >= 2:
-            if getattr(self, '_curve_mode', 'polyline') == 'curve':
-                path = QPainterPath()
-                path.moveTo(scene_pending[0])
-                n = len(scene_pending)
-                for i in range(n - 1):
-                    p0 = scene_pending[i - 1] if i - 1 >= 0 else scene_pending[i]
-                    p1 = scene_pending[i]
-                    p2 = scene_pending[i + 1]
-                    p3 = scene_pending[i + 2] if i + 2 < n else scene_pending[i + 1]
-
-                    c1x = p1.x() + (p2.x() - p0.x()) / 6.0
-                    c1y = p1.y() + (p2.y() - p0.y()) / 6.0
-                    c2x = p2.x() - (p3.x() - p1.x()) / 6.0
-                    c2y = p2.y() - (p3.y() - p1.y()) / 6.0
-
-                    path.cubicTo(QPointF(c1x, c1y), QPointF(c2x, c2y), p2)
-                preview_item = QGraphicsPathItem(path)
-                preview_item.setPen(preview_pen)
-            else:
-                path = QPainterPath()
-                path.moveTo(scene_pending[0])
-                for point in scene_pending[1:]:
-                    path.lineTo(point)
-                preview_item = QGraphicsPathItem(path)
-                preview_item.setPen(preview_pen)
-
-        if preview_item is not None:
-            self.addItem(preview_item)
-            self._current_items.append(preview_item)
-
-        for point in scene_pending:
-            x = point.x()
-            y = point.y()
-            dot = QGraphicsEllipseItem(x - 3, y - 3, 6, 6)
-            dot.setPen(QPen(QColor("#d35400"), 1))
-            dot.setBrush(QBrush(QColor(255, 165, 0, 30)))
-            self.addItem(dot)
-            self._current_items.append(dot)
-
     def _draw_draft_overlay(self):
-        self._clear_draft_items()
-        self._draw_draft_preview()
-        self._draw_draft_handles()
+        self._clear_draft_items()   # 清除之前的草稿预览项和参考点项
+        self._draw_draft_preview()  # 根据当前草稿工具和参考点绘制新的草稿预览项
+        self._draw_draft_handles()  # 根据当前草稿参考点绘制新的参考点项（可交互的控制点）
 
     def _draw_draft_preview(self):
+        """根据当前草稿工具和参考点，绘制草稿预览项。对于点工具，仅绘制参考点；对于其他工具，根据参考点生成预览点并绘制。此方法会先检查当前是否有有效的草稿工具和参考点，如果没有则直接返回。对于有效的草稿状态，会先绘制一个基于参考点的预览项（如果适用），然后根据工具类型生成相应的预览点并绘制为小圆点。所有草稿预览项都会被添加到场景中，并且会被记录在 _draft_preview_items 列表中，以便后续清除或更新。"""
         if not self._draft_tool_name or not self._draft_reference_points:
             return
 
@@ -1995,6 +1832,7 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
                 self._draft_preview_items.append(item)
 
     def _draw_draft_handles(self):
+        """根据当前草稿参考点，绘制可交互的参考点控制项。每个参考点都会对应一个 ReferenceHandleItem，用户可以通过拖动这些控制项来调整参考点的位置。此方法会先检查当前是否有草稿参考点，如果没有则直接返回。对于每个草稿参考点，会创建一个 ReferenceHandleItem，并将其添加到场景中，同时记录在 _draft_handle_items 列表中，以便后续清除或更新。ReferenceHandleItem 会绑定一个回调函数，当用户拖动控制项时会调用该函数来更新对应的参考点坐标，并根据需要同步相关的自动设置和刷新预览。"""
         if not self._draft_reference_points:
             return
 
@@ -2010,6 +1848,7 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         self._updating_draft_handles = False
 
     def _draw_pending_reference_points(self):
+        """根据当前待定参考点，绘制可交互的参考点控制项。每个待定参考点都会对应一个 ReferenceHandleItem，用户可以通过拖动这些控制项来调整参考点的位置。此方法会先检查当前是否有待定参考点，如果没有则直接返回。对于每个待定参考点，会创建一个 ReferenceHandleItem，并将其添加到场景中，同时记录在 _draft_handle_items 列表中，以便后续清除或更新。ReferenceHandleItem 会绑定一个回调函数，当用户拖动控制项时会调用该函数来更新对应的参考点坐标，并根据需要同步相关的自动设置和刷新预览。"""
         if not self._pending_points:
             return
         self._updating_draft_handles = True
@@ -2024,6 +1863,17 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         self._updating_draft_handles = False
 
     def _on_pending_reference_handle_moved(self, index: int, scene_pos: QPointF) -> QPointF:
+        """
+        当用户拖动待定参考点的控制项时，更新对应的参考点坐标，并根据需要同步相关的自动设置和刷新预览。
+        此回调函数会被 ReferenceHandleItem 调用，传入被拖动控制项的索引和新的场景坐标。
+        函数会先检查当前是否正在更新草稿控制项，如果是则直接返回新的场景坐标而不进行任何处理。
+        然后会检查索引是否有效，如果无效也直接返回新的场景坐标。
+        对于有效的索引，会将新的场景坐标转换为字段坐标，并进行吸附处理，然后更新对应的待定参考点坐标。
+        根据当前活动工具，如果是线段工具则同步线段工具的自动设置；
+            如果是曲线/折线工具则同步采样工具的自动设置。
+        最后会使用 QTimer.singleShot 来延迟刷新当前活动工具的参考叠加层，以确保界面及时更新。
+        函数返回最终调整后的场景坐标，以便 ReferenceHandleItem 更新控制项的位置。
+        """
         if self._updating_draft_handles:
             return scene_pos
         if index < 0 or index >= len(self._pending_points):
@@ -2031,48 +1881,10 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         x, y = self._scene_to_field(scene_pos)
         x, y = self._snap_field_point(x, y)
         self._pending_points[index] = (x, y)
-        if self.active_tool == "线段":
-            self._sync_line_segment_auto_values_from_draft()
-        if self.active_tool == "曲线/折线":
-            self._sync_sampling_auto_values_from_draft("曲线/折线")
+        if self.active_tool in self._sampling_tools:
+            self._sync_sampling_auto_values_from_draft(self.active_tool)
         QTimer.singleShot(0, self._refresh_reference_overlay_for_active_tool)
         return self._field_to_scene(x, y)
-
-    # def _ensure_point_draft(self):
-    #     """确保点工具始终保持连续草稿态。"""
-    #     # 历史方法：当前流程由 _handle_draw_tool 管理草稿态，无调用方。
-    #     if self._draft_tool_name != "点":
-    #         self._draft_tool_name = "点"
-    #         self._draft_reference_points = []
-    #         self.draftStarted.emit("点")
-
-    # def _finalize_pending_shape(self):
-    #     # 历史方法：当前右键进入草稿确认，不再直接写入 node_shapes。
-    #     points = list(self._pending_points)
-    #     if self.active_tool == "曲线/折线":
-    #         if len(points) >= 2:
-    #             self.node_shapes[self.active_node].append({"type": "polyline", "points": points})
-    #     self._pending_points = []
-    #     self._render_points_for_active_node()
-
-    # def _add_shape_from_points(self, tool_name: str, points: list[tuple[float, float]]):
-    #     # 历史方法：当前由点位生成流程统一处理，无调用方。
-    #     if tool_name == "线段" and len(points) >= 2:
-    #         self.node_shapes[self.active_node].append({"type": "line", "points": [points[0], points[1]]})
-    #     elif tool_name == "弧" and len(points) >= 3:
-    #         self.node_shapes[self.active_node].append({"type": "arc", "points": [points[0], points[1], points[2]]})
-    #     elif tool_name == "填充四边形" and len(points) >= 3:
-    #         polygon = self._rectangle_from_three_points(points[0], points[1], points[2])
-    #         self.node_shapes[self.active_node].append({"type": "rect", "points": polygon})
-    #     elif tool_name == "圆" and len(points) >= 2:
-    #         center = points[0]
-    #         radius_point = points[1]
-    #         cx, cy, radius = self._circle_from_two_points(center, radius_point)
-    #         self.node_shapes[self.active_node].append({"type": "circle", "center": (cx, cy), "radius": radius})
-    #     elif tool_name == "多边形" and len(points) >= 2:
-    #         polygon = self._make_polygon_points(points[0], points[1], 6)
-    #         if polygon:
-    #             self.node_shapes[self.active_node].append({"type": "polygon", "points": polygon})
 
     @staticmethod
     def _append_unique_reference_point(target: list[tuple[float, float]], field_point: tuple[float, float]) -> bool:
@@ -2131,34 +1943,35 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         self._clear_overlay_items()
         self.ensure_node_exists(self.active_node)
 
-        # 预览逻辑：
-        # 1) 若拍位正好在某节点起始拍，直接显示该节点。
-        # 2) 若拍位位于两节点之间，显示左节点为 ghost，当前层显示线性插值结果。
+        # 预览逻辑
         node_at_beat = self._node_index_at_beat(self.preview_beat)
         if node_at_beat is not None:
+            # 拍位正好在某节点起始拍，直接显示该节点。
             preview_node = node_at_beat
             if preview_node > 0:
                 prev_points = self.node_points.get(preview_node - 1, [])
                 for point in prev_points:
-                    self._draw_point_item(point, ghost=True, draw_label=False)
+                    self._draw_point_item(point, pre_view=True, draw_label=False)
             current_points = self.node_points.get(preview_node, [])
         else:
+            # 拍位位于两节点之间，显示左节点为 pre_view，当前层显示线性插值结果。
             segment = self._segment_for_beat(self.preview_beat)
             if segment is not None:
+                # 在拍位位于两节点之间时显示插值预览，且仅显示左节点的点位为 pre_view。
                 left, right = segment
                 prev_points = self.node_points.get(left, [])
                 for point in prev_points:
-                    self._draw_point_item(point, ghost=True, draw_label=False)
+                    self._draw_point_item(point, pre_view=True, draw_label=False)
                 current_points = self._interpolate_points_at_beat(left, right, self.preview_beat)
             else:
                 if self.active_node > 0:
                     prev_points = self.node_points.get(self.active_node - 1, [])
                     for point in prev_points:
-                        self._draw_point_item(point, ghost=True, draw_label=False)
+                        self._draw_point_item(point, pre_view=True, draw_label=False)
                 current_points = self.node_points.get(self.active_node, [])
 
         for point in current_points:
-            self._draw_point_item(point, ghost=False, draw_label=True)
+            self._draw_point_item(point, pre_view=False, draw_label=True)
 
         if self._draft_tool_name:
             self._draw_draft_overlay()
@@ -2167,16 +1980,73 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
             self._draw_pending_reference_preview()
             self._draw_pending_reference_points()
 
-    def _draw_point_item(self, point: dict, ghost: bool, draw_label: bool):
-        pos = self._field_to_scene(point["x"], point["y"])
-        radius = 5.0
+        self._refresh_selected_group_links()
 
-        if ghost:
-            item = QGraphicsEllipseItem(pos.x() - radius, pos.y() - radius, radius * 2, radius * 2)
-            item.setPen(QPen(QColor(60, 60, 60, 110), 1))
-            item.setBrush(QBrush(QColor(80, 80, 80, 70)))
+    def delete_selected_points(self):
+        """删除当前选中的点位：在所有节点中移除对应点位 ID，重排剩余点位 ID 并同步 group_to_point 与 _next_point_id。"""
+        to_delete = set(int(i) for i in getattr(self, "_selected_point_ids", set()))
+        if not to_delete:
+            return
+
+        # 收集所有剩余点位 ID（跨所有节点），按旧 ID 升序排序以确定新 ID 分配顺序
+        remaining_ids = sorted({int(p["id"]) for pts in self.node_points.values() for p in pts if int(p["id"]) not in to_delete})
+
+        # 生成 old->new 映射
+        id_map = {old: new for new, old in enumerate(remaining_ids, start=1)}
+
+        # 重新构建每个节点的点位列表，移除被删点并重写 ID
+        for node_idx in list(self.node_points.keys()):
+            new_points = []
+            for p in self.node_points.get(node_idx, []):
+                old_id = int(p.get("id", -1))
+                if old_id in to_delete:
+                    continue
+                new_id = id_map.get(old_id)
+                if new_id is None:
+                    continue
+                # 更新 id，同时保留坐标与 group_id
+                new_p = {"id": new_id, "x": p["x"], "y": p["y"]}
+                if p.get("group_id") is not None:
+                    new_p["group_id"] = p.get("group_id")
+                new_points.append(new_p)
+            self.node_points[node_idx] = new_points
+
+        # 更新分组信息：移除被删的点位并将其余 point_ids 映射为新 ID
+        for group in self.group_to_point:
+            old_list = [int(pid) for pid in group.get("point_ids", [])]
+            new_list = [id_map[pid] for pid in old_list if pid not in to_delete and pid in id_map]
+            group["point_ids"] = new_list
+
+        # 更新自增计数器
+        max_id = max(id_map.values()) if id_map else 0
+        self._next_point_id = max_id + 1
+
+        # 清除当前选中集合并刷新显示与后续自动计算
+        self._selected_point_ids = set()
+        self._mark_node_manual(self.active_node)
+        self._recalculate_following_auto_nodes(self.active_node, include_manual_nodes=True)
+        self._render_points_for_active_node()
+
+    def _draw_point_item(self, point: dict, pre_view: bool, draw_label: bool):
+        """在场景中绘制一个点位项。根据 point 字典中的信息创建一个 PerformerPointItem，并将其添加到场景中。
+        pre_view 参数用于确定该点位是否为预览状态，预览状态的点位通常会使用半透明的颜色来区分于正式绘制的点位。
+        draw_label 参数用于确定是否在点位旁边绘制一个标签，标签显示点位的 ID 以便识别。
+        此方法会先计算点位在场景中的位置，然后根据 pre_view 参数创建相应样式的 PerformerPointItem，并将其添加到场景中。
+        同时，如果 draw_label 为 True，还会创建一个 QGraphicsSimpleTextItem 来显示点位的 ID，并将其添加到场景中。
+        所有创建的项都会被记录在相应的列表和字典中，以便后续管理和更新。"""
+        pos = self._field_to_scene(point["x"], point["y"])
+        # radius = 5.0
+
+        if pre_view:
+            # 绘制上一张图的点位
+            item = QGraphicsEllipseItem(pos.x() - self.pre_point_radius, pos.y() - self.pre_point_radius, self.pre_point_radius * 2, self.pre_point_radius * 2)
+            # item.setPen(QPen(self.pre_point_color, 1))
+            item.setBrush(QBrush(self.pre_point_color))
+            # item.setPen(QPen(QColor(60, 60, 60, 110), 1))
+            # item.setBrush(QBrush(QColor(80, 80, 80, 70)))
             self._previous_items.append(item)
         else:
+            # 绘制当前图的点位
             item = PerformerPointItem(
                 point_id=point["id"],
                 center_scene_pos=pos,
@@ -2184,16 +2054,30 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
                 released_callback=self._on_performer_point_released,
                 can_drag_callback=self._can_drag_performer_point,
                 selected=point["id"] in self._selected_point_ids,
-                size=radius * 2,
+                # size=self.dot_radius * 2,
             )
             self._current_items.append(item)
             self._point_items_by_id[int(point["id"])] = item
         self.addItem(item)
 
         if draw_label:
+            # 绘制标签，使用场景参数控制字体大小、偏移与角度
             label = QGraphicsSimpleTextItem(str(point["id"]))
-            label.setBrush(QBrush(QColor("#1f1f1f")))
-            label.setPos(pos.x() + 6, pos.y() - 14)
+            # 字体大小
+            font = QFont()
+            try:
+                font.setPointSize(int(self.label_size))
+            except Exception:
+                pass
+            label.setFont(font)
+            label.setBrush(QBrush(self.label_color))
+            # 计算相对于点位的偏移（角度以 15° 为单位）并使标签中心位于该偏移点
+            angle_deg = (int(self.label_pos) % 24) * 15
+            angle_rad = math.radians(angle_deg)
+            dx = math.cos(angle_rad) * float(self.label_offset)
+            dy = math.sin(angle_rad) * float(self.label_offset)
+            br = label.boundingRect()
+            label.setPos(pos.x() + dx - br.width() / 2.0, pos.y() + dy - br.height() / 2.0)
             self.addItem(label)
             self._label_items.append(label)
             self._label_items_by_id[int(point["id"])] = label
@@ -2205,18 +2089,14 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
                 return True
         return False
 
-    # def _snap_scene_point(self, scene_pos: QPointF) -> QPointF:
-    #     """把场景坐标吸附到最近网格交点。"""
-    #     # 历史辅助方法：当前直接调用 _scene_to_field + _snap_field_point 组合，无调用方。
-    #     x, y = self._scene_to_field(scene_pos)
-    #     x, y = self._snap_field_point(x, y)
-    #     return self._field_to_scene(x, y)
-
     def _scene_item_under_cursor(self, scene_pos: QPointF):
+        """根据场景坐标获取当前鼠标下的图元项。此方法会调用 QGraphicsScene 的 itemAt 方法，传入鼠标的场景坐标和当前视图的变换矩阵，以获取位于该位置的图元项。由于可能存在多个视图，此方法会优先使用第一个视图进行坐标转换。如果没有任何视图可用，则返回 None。"""
         views = self.views()
         if not views:
             return None
         return self.itemAt(scene_pos, views[0].transform())
+
+
 
     def mousePressEvent(self, event):
         """绘图模式下拦截鼠标：左键采样点。"""
@@ -2231,16 +2111,35 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
                 event.accept()
                 return
 
-            if self.active_tool == "框选" and isinstance(item, PerformerPointItem):
-                self._selected_point_ids = {item.point_id}
+            if self.active_tool in {"框选", "选择"} and isinstance(item, PerformerPointItem):
+                # 框选时，对选中的单一点位进行拖拽修改位置。
+                selected_ids = set(self._selected_point_ids)
+                modifiers = event.modifiers()
+                if self.active_tool == "选择":
+                    if (modifiers & Qt.KeyboardModifier.ShiftModifier):
+                        group_point_ids = self._group_point_ids_for_point_id(item.point_id)
+                        for group_point_id in group_point_ids:
+                            if group_point_id in selected_ids:
+                                selected_ids.discard(group_point_id)
+                            else:
+                                selected_ids.add(group_point_id)
+                    elif (modifiers & Qt.KeyboardModifier.ControlModifier):
+                        selected_ids.add(item.point_id)
+                    else:
+                        selected_ids = set(self._group_point_ids_for_point_id(item.point_id))
+                else:
+                    # 框选操作
+                    selected_ids = {item.point_id}
+                self._selected_point_ids = selected_ids
                 self._refresh_point_selection_visuals()
                 self._clear_selection_rect()
                 super().mousePressEvent(event)
                 return
 
-            if self.active_tool == "框选":
-                self._selection_start_scene = QPointF(event.scenePos())
-                self._selection_current_scene = QPointF(event.scenePos())
+            if self.active_tool in {"框选", "选择"}:
+                # 点击框选工具下的空白区域：进入框选状态，记录起始场景坐标，清空当前选择并刷新视觉效果。
+                self._selection_start_position = QPointF(event.scenePos())
+                self._selection_current_position = QPointF(event.scenePos())
                 self._selected_point_ids.clear()
                 self._refresh_point_selection_visuals()
                 self._update_selection_rect_item()
@@ -2248,11 +2147,11 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
                 return
 
         if event.button() == Qt.MouseButton.LeftButton and self._is_drawing_tool():
-            # 绘图点击生成的是“参考点”，参考点始终吸附到格线；
-            # 自动生成的点位仅在确认后写入，不在这里二次吸附。
-            # if not self._is_current_beat_editable():
-            #     event.accept()
-            #     return
+            # 绘图时，点击生成“参考点”，参考点始终吸附到格线；
+            # 自动生成的点位仅在确认后写入。
+            if not self._is_current_beat_editable():
+                event.accept()
+                return
 
             x, y = self._scene_to_field(event.scenePos())
             x, y = self._snap_field_point(x, y)
@@ -2266,20 +2165,26 @@ class SchemeScene(SchemeSceneDataMixin, QGraphicsScene):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if self.active_tool == "框选" and self._selection_start_scene is not None and event.buttons() & Qt.MouseButton.LeftButton:
-            self._selection_current_scene = QPointF(event.scenePos())
-            self._update_selection_rect_item()
-            event.accept()
-            return
+        """绘图模式下拦截鼠标：左键拖动更新框选区域。"""
+        if event.buttons() & Qt.MouseButton.LeftButton and self._selection_start_position is not None:
+            if self.active_tool in {"框选", "选择"}:
+                self._selection_current_position = QPointF(event.scenePos())
+                self._update_selection_rect_item()
+                # 实时更新被框选的点并刷新视觉反馈
+                scene_rect = QRectF(self._selection_start_position, self._selection_current_position).normalized()
+                self._select_points_in_scene_rect(scene_rect, self.active_tool)
+                event.accept()
+                return
 
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and self.active_tool == "框选":
-            if self._selection_start_scene is not None:
-                self._selection_current_scene = QPointF(event.scenePos())
-                scene_rect = QRectF(self._selection_start_scene, self._selection_current_scene).normalized()
-                self._select_points_in_scene_rect(scene_rect)
+        """绘图模式下拦截鼠标：左键释放完成框选。"""
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self.active_tool in {"框选", "选择"} and self._selection_start_position is not None:
+                self._selection_current_position = QPointF(event.scenePos())
+                scene_rect = QRectF(self._selection_start_position, self._selection_current_position).normalized()
+                self._select_points_in_scene_rect(scene_rect, self.active_tool)
                 self._clear_selection_rect()
                 event.accept()
                 return

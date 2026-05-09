@@ -8,20 +8,33 @@
 
 from PyQt6.QtCore import QPoint, QRect, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen
-from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QPushButton, QSpinBox, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QPushButton, QSpinBox, QVBoxLayout, QWidget, QScrollArea
 
+class TimelineScrollArea(QScrollArea):
+    """时间轴滚轮操作"""
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        if delta == 0:
+            delta = event.angleDelta().x()
+        if delta != 0:
+            step = 40
+            bar = self.horizontalScrollBar()
+            direction = -1 if delta > 0 else 1
+            bar.setValue(bar.value() + direction * step)
+            event.accept()
+            return
+        super().wheelEvent(event)
 
 class NodeEditDialog(QDialog):
     """节点编辑弹窗：用于修改节点间间隔或删除当前节点。"""
-
     def __init__(self, node_index: int, interval: int, parent=None):
         super().__init__(parent)
         self.setWindowTitle("节点设置")
         self.delete_requested = False
 
-        self._interval_spin = QSpinBox(self)
-        self._interval_spin.setRange(1, 999)
-        self._interval_spin.setValue(interval)
+        self._interval_spin = QSpinBox(self)    # 输入间隔拍数，范围1-99，默认值为当前间隔。
+        self._interval_spin.setRange(1, 99)
+        self._interval_spin.setValue(interval)  # 初始值为当前间隔拍数，便于调整。
 
         form_layout = QFormLayout()
         form_layout.addRow(f"图{node_index - 1} -> 图{node_index} 间隔拍数", self._interval_spin)
@@ -38,7 +51,7 @@ class NodeEditDialog(QDialog):
         layout.addLayout(form_layout)
         layout.addWidget(self._button_box)
 
-    def interval_value(self) -> int:
+    def get_interval_value(self) -> int:
         """返回弹窗中设置的间隔拍数。"""
         return int(self._interval_spin.value())
 
@@ -49,19 +62,18 @@ class NodeEditDialog(QDialog):
 
 class TimelineWidget(QWidget):
     """时间轴控件：用于添加队形节点并编辑节点间拍数间隔。"""
-
     timelineChanged = pyqtSignal()
-    nodeSelected = pyqtSignal(int)
-    currentBeatChanged = pyqtSignal(int)
-    nodeAdded = pyqtSignal(int)
-    nodeDeleted = pyqtSignal(int)
-    nodeInserted = pyqtSignal(int)
+    nodeSelected = pyqtSignal(int)  # 选中节点的索引
+    currentBeatChanged = pyqtSignal(int)    # 当前显示的拍位
+    nodeAdded = pyqtSignal(int)     # 新增节点的索引
+    nodeDeleted = pyqtSignal(int)   # 删除节点的索引
+    nodeInserted = pyqtSignal(int)  # 插入的新节点索引
 
     def __init__(self, parent=None):
         super().__init__(parent)
         # 节点0始终存在。
-        # beat_intervals[i] 表示“节点 i-1 到节点 i”的间隔拍数，因此下标0占位不用。
-        self.beat_intervals = [0]
+        # graph_list[i] 表示“节点 i-1 到节点 i”的间隔拍数，因此下标0占位不用。
+        self.graph_list = [0]
 
         # 缓存绘制几何区域，避免重复创建对象。
         self._node_rects = []
@@ -69,18 +81,19 @@ class TimelineWidget(QWidget):
         self._ruler_rect = QRect()
 
         # 布局与尺寸参数。
-        self._node_radius = 12
-        self._left_padding = 22
-        self._right_padding = 26
-        self._top_row_y = 4
-        self._middle_top = 24
-        self._middle_bottom = 38
-        self._bottom_row_y = 39
-        self._pixels_per_beat = 32
-        self._min_ruler_width = 220
+        self._node_radius = 12      # 节点圆点半径
+        self._left_padding = 22     # 左侧预留空间
+        self._right_padding = 26    # 右侧预留空间
+        self._top_row_y = 4         # 节点行Y坐标
+        self._middle_top = 24       # 标尺上边Y坐标
+        self._middle_bottom = 38    # 标尺下边Y坐标（同时也是当前拍位游标的下边Y坐标）
+        self._bottom_row_y = 39     # 节点下方标签Y坐标（当前关闭，保留代码便于后续启用）
+        self._pixels_per_beat = 32  # 每拍像素间距，控制时间轴的缩放程度；总拍数增长时控件变宽，由外层滚动区域处理溢出。
+        # self._min_ruler_width = 220
+        
         # 缩放范围：控制每拍显示宽度，避免过小或过大。
-        self._min_pixels_per_beat = 8
-        self._max_pixels_per_beat = 80
+        self._min_pixels_per_beat = 8   # 最小每拍像素间距，过小会导致节点重叠，影响交互。
+        self._max_pixels_per_beat = 80  # 最大每拍像素间距，过大会导致时间轴过长，影响整体布局。
 
         # 长刻度间隔（每隔多少拍绘制一根长刻度线）。
         self.long_tick_interval = 8
@@ -94,8 +107,8 @@ class TimelineWidget(QWidget):
 
     def add_node(self, interval: int = 8):
         """在末尾新增一个节点，默认间隔为8拍。"""
-        self.beat_intervals.append(max(1, int(interval)))
-        added_index = self.node_count() - 1
+        self.graph_list.append(max(1, int(interval)))
+        added_index = len(self.graph_list) - 1
         self._recalculate_width()
         self.timelineChanged.emit()
         self.nodeAdded.emit(added_index)
@@ -103,23 +116,23 @@ class TimelineWidget(QWidget):
 
     def delete_node(self, node_index: int):
         """删除指定节点，节点0不允许删除。"""
-        if node_index <= 0 or node_index >= self.node_count():
+        if node_index <= 0 or node_index >= len(self.graph_list):
             return
 
         # 删除中间节点时，需要把“前->删节点”和“删节点->后”两段拍数合并，
         # 这样后续节点的绝对起始拍不会变化。
         #
         # 例：0->1=8, 1->2=8，删除1后应变为 0->2=16，
-        # 若只删除 beat_intervals[1] 会变成 0->2=8，导致后续节点拍位提前，
+        # 若只删除 graph_list[1] 会变成 0->2=8，导致后续节点拍位提前，
         # 从而影响后续图显示与后续插图插值计算。
-        if node_index < self.node_count() - 1:
-            self.beat_intervals[node_index + 1] += self.beat_intervals[node_index]
+        if node_index < len(self.graph_list) - 1:
+            self.graph_list[node_index + 1] += self.graph_list[node_index]
 
-        del self.beat_intervals[node_index]
+        del self.graph_list[node_index]
 
         # 删除后，选中节点和当前拍位需要重新对齐，避免索引越界或指针悬空。
-        self.selected_node = max(0, min(self.selected_node, self.node_count() - 1))
-        self.current_beat = min(self.current_beat, self.total_beats())
+        self.selected_node = max(0, min(self.selected_node, len(self.graph_list) - 1))
+        self.current_beat = min(self.current_beat, sum(self.graph_list[1:]))    # 当前拍位不能超过总拍数
 
         self._recalculate_width()
         self.timelineChanged.emit()
@@ -127,35 +140,24 @@ class TimelineWidget(QWidget):
         self.currentBeatChanged.emit(self.current_beat)
         self.update()
 
-    def node_count(self) -> int:
-        return len(self.beat_intervals)
-
-    def total_beats(self) -> int:
-        return sum(self.beat_intervals[1:])
-
-    def _effective_total_beats(self) -> int:
-        return self.total_beats()
-
-    def _ruler_width(self) -> int:
-        return max(self._min_ruler_width, max(1, self._effective_total_beats()) * self._pixels_per_beat)
-
     def _recalculate_width(self):
         # 保持每拍像素间距恒定；总拍数增长时控件变宽，由外层滚动区域处理溢出。
-        plus_size = 24
-        plus_gap = 18
-        desired_width = self._left_padding + self._ruler_width() + plus_gap + plus_size + self._right_padding
-        self.setFixedWidth(desired_width)
+        plus_size = 24  # 加号按钮尺寸
+        plus_gap = 18   # 加号按钮与最后一个节点之间的间隔，避免挤在一起影响点击。
+        desired_width = self._left_padding + sum(self.graph_list[1:]) * self._pixels_per_beat + plus_gap + plus_size + self._right_padding
+        self.setFixedWidth(desired_width)   # 设置宽度
 
     def start_beat_of(self, node_index: int) -> int:
+        """计算当前图节点的起始拍位。"""
         if node_index <= 0:
             return 0
-        return sum(self.beat_intervals[1 : node_index + 1])
+        return sum(self.graph_list[1 : node_index + 1])
 
     def node_start_beats(self) -> list[int]:
         """返回所有节点的起始拍数组，例如 [0, 8, 24, ...]。"""
         starts = [0]
         acc = 0
-        for interval in self.beat_intervals[1:]:
+        for interval in self.graph_list[1:]:
             acc += int(interval)
             starts.append(acc)
         return starts
@@ -182,7 +184,7 @@ class TimelineWidget(QWidget):
 
         例如：0->1 为 16 拍，若在第 8 拍插入，变为 0->new(8拍), new->1(8拍)。
         """
-        total = self.total_beats()
+        total = sum(self.graph_list[1:])
         target = int(beat)
         if target <= 0 or target >= total:
             return False
@@ -195,15 +197,15 @@ class TimelineWidget(QWidget):
 
         left_idx, right_idx = segment
         left_start = self.start_beat_of(left_idx)
-        old_interval = int(self.beat_intervals[right_idx])
+        old_interval = int(self.graph_list[right_idx])
         left_interval = target - left_start
         right_interval = old_interval - left_interval
         if left_interval <= 0 or right_interval <= 0:
             return False
 
         # 原间隔替换为左段，并在其后插入右段。
-        self.beat_intervals[right_idx] = left_interval
-        self.beat_intervals.insert(right_idx + 1, right_interval)
+        self.graph_list[right_idx] = left_interval
+        self.graph_list.insert(right_idx + 1, right_interval)
 
         inserted_index = right_idx
         self.selected_node = inserted_index
@@ -217,20 +219,22 @@ class TimelineWidget(QWidget):
         return True
 
     def _beat_to_x(self, beat: int) -> int:
+        """把拍位转换为对应的X坐标，用于绘制节点和游标。"""
         left = self._ruler_rect.left()
         right = self._ruler_rect.right()
         span = max(1, right - left)
-        total = self._effective_total_beats()
+        total = sum(self.graph_list[1:])
         if total <= 0:
             return left
         clamped = max(0, min(total, beat))
         return left + int(span * clamped / total)
 
     def _x_to_beat(self, x: int) -> int:
+        """把X坐标转换为对应的拍位，用于点击定位和拖动节点。"""
         left = self._ruler_rect.left()
         right = self._ruler_rect.right()
         span = max(1, right - left)
-        total = self._effective_total_beats()
+        total = sum(self.graph_list[1:])
         if total <= 0:
             return 0
         clamped_x = max(left, min(right, x))
@@ -245,10 +249,10 @@ class TimelineWidget(QWidget):
         plus_gap = 18
 
         ruler_left = self._left_padding
-        ruler_right = ruler_left + self._ruler_width()
+        ruler_right = ruler_left + sum(self.graph_list[1:]) * self._pixels_per_beat
         self._ruler_rect = QRect(ruler_left, self._middle_top, ruler_right - ruler_left, self._middle_bottom - self._middle_top)
 
-        for i in range(self.node_count()):
+        for i in range(len(self.graph_list)):
             cx = self._beat_to_x(self.start_beat_of(i))
             rect = QRect(cx - self._node_radius, y, diameter, diameter)
             self._node_rects.append(rect)
@@ -279,8 +283,8 @@ class TimelineWidget(QWidget):
         # p.drawLine(0, self._top_row_y + self._node_radius * 2 + 4, self.width(), self._top_row_y + self._node_radius * 2 + 4)
 
         # 中层标尺：仅在有第一张图（节点数大于1）后才显示
-        total = self._effective_total_beats()
-        if self.node_count() > 1:
+        total = sum(self.graph_list[1:])
+        if len(self.graph_list) > 1:
             p.setPen(QPen(QColor("#aeaeae"), 1))
             p.drawLine(self._ruler_rect.left(), self._middle_bottom, self._ruler_rect.right(), self._middle_bottom)
 
@@ -394,12 +398,12 @@ class TimelineWidget(QWidget):
                 if i == 0:
                     return
 
-                dialog = NodeEditDialog(i, self.beat_intervals[i], self)
+                dialog = NodeEditDialog(i, self.graph_list[i], self)
                 if dialog.exec() == QDialog.DialogCode.Accepted:
                     if dialog.delete_requested:
                         self.delete_node(i)
                     else:
-                        self.beat_intervals[i] = dialog.interval_value()
+                        self.graph_list[i] = dialog.get_interval_value()
                         self._recalculate_width()
                         self.timelineChanged.emit()
                         self.update()
