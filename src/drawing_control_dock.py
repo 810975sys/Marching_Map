@@ -3,7 +3,9 @@
 """
 
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDockWidget,
     QDoubleSpinBox,
@@ -47,8 +49,15 @@ class DrawingControlDock(QDockWidget):
         self.statusLabel = QLabel("", content)  # 当前绘制状态提示
         layout.addWidget(self.statusLabel)
 
-        self.confirmButton = QPushButton("确认绘制", content)   # 确认按钮，完成绘制并清空草稿状态
-        self.cancelButton = QPushButton("取消绘制", content)    # 取消按钮，放弃草稿并清空草稿状态
+        self.confirmButton = QPushButton("确认绘制 Enter", content)   # 确认按钮，完成绘制并清空草稿状态
+        self._confirm_shortcut_enter = QShortcut(QKeySequence(Qt.Key.Key_Enter), self)  # 绑定快捷键
+        self._confirm_shortcut_enter.setContext(Qt.ShortcutContext.ApplicationShortcut) # 设置快捷方式上下文为应用程序级，确保在任何情况下按下 Enter 都能触发确认操作
+        self._confirm_shortcut_enter.activated.connect(self._trigger_confirm_shortcut)
+        
+        self.cancelButton = QPushButton("取消绘制 Esc", content)    # 取消按钮，放弃草稿并清空草稿状态
+        self._cancel_shortcut_esc = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+        self._cancel_shortcut_esc.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._cancel_shortcut_esc.activated.connect(self._trigger_cancel_shortcut)
 
         # 默认点位个数设置
         self.linePointCountLabel = QLabel("点位个数", content)
@@ -386,6 +395,18 @@ class DrawingControlDock(QDockWidget):
         self._draft_active = active
         self.setAllowedAreas(Qt.DockWidgetArea.NoDockWidgetArea)
         self.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetClosable)
+
+    def _trigger_confirm_shortcut(self):
+        if QApplication.activeModalWidget() is not None:
+            return
+        if self.isVisible() and self.confirmButton.isEnabled():
+            self.confirmButton.click()
+
+    def _trigger_cancel_shortcut(self):
+        if QApplication.activeModalWidget() is not None:
+            return
+        if self.isVisible() and self.cancelButton.isEnabled():
+            self.cancelButton.click()
 
     def closeEvent(self, event):
         """当绘制控制台被关闭时，如果草图处于激活状态则取消当前绘制，清理草图状态"""

@@ -18,10 +18,34 @@ from field_info import FieldInfo
 from field_renderer import GridRenderer
 from scene_items import PerformerPointItem, ReferenceHandleItem
 from scheme_scene_data import SchemeSceneData
+from draw_utils import (
+    _distance,
+    _dedupe_points,
+    # _sample_line_points_with_count,
+    _sample_polyline_points,
+    _sample_polyline_points_with_count,
+    _sample_polyline_points_with_count_and_spacing,
+    _sample_curve_points,
+    _build_dense_curve_points,
+    _sample_closed_polyline_points_with_spacing,
+    _sample_closed_polyline_points_with_count,
+    _make_polygon_points,
+    # _circle_from_two_points,
+    # _rectangle_from_three_points,
+    _circumcenter,
+    _arc_path_from_three_points,
+    _sample_arc_points,
+    _sample_arc_points_with_count,
+    _sample_arc_points_with_count_and_spacing,
+    _sample_rectangle_fill_points_with_counts,
+    _enforce_sampling_auto_rule,
+    _enforce_sampling_shift_auto_rule,
+    _sample_circle_points,
+    _sample_circle_points_with_count,
+    _append_unique_reference_point
+)
 
-def _distance(p1: tuple[float, float], p2: tuple[float, float]) -> float:
-    """计算两点之间的欧几里得距离。"""
-    return math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+# distance helper imported from scheme_helpers
 
 class SchemeScene(SchemeSceneData, QGraphicsScene):
     """主绘图场景：管理节点点位、图形草稿与渲染。"""
@@ -442,200 +466,41 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 self.addItem(dot)
                 self._pending_preview_items.append(dot)
 
-    def _dedupe_points(self, points: list[tuple[float, float]]) -> list[tuple[float, float]]:
-        """根据坐标值去重，避免重复点位导致的图元重叠与性能问题。"""
-        unique = []
-        seen = set()
-        for x, y in points:
-            key = (round(x, 6), round(y, 6))
-            if key in seen:
-                continue
-            seen.add(key)
-            unique.append((x, y))
-        return unique
+    # def _dedupe_points(self, points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    #     """根据坐标值去重，避免重复点位导致的图元重叠与性能问题。"""
+    #     return _dedupe_points(points)
 
-    def _sample_line_points_with_count(self, p1: tuple[float, float], p2: tuple[float, float], spacing: float, point_count: int) -> list[tuple[float, float]]:
-        """在线段上以固定间距和点位数量采样点位，包含起点但不包含终点；当点位数量过少时优先保证间距。"""
-        count = max(1, int(point_count))
-        dist = _distance(p1, p2)
-        if dist <= 1e-9:
-            return [p1]
-        ux = (p2[0] - p1[0]) / dist
-        uy = (p2[1] - p1[1]) / dist
-        return [(
-            p1[0] + ux * spacing * index,
-            p1[1] + uy * spacing * index,
-        ) for index in range(count)]
+    # def _sample_line_points_with_count(self, p1: tuple[float, float], p2: tuple[float, float], spacing: float, point_count: int) -> list[tuple[float, float]]:
+    #     """在线段上以固定间距和点位数量采样点位，包含起点但不包含终点；当点位数量过少时优先保证间距。"""
+    #     return _sample_line_points_with_count(p1, p2, spacing, point_count)
 
-    def _sample_polyline_points(self, points: list[tuple[float, float]], spacing: float) -> list[tuple[float, float]]:
-        """在线段上以固定间距采样点位，包含起点但不包含终点。"""
-        if len(points) < 2:
-            return points[:]
-        sampled = [points[0]]
-        next_target = spacing
-        traveled = 0.0
-        for idx in range(len(points) - 1):
-            start = points[idx]
-            end = points[idx + 1]
-            segment_length = _distance(start, end)
-            if segment_length <= 1e-9:
-                continue
-            while next_target <= traveled + segment_length + 1e-9:
-                distance_on_segment = next_target - traveled
-                t = distance_on_segment / segment_length
-                sampled.append((
-                    start[0] + (end[0] - start[0]) * t,
-                    start[1] + (end[1] - start[1]) * t,
-                ))
-                next_target += spacing
-            traveled += segment_length
-        return sampled
+    # def _sample_polyline_points(self, points: list[tuple[float, float]], spacing: float) -> list[tuple[float, float]]:
+    #     """在线段上以固定间距采样点位，包含起点但不包含终点。"""
+    #     return _sample_polyline_points(points, spacing)
 
-    def _sample_polyline_points_with_count(self, points: list[tuple[float, float]], point_count: int) -> list[tuple[float, float]]:
-        """在线段上以固定间距和点位数量采样点位，包含起点但不包含终点；当点位数量过少时优先保证间距。"""
-        if len(points) < 2:
-            return points[:]
-        count = max(1, int(point_count))
-        if count == 1:
-            return [points[0]]
+    # def _sample_polyline_points_with_count(self, points: list[tuple[float, float]], point_count: int) -> list[tuple[float, float]]:
+    #     """在线段上以固定间距和点位数量采样点位，包含起点但不包含终点；当点位数量过少时优先保证间距。"""
+    #     return _sample_polyline_points_with_count(points, point_count)
 
-        segment_lengths = []
-        total_length = 0.0
-        for idx in range(len(points) - 1):
-            seg_len = _distance(points[idx], points[idx + 1])
-            segment_lengths.append(seg_len)
-            total_length += seg_len
-        if total_length <= 1e-9:
-            return [points[0]]
+    # def _sample_polyline_points_with_count_and_spacing(self, points: list[tuple[float, float]], point_count: int, spacing: float) -> list[tuple[float, float]]:
+    #     """在线段上以固定间距和点位数量采样点位，包含起点但不包含终点；当点位数量过少时优先保证间距；当点位数量过多时优先保证数量。"""
+    #     return _sample_polyline_points_with_count_and_spacing(points, point_count, spacing)
 
-        step = total_length / (count - 1)
-        sampled = [points[0]]
-        next_target = step
-        traveled = 0.0
-        for idx, seg_len in enumerate(segment_lengths):
-            start = points[idx]
-            end = points[idx + 1]
-            if seg_len <= 1e-9:
-                traveled += seg_len
-                continue
-            while next_target <= traveled + seg_len + 1e-9 and len(sampled) < count - 1:
-                distance_on_segment = next_target - traveled
-                t = distance_on_segment / seg_len
-                sampled.append((
-                    start[0] + (end[0] - start[0]) * t,
-                    start[1] + (end[1] - start[1]) * t,
-                ))
-                next_target += step
-            traveled += seg_len
+    # def _sample_curve_points(self, points: list[tuple[float, float]], spacing: float) -> list[tuple[float, float]]:
+    #     """基于 Catmull-Rom 样条生成平滑曲线并按 spacing 重新等距采样（返回 field 坐标点）。"""
+    #     return _sample_curve_points(points, spacing)
 
-        if len(sampled) < count:
-            sampled.append(points[-1])
-        return sampled[:count]
-
-    def _sample_polyline_points_with_count_and_spacing(self, points: list[tuple[float, float]], point_count: int, spacing: float) -> list[tuple[float, float]]:
-        """在线段上以固定间距和点位数量采样点位，包含起点但不包含终点；当点位数量过少时优先保证间距；当点位数量过多时优先保证数量。"""
-        if len(points) < 2:
-            return points[:]
-
-        count = max(1, int(point_count))
-        if count == 1:
-            return [points[0]]
-
-        segment_lengths = []
-        total_length = 0.0
-        for idx in range(len(points) - 1):
-            seg_len = _distance(points[idx], points[idx + 1])
-            segment_lengths.append(seg_len)
-            total_length += seg_len
-
-        if total_length <= 1e-9:
-            return [points[0]]
-
-        last_dx = points[-1][0] - points[-2][0]
-        last_dy = points[-1][1] - points[-2][1]
-        last_len = math.hypot(last_dx, last_dy)
-        if last_len <= 1e-9:
-            last_unit_x = 0.0
-            last_unit_y = 0.0
-        else:
-            last_unit_x = last_dx / last_len
-            last_unit_y = last_dy / last_len
-
-        sampled = []
-        traveled = 0.0
-        segment_index = 0
-        for index in range(count):
-            target = spacing * index
-            while segment_index < len(segment_lengths) and target > traveled + segment_lengths[segment_index] + 1e-9:
-                traveled += segment_lengths[segment_index]
-                segment_index += 1
-
-            if segment_index >= len(segment_lengths):
-                extra = target - total_length
-                sampled.append((
-                    points[-1][0] + last_unit_x * extra,
-                    points[-1][1] + last_unit_y * extra,
-                ))
-                continue
-
-            seg_len = segment_lengths[segment_index]
-            if seg_len <= 1e-9:
-                sampled.append(points[segment_index])
-                continue
-
-            start = points[segment_index]
-            end = points[segment_index + 1]
-            distance_on_segment = target - traveled
-            t = max(0.0, min(1.0, distance_on_segment / seg_len))
-            sampled.append((
-                start[0] + (end[0] - start[0]) * t,
-                start[1] + (end[1] - start[1]) * t,
-            ))
-
-        return sampled
-
-    def _sample_curve_points(self, points: list[tuple[float, float]], spacing: float) -> list[tuple[float, float]]:
-        """基于 Catmull-Rom 样条生成平滑曲线并按 spacing 重新等距采样（返回 field 坐标点）。"""
-        dense = self._build_dense_curve_points(points, spacing)
-        if len(dense) < 2:
-            return dense[:]
-
-        # 将密集曲线点按 spacing 等距重采样（复用折线采样实现）
-        return self._sample_polyline_points(dense, spacing)
-
-    def _build_dense_curve_points(self, points: list[tuple[float, float]], spacing_hint: float) -> list[tuple[float, float]]:
-        """生成 Catmull-Rom 曲线的密集折线点，为不同采样策略提供统一输入。"""
-        if len(points) < 2:
-            return points[:]
-
-        dense = []
-        n = len(points)
-        for i in range(n - 1):
-            p0 = points[i - 1] if i - 1 >= 0 else points[i]
-            p1 = points[i]
-            p2 = points[i + 1]
-            p3 = points[i + 2] if i + 2 < n else points[i + 1]
-
-            seg_len = max(1e-9, _distance(p1, p2))
-            # 根据段长度和采样间隔决定密集采样步数
-            steps = max(6, int(seg_len / max(1e-9, spacing_hint * 0.25)))
-            for s in range(steps):
-                t = s / steps
-                t2 = t * t
-                t3 = t2 * t
-                x = 0.5 * ((2 * p1[0]) + (-p0[0] + p2[0]) * t + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3)
-                y = 0.5 * ((2 * p1[1]) + (-p0[1] + p2[1]) * t + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)
-                dense.append((x, y))
-        dense.append(points[-1])
-        return dense
+    # def _build_dense_curve_points(self, points: list[tuple[float, float]], spacing_hint: float) -> list[tuple[float, float]]:
+    #     """生成 Catmull-Rom 曲线的密集折线点，为不同采样策略提供统一输入。"""
+    #     return _build_dense_curve_points(points, spacing_hint)
 
     def _sample_curve_points_with_count(self, points: list[tuple[float, float]], point_count: int) -> list[tuple[float, float]]:
         """基于 Catmull-Rom 样条生成平滑曲线，并按目标点数重新采样。"""
-        dense = self._build_dense_curve_points(points, float(self.field_info.grid_step))
+        dense = _build_dense_curve_points(points, float(self.field_info.grid_step))
         if len(dense) < 2:
             return dense[:]
 
-        return self._sample_polyline_points_with_count(dense, point_count)
+        return _sample_polyline_points_with_count(dense, point_count)
 
     def set_curve_mode(self, mode: str):
         """设置曲线绘制模式：'polyline' 或 'curve'。"""
@@ -650,368 +515,286 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self._draw_pending_reference_preview()
         self.update()
 
-    def _sample_circle_points(self, center: tuple[float, float], radius_point: tuple[float, float], spacing: float) -> list[tuple[float, float]]:
-        """圆绘制点位预览"""
-        cx, cy, radius = self._circle_from_two_points(center, radius_point)
-        if radius <= 1e-9:
-            return [center]
-        circumference = 2.0 * math.pi * radius
-        # 从第二个参考点开始，沿逆时针方向按固定弧长步进生成点位。
-        # 若末尾剩余弧长不足 spacing，则不生成接近起点的最后一个点，避免尾段过短。
-        # 原实现（向下取整）：
-        # point_count = int(circumference // max(1e-9, spacing))
-        # 改为四舍五入以与按点数采样的生成规则保持一致性
-        point_count = max(1, int(round(circumference / max(1e-9, spacing))))
-        if point_count <= 0:
-            return [radius_point]
+    # def _sample_circle_points(self, center: tuple[float, float], radius_point: tuple[float, float], spacing: float) -> list[tuple[float, float]]:
+    #     """圆绘制点位预览"""
+    #     cx, cy, radius = _circle_from_two_points(center, radius_point)
+    #     if radius <= 1e-9:
+    #         return [center]
+    #     circumference = 2.0 * math.pi * radius
+    #     # 从第二个参考点开始，沿逆时针方向按固定弧长步进生成点位。
+    #     # 若末尾剩余弧长不足 spacing，则不生成接近起点的最后一个点，避免尾段过短。
+    #     # 原实现（向下取整）：
+    #     # point_count = int(circumference // max(1e-9, spacing))
+    #     # 改为四舍五入以与按点数采样的生成规则保持一致性
+    #     point_count = max(1, int(round(circumference / max(1e-9, spacing))))
+    #     if point_count <= 0:
+    #         return [radius_point]
 
-        start_angle = math.atan2(radius_point[1] - cy, radius_point[0] - cx)
-        points = []
-        for index in range(point_count):
-            arc_length = spacing * index
-            angle = start_angle - arc_length / radius
-            points.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
-        return points
+    #     start_angle = math.atan2(radius_point[1] - cy, radius_point[0] - cx)
+    #     points = []
+    #     for index in range(point_count):
+    #         arc_length = spacing * index
+    #         angle = start_angle - arc_length / radius
+    #         points.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+    #     return points
 
-    def _sample_circle_points_with_count(self, center: tuple[float, float], radius_point: tuple[float, float], point_count: int) -> list[tuple[float, float]]:
-        """圆绘制点位预览（按点位数量采样）"""
-        cx, cy, radius = self._circle_from_two_points(center, radius_point)
-        if radius <= 1e-9:
-            return [center]
-        count = max(1, int(point_count))
-        if count == 1:
-            return [radius_point]
+    # def _sample_circle_points_with_count(self, center: tuple[float, float], radius_point: tuple[float, float], point_count: int) -> list[tuple[float, float]]:
+    #     """圆绘制点位预览（按点位数量采样）"""
+    #     cx, cy, radius = _circle_from_two_points(center, radius_point)
+    #     if radius <= 1e-9:
+    #         return [center]
+    #     count = max(1, int(point_count))
+    #     if count == 1:
+    #         return [radius_point]
 
-        start_angle = math.atan2(radius_point[1] - cy, radius_point[0] - cx)
-        points = []
-        for index in range(count):
-            angle = start_angle - 2.0 * math.pi * index / count
-            points.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
-        return points
+    #     start_angle = math.atan2(radius_point[1] - cy, radius_point[0] - cx)
+    #     points = []
+    #     for index in range(count):
+    #         angle = start_angle - 2.0 * math.pi * index / count
+    #         points.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+    #     return points
 
-    def _sample_arc_points(self, start: tuple[float, float], through: tuple[float, float], end: tuple[float, float], spacing: float) -> list[tuple[float, float]]:
-        """弧绘制点位预览，基于三点确定的圆弧生成点位。"""
-        center = self._circumcenter(start, through, end)
-        if center is None:
-            # 退化为折线时，按整段折线连续等距采样（只保证起点落点）。
-            return self._sample_polyline_points([start, through, end], spacing)
+    # def _sample_arc_points(self, start: tuple[float, float], through: tuple[float, float], end: tuple[float, float], spacing: float) -> list[tuple[float, float]]:
+    #     """弧绘制点位预览，基于三点确定的圆弧生成点位。"""
+    #     center = _circumcenter(start, through, end)
+    #     if center is None:
+    #         # 退化为折线时，按整段折线连续等距采样（只保证起点落点）。
+    #         return _sample_polyline_points([start, through, end], spacing)
 
-        cx, cy = center
-        radius = math.hypot(start[0] - cx, start[1] - cy)
-        if radius <= 1e-9:
-            return [start, end]
+    #     cx, cy = center
+    #     radius = math.hypot(start[0] - cx, start[1] - cy)
+    #     if radius <= 1e-9:
+    #         return [start, end]
 
-        start_angle = math.atan2(start[1] - cy, start[0] - cx)
-        through_angle = math.atan2(through[1] - cy, through[0] - cx)
-        end_angle = math.atan2(end[1] - cy, end[0] - cx)
+    #     start_angle = math.atan2(start[1] - cy, start[0] - cx)
+    #     through_angle = math.atan2(through[1] - cy, through[0] - cx)
+    #     end_angle = math.atan2(end[1] - cy, end[0] - cx)
 
-        def norm(a):
-            while a < 0:
-                a += 2.0 * math.pi
-            while a >= 2.0 * math.pi:
-                a -= 2.0 * math.pi
-            return a
+    #     def norm(a):
+    #         while a < 0:
+    #             a += 2.0 * math.pi
+    #         while a >= 2.0 * math.pi:
+    #             a -= 2.0 * math.pi
+    #         return a
 
-        s = norm(start_angle)
-        m = norm(through_angle)
-        e = norm(end_angle)
-        tau = 2.0 * math.pi
+    #     s = norm(start_angle)
+    #     m = norm(through_angle)
+    #     e = norm(end_angle)
+    #     tau = 2.0 * math.pi
 
-        # 判定第三点属于 start->end 的 CCW 弧，还是 CW 弧。
-        ccw_se = (e - s) % tau
-        ccw_sm = (m - s) % tau
-        use_ccw = ccw_sm <= ccw_se
+    #     # 判定第三点属于 start->end 的 CCW 弧，还是 CW 弧。
+    #     ccw_se = (e - s) % tau
+    #     ccw_sm = (m - s) % tau
+    #     use_ccw = ccw_sm <= ccw_se
 
-        # 仅采样包含第三参考点的那段弧，并拆成两段确保必经 through。
-        if use_ccw:
-            d1 = ccw_sm
-            d2 = ccw_se - ccw_sm
-        else:
-            cw_sm = (s - m) % tau
-            cw_se = (s - e) % tau
-            d1 = -cw_sm
-            d2 = -(cw_se - cw_sm)
+    #     # 仅采样包含第三参考点的那段弧，并拆成两段确保必经 through。
+    #     if use_ccw:
+    #         d1 = ccw_sm
+    #         d2 = ccw_se - ccw_sm
+    #     else:
+    #         cw_sm = (s - m) % tau
+    #         cw_se = (s - e) % tau
+    #         d1 = -cw_sm
+    #         d2 = -(cw_se - cw_sm)
 
-        total_delta = d1 + d2
-        total_len = abs(total_delta) * radius
-        count = int(total_len // spacing)
-        points = []
-        for i in range(count + 1):
-            distance = spacing * i
-            angle = s + (distance / radius) * (1.0 if total_delta >= 0 else -1.0)
-            points.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
-        return points
+    #     total_delta = d1 + d2
+    #     total_len = abs(total_delta) * radius
+    #     count = int(total_len // spacing)
+    #     points = []
+    #     for i in range(count + 1):
+    #         distance = spacing * i
+    #         angle = s + (distance / radius) * (1.0 if total_delta >= 0 else -1.0)
+    #         points.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+    #     return points
 
-    def _sample_arc_points_with_count(self, start: tuple[float, float], through: tuple[float, float], end: tuple[float, float], point_count: int) -> list[tuple[float, float]]:
-        """弧绘制点位预览，基于三点确定的圆弧生成点位（按点位数量采样）。"""
-        center = self._circumcenter(start, through, end)
-        if center is None:
-            count = max(1, int(point_count))
-            if count == 1:
-                return [start]
-            total_length = _distance(start, through) + _distance(through, end)
-            spacing = max(1e-9, total_length / (count - 1))
-            return self._sample_polyline_points([start, through, end], spacing)
+    # def _sample_arc_points_with_count(self, start: tuple[float, float], through: tuple[float, float], end: tuple[float, float], point_count: int) -> list[tuple[float, float]]:
+    #     """弧绘制点位预览，基于三点确定的圆弧生成点位（按点位数量采样）。"""
+    #     center = _circumcenter(start, through, end)
+    #     if center is None:
+    #         count = max(1, int(point_count))
+    #         if count == 1:
+    #             return [start]
+    #         total_length = _distance(start, through) + _distance(through, end)
+    #         spacing = max(1e-9, total_length / (count - 1))
+    #         return _sample_polyline_points([start, through, end], spacing)
 
-        cx, cy = center
-        radius = math.hypot(start[0] - cx, start[1] - cy)
-        if radius <= 1e-9:
-            return [start, end]
+    #     cx, cy = center
+    #     radius = math.hypot(start[0] - cx, start[1] - cy)
+    #     if radius <= 1e-9:
+    #         return [start, end]
 
-        start_angle = math.atan2(start[1] - cy, start[0] - cx)
-        through_angle = math.atan2(through[1] - cy, through[0] - cx)
-        end_angle = math.atan2(end[1] - cy, end[0] - cx)
+    #     start_angle = math.atan2(start[1] - cy, start[0] - cx)
+    #     through_angle = math.atan2(through[1] - cy, through[0] - cx)
+    #     end_angle = math.atan2(end[1] - cy, end[0] - cx)
 
-        def norm(a):
-            while a < 0:
-                a += 2.0 * math.pi
-            while a >= 2.0 * math.pi:
-                a -= 2.0 * math.pi
-            return a
+    #     def norm(a):
+    #         while a < 0:
+    #             a += 2.0 * math.pi
+    #         while a >= 2.0 * math.pi:
+    #             a -= 2.0 * math.pi
+    #         return a
 
-        s = norm(start_angle)
-        m = norm(through_angle)
-        e = norm(end_angle)
-        tau = 2.0 * math.pi
-        ccw_se = (e - s) % tau
-        ccw_sm = (m - s) % tau
-        use_ccw = ccw_sm <= ccw_se
+    #     s = norm(start_angle)
+    #     m = norm(through_angle)
+    #     e = norm(end_angle)
+    #     tau = 2.0 * math.pi
+    #     ccw_se = (e - s) % tau
+    #     ccw_sm = (m - s) % tau
+    #     use_ccw = ccw_sm <= ccw_se
 
-        if use_ccw:
-            total_delta = ccw_se
-        else:
-            total_delta = -((s - e) % tau)
+    #     if use_ccw:
+    #         total_delta = ccw_se
+    #     else:
+    #         total_delta = -((s - e) % tau)
 
-        count = max(1, int(point_count))
-        if count == 1:
-            return [start]
+    #     count = max(1, int(point_count))
+    #     if count == 1:
+    #         return [start]
 
-        points = []
-        for i in range(count):
-            distance = abs(total_delta) * radius * i / (count - 1)
-            angle = s + (distance / radius) * (1.0 if total_delta >= 0 else -1.0)
-            points.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
-        return points
+    #     points = []
+    #     for i in range(count):
+    #         distance = abs(total_delta) * radius * i / (count - 1)
+    #         angle = s + (distance / radius) * (1.0 if total_delta >= 0 else -1.0)
+    #         points.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+    #     return points
 
-    def _sample_arc_points_with_count_and_spacing(self, start: tuple[float, float], through: tuple[float, float], end: tuple[float, float], point_count: int, spacing: float) -> list[tuple[float, float]]:
-        """按起点开始、固定间隔和固定个数采样弧：
-        - 从 start 出发，每隔 spacing 放一个点，直到达到 point_count。
-        - 若弧长不足以放下所有点，超出部分沿终点处切线方向延申。
-        返回 field 单位坐标点列表。
-        """
-        count = max(1, int(point_count))
-        spacing = max(1e-9, float(spacing))
+    # def _sample_arc_points_with_count_and_spacing(self, start: tuple[float, float], through: tuple[float, float], end: tuple[float, float], point_count: int, spacing: float) -> list[tuple[float, float]]:
+    #     """按起点开始、固定间隔和固定个数采样弧：
+    #     - 从 start 出发，每隔 spacing 放一个点，直到达到 point_count。
+    #     - 若弧长不足以放下所有点，超出部分沿终点处切线方向延申。
+    #     返回 field 单位坐标点列表。
+    #     """
+    #     count = max(1, int(point_count))
+    #     spacing = max(1e-9, float(spacing))
 
-        center = self._circumcenter(start, through, end)
-        if center is None:
-            # 退化为折线：重用折线按个数与间隔采样的实现
-            return self._sample_polyline_points_with_count_and_spacing([start, through, end], count, spacing)
+    #     center = _circumcenter(start, through, end)
+    #     if center is None:
+    #         # 退化为折线：重用折线按个数与间隔采样的实现
+    #         return _sample_polyline_points_with_count_and_spacing([start, through, end], count, spacing)
 
-        cx, cy = center
-        radius = math.hypot(start[0] - cx, start[1] - cy)
-        if radius <= 1e-9:
-            return [start]
+    #     cx, cy = center
+    #     radius = math.hypot(start[0] - cx, start[1] - cy)
+    #     if radius <= 1e-9:
+    #         return [start]
 
-        start_angle = math.atan2(start[1] - cy, start[0] - cx)
-        through_angle = math.atan2(through[1] - cy, through[0] - cx)
-        end_angle = math.atan2(end[1] - cy, end[0] - cx)
+    #     start_angle = math.atan2(start[1] - cy, start[0] - cx)
+    #     through_angle = math.atan2(through[1] - cy, through[0] - cx)
+    #     end_angle = math.atan2(end[1] - cy, end[0] - cx)
 
-        def norm(a):
-            while a < 0:
-                a += 2.0 * math.pi
-            while a >= 2.0 * math.pi:
-                a -= 2.0 * math.pi
-            return a
+    #     def norm(a):
+    #         while a < 0:
+    #             a += 2.0 * math.pi
+    #         while a >= 2.0 * math.pi:
+    #             a -= 2.0 * math.pi
+    #         return a
 
-        s = norm(start_angle)
-        m = norm(through_angle)
-        e = norm(end_angle)
-        tau = 2.0 * math.pi
+    #     s = norm(start_angle)
+    #     m = norm(through_angle)
+    #     e = norm(end_angle)
+    #     tau = 2.0 * math.pi
 
-        ccw_se = (e - s) % tau
-        ccw_sm = (m - s) % tau
-        use_ccw = ccw_sm <= ccw_se
+    #     ccw_se = (e - s) % tau
+    #     ccw_sm = (m - s) % tau
+    #     use_ccw = ccw_sm <= ccw_se
 
-        if use_ccw:
-            if ccw_se >= 0:
-                total_delta = ccw_se
-            else:
-                total_delta = -( (s - e) % tau )
-        else:
-            # clockwise negative delta
-            total_delta = -((s - e) % tau)
+    #     if use_ccw:
+    #         if ccw_se >= 0:
+    #             total_delta = ccw_se
+    #         else:
+    #             total_delta = -( (s - e) % tau )
+    #     else:
+    #         # clockwise negative delta
+    #         total_delta = -((s - e) % tau)
 
-        total_len = abs(total_delta) * radius
+    #     total_len = abs(total_delta) * radius
 
-        points: list[tuple[float, float]] = []
-        # 方向标记：角度增大为正
-        sign = 1.0 if total_delta >= 0 else -1.0
+    #     points: list[tuple[float, float]] = []
+    #     # 方向标记：角度增大为正
+    #     sign = 1.0 if total_delta >= 0 else -1.0
 
-        # 计算单位切向量（沿着角度变化的方向）在终点处，用于延申
-        ux_t = -math.sin(end_angle)
-        uy_t = math.cos(end_angle)
-        unit_tangent_x = sign * ux_t
-        unit_tangent_y = sign * uy_t
+    #     # 计算单位切向量（沿着角度变化的方向）在终点处，用于延申
+    #     ux_t = -math.sin(end_angle)
+    #     uy_t = math.cos(end_angle)
+    #     unit_tangent_x = sign * ux_t
+    #     unit_tangent_y = sign * uy_t
 
-        for i in range(count):
-            target_dist = spacing * i
-            if target_dist <= total_len + 1e-9:
-                angle = s + (target_dist / radius) * sign
-                points.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
-            else:
-                extra = target_dist - total_len
-                # 起点为弧终点位置
-                arc_end_x = cx + radius * math.cos(e)
-                arc_end_y = cy + radius * math.sin(e)
-                points.append((arc_end_x + unit_tangent_x * extra, arc_end_y + unit_tangent_y * extra))
+    #     for i in range(count):
+    #         target_dist = spacing * i
+    #         if target_dist <= total_len + 1e-9:
+    #             angle = s + (target_dist / radius) * sign
+    #             points.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+    #         else:
+    #             extra = target_dist - total_len
+    #             # 起点为弧终点位置
+    #             arc_end_x = cx + radius * math.cos(e)
+    #             arc_end_y = cy + radius * math.sin(e)
+    #             points.append((arc_end_x + unit_tangent_x * extra, arc_end_y + unit_tangent_y * extra))
 
-        return points
+    #     return points
 
-    def _sample_rectangle_fill_points_with_counts(self, a: tuple[float, float], b: tuple[float, float], c: tuple[float, float], spacing_base: float, spacing_shift: float, base_point_count: int, shift_point_count: int) -> list[tuple[float, float]]:
-        """按两个方向的点位个数与间隔采样填充四边形点位。"""
-        ax, ay = a
-        bx, by = b
-        cx, cy = c
-        base_dx, base_dy = bx - ax, by - ay
-        shift_dx, shift_dy = cx - ax, cy - ay
-        base_len = math.hypot(base_dx, base_dy)
-        shift_len = math.hypot(shift_dx, shift_dy)
-        if base_len <= 1e-9 or shift_len <= 1e-9:
-            return [a, b, c]
+    # def _sample_rectangle_fill_points_with_counts(self, a: tuple[float, float], b: tuple[float, float], c: tuple[float, float], spacing_base: float, spacing_shift: float, base_point_count: int, shift_point_count: int) -> list[tuple[float, float]]:
+    #     """按两个方向的点位个数与间隔采样填充四边形点位。"""
+    #     ax, ay = a
+    #     bx, by = b
+    #     cx, cy = c
+    #     base_dx, base_dy = bx - ax, by - ay
+    #     shift_dx, shift_dy = cx - ax, cy - ay
+    #     base_len = math.hypot(base_dx, base_dy)
+    #     shift_len = math.hypot(shift_dx, shift_dy)
+    #     if base_len <= 1e-9 or shift_len <= 1e-9:
+    #         return [a, b, c]
 
-        base_unit_x = base_dx / base_len
-        base_unit_y = base_dy / base_len
-        shift_unit_x = shift_dx / shift_len
-        shift_unit_y = shift_dy / shift_len
+    #     base_unit_x = base_dx / base_len
+    #     base_unit_y = base_dy / base_len
+    #     shift_unit_x = shift_dx / shift_len
+    #     shift_unit_y = shift_dy / shift_len
 
-        base_point_count = max(1, int(base_point_count))
-        shift_point_count = max(1, int(shift_point_count))
+    #     base_point_count = max(1, int(base_point_count))
+    #     shift_point_count = max(1, int(shift_point_count))
 
-        base_line = self._sample_line_points_with_count(a, b, spacing_base, base_point_count)
-        if not base_line:
-            base_line = [a]
+    #     base_line = _sample_line_points_with_count(a, b, spacing_base, base_point_count)
+    #     if not base_line:
+    #         base_line = [a]
 
-        points = []
-        for shift_index in range(shift_point_count):
-            shift_distance = spacing_shift * shift_index
-            row = [(
-                px + shift_unit_x * shift_distance,
-                py + shift_unit_y * shift_distance,
-            ) for px, py in base_line]
-            points.extend(row)
+    #     points = []
+    #     for shift_index in range(shift_point_count):
+    #         shift_distance = spacing_shift * shift_index
+    #         row = [(
+    #             px + shift_unit_x * shift_distance,
+    #             py + shift_unit_y * shift_distance,
+    #         ) for px, py in base_line]
+    #         points.extend(row)
 
-        return points or [a, b, c]
+    #     return points or [a, b, c]
 
     def _sample_polygon_perimeter_points(self, center: tuple[float, float], radius_point: tuple[float, float], spacing: float) -> list[tuple[float, float]]:
         """多边形绘制点位预览"""
-        vertices = self._make_polygon_points(center, radius_point, self._polygon_side_count("多边形"))
+        vertices = _make_polygon_points(center, radius_point, self.polygon_side_count("多边形"))
         if not vertices:
             return []
-        points = self._sample_closed_polyline_points_with_spacing(vertices, spacing)
+        points = _sample_closed_polyline_points_with_spacing(vertices, spacing)
         return points
 
-    def _sample_closed_polyline_points_with_spacing(self, points: list[tuple[float, float]], spacing: float) -> list[tuple[float, float]]:
-        """按固定间距采样闭合折线：包含起点，不包含回到起点的闭合末点。"""
-        if len(points) < 2:
-            return points[:]
+    # def _sample_closed_polyline_points_with_spacing(self, points: list[tuple[float, float]], spacing: float) -> list[tuple[float, float]]:
+    #     """按固定间距采样闭合折线：包含起点，不包含回到起点的闭合末点。"""
+    #     return _sample_closed_polyline_points_with_spacing(points, spacing)
 
-        spacing = max(1e-9, float(spacing))
-        loop = points + [points[0]]
-        segment_lengths = []
-        total_length = 0.0
-        for idx in range(len(loop) - 1):
-            seg_len = _distance(loop[idx], loop[idx + 1])
-            segment_lengths.append(seg_len)
-            total_length += seg_len
-
-        if total_length <= 1e-9:
-            return [points[0]]
-
-        # 原实现（向下取整）会在间距换算成点数时产生末尾差异：
-        # count = int(total_length // spacing)
-        # 改为四舍五入以与按点数采样保持一致
-        count = max(1, int(round(total_length / spacing)))
-        if count <= 0:
-            return [points[0]]
-
-        sampled = [loop[0]]
-        traveled = 0.0
-        segment_index = 0
-        for index in range(1, count):
-            target = spacing * index
-            while segment_index < len(segment_lengths) and target > traveled + segment_lengths[segment_index] + 1e-9:
-                traveled += segment_lengths[segment_index]
-                segment_index += 1
-
-            if segment_index >= len(segment_lengths):
-                break
-
-            seg_len = segment_lengths[segment_index]
-            if seg_len <= 1e-9:
-                continue
-
-            start = loop[segment_index]
-            end = loop[segment_index + 1]
-            distance_on_segment = target - traveled
-            t = max(0.0, min(1.0, distance_on_segment / seg_len))
-            sampled.append((
-                start[0] + (end[0] - start[0]) * t,
-                start[1] + (end[1] - start[1]) * t,
-            ))
-
-        return sampled
-
-    def _sample_closed_polyline_points_with_count(self, points: list[tuple[float, float]], point_count: int) -> list[tuple[float, float]]:
-        """按点位个数采样闭合折线点位"""
-        if len(points) < 2:
-            return points[:]
-        count = max(1, int(point_count))
-        if count == 1:
-            return [points[0]]
-
-        loop = points + [points[0]]
-        total_length = 0.0
-        segment_lengths = []
-        for idx in range(len(loop) - 1):
-            seg_len = _distance(loop[idx], loop[idx + 1])
-            segment_lengths.append(seg_len)
-            total_length += seg_len
-        if total_length <= 1e-9:
-            return [points[0]]
-
-        step = total_length / count
-        sampled = [loop[0]]
-        next_target = step
-        traveled = 0.0
-        for idx, seg_len in enumerate(segment_lengths):
-            start = loop[idx]
-            end = loop[idx + 1]
-            if seg_len <= 1e-9:
-                traveled += seg_len
-                continue
-            while next_target <= traveled + seg_len + 1e-9 and len(sampled) < count:
-                distance_on_segment = next_target - traveled
-                t = distance_on_segment / seg_len
-                sampled.append((
-                    start[0] + (end[0] - start[0]) * t,
-                    start[1] + (end[1] - start[1]) * t,
-                ))
-                next_target += step
-            traveled += seg_len
-        return sampled[:count]
+    # def _sample_closed_polyline_points_with_count(self, points: list[tuple[float, float]], point_count: int) -> list[tuple[float, float]]:
+    #     """按点位个数采样闭合折线点位"""
+    #     return _sample_closed_polyline_points_with_count(points, point_count)
 
     def _sample_polygon_perimeter_points_with_count(self, center: tuple[float, float], radius_point: tuple[float, float], point_count: int) -> list[tuple[float, float]]:
         """按点位个数采样多边形周长点位"""
-        vertices = self._make_polygon_points(center, radius_point, self._polygon_side_count("多边形"))
+        vertices = _make_polygon_points(center, radius_point, self.polygon_side_count("多边形"))
         if not vertices:
             return []
-        return self._sample_closed_polyline_points_with_count(vertices, point_count)
+        return _sample_closed_polyline_points_with_count(vertices, point_count)
 
     def _generate_performer_points(self, tool_name: str, refs: list[tuple[float, float]]) -> list[tuple[float, float]]:
         """根据当前草稿工具和参考点生成最终的执行点位列表（field 坐标）。"""
         spacing = max(1e-9, float(self.field_info.grid_step) * 2.0)
         if tool_name == "点" and refs:
-            return self._dedupe_points(refs)
+            return _dedupe_points(refs)
         if tool_name in self._sampling_tools and len(refs) >= 2:
             state = self._sampling_state(tool_name)
             line_spacing = max(1e-9, float(self.field_info.grid_step) * float(state["spacing_steps"]))
@@ -1022,57 +805,57 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 is_curve = False
                 # 与曲线/折线分支保持一致的优先级：手动间距+手动点数 -> 手动点数 -> 手动间距 -> 自动间距
                 if state.get("spacing_manual", False) and state.get("point_count_manual", False):
-                    return self._dedupe_points(self._sample_polyline_points_with_count_and_spacing(refs, point_count, line_spacing))
+                    return _dedupe_points(_sample_polyline_points_with_count_and_spacing(refs, point_count, line_spacing))
                 if state.get("spacing_manual", False):
-                    return self._dedupe_points(self._sample_polyline_points(refs, line_spacing))
+                    return _dedupe_points(_sample_polyline_points(refs, line_spacing))
                 if state.get("point_count_manual", False):
-                    return self._dedupe_points(self._sample_polyline_points_with_count(refs, point_count))
-                return self._dedupe_points(self._sample_polyline_points(refs, line_spacing))
+                    return _dedupe_points(_sample_polyline_points_with_count(refs, point_count))
+                return _dedupe_points(_sample_polyline_points(refs, line_spacing))
             elif tool_name == "弧":
                 if state.get("point_count_manual", False) and state.get("spacing_manual", False):
-                    return self._dedupe_points(self._sample_arc_points_with_count_and_spacing(refs[0], refs[2], refs[1], point_count, line_spacing))
+                    return _dedupe_points(_sample_arc_points_with_count_and_spacing(refs[0], refs[2], refs[1], point_count, line_spacing))
                 if state.get("point_count_manual", False):
-                    return self._dedupe_points(self._sample_arc_points_with_count(refs[0], refs[2], refs[1], point_count))
-                # return self._dedupe_points(self._sample_arc_points(refs[0], refs[2], refs[1], spacing))
-                return self._dedupe_points(self._sample_arc_points(refs[0], refs[2], refs[1], line_spacing))
+                    return _dedupe_points(_sample_arc_points_with_count(refs[0], refs[2], refs[1], point_count))
+                # return _dedupe_points(_sample_arc_points(refs[0], refs[2], refs[1], spacing))
+                return _dedupe_points(_sample_arc_points(refs[0], refs[2], refs[1], line_spacing))
             elif tool_name == "圆":
                 if state["point_count_manual"]:
-                    return self._dedupe_points(self._sample_circle_points_with_count(refs[0], refs[1], point_count))
-                return self._dedupe_points(self._sample_circle_points(refs[0], refs[1], line_spacing))
+                    return _dedupe_points(_sample_circle_points_with_count(refs[0], refs[1], point_count))
+                return _dedupe_points(_sample_circle_points(refs[0], refs[1], line_spacing))
             elif tool_name == "多边形":
                 if state["point_count_manual"]:
-                    return self._dedupe_points(self._sample_polygon_perimeter_points_with_count(refs[0], refs[1], point_count))
-                return self._dedupe_points(self._sample_polygon_perimeter_points(refs[0], refs[1], line_spacing))
+                    return _dedupe_points(self._sample_polygon_perimeter_points_with_count(refs[0], refs[1], point_count))
+                return _dedupe_points(self._sample_polygon_perimeter_points(refs[0], refs[1], line_spacing))
         # if tool_name == "弧" and len(refs) >= 3:
         #     # 弧工具参考点语义：端点1、端点2、弧上一点。
-        #     return self._dedupe_points(self._sample_arc_points(refs[0], refs[2], refs[1], spacing))
+        #     return _dedupe_points(_sample_arc_points(refs[0], refs[2], refs[1], spacing))
             elif tool_name == "曲线/折线" and len(refs) >= 2:
                 is_curve = getattr(self, '_curve_mode', 'polyline') == 'curve'
                 if state["spacing_manual"] and state["point_count_manual"]:
                     if is_curve:
-                        # dense_curve = self._sample_curve_points(refs, line_spacing)
-                        dense_curve = self._build_dense_curve_points(refs, line_spacing)
-                        return self._dedupe_points(self._sample_polyline_points_with_count_and_spacing(dense_curve, point_count, line_spacing))
-                    return self._dedupe_points(self._sample_polyline_points_with_count_and_spacing(refs, point_count, line_spacing))
+                        # dense_curve = _sample_curve_points(refs, line_spacing)
+                        dense_curve = _build_dense_curve_points(refs, line_spacing)
+                        return _dedupe_points(_sample_polyline_points_with_count_and_spacing(dense_curve, point_count, line_spacing))
+                    return _dedupe_points(_sample_polyline_points_with_count_and_spacing(refs, point_count, line_spacing))
                 if state["spacing_manual"]:
                     if is_curve:
-                        return self._dedupe_points(self._sample_curve_points(refs, line_spacing))
-                    return self._dedupe_points(self._sample_polyline_points(refs, line_spacing))
+                        return _dedupe_points(_sample_curve_points(refs, line_spacing))
+                    return _dedupe_points(_sample_polyline_points(refs, line_spacing))
                 if state["point_count_manual"]:
                     if is_curve:
-                        return self._dedupe_points(self._sample_curve_points_with_count(refs, point_count))
-                    return self._dedupe_points(self._sample_polyline_points_with_count(refs, point_count))
+                        return _dedupe_points(self._sample_curve_points_with_count(refs, point_count))
+                    return _dedupe_points(_sample_polyline_points_with_count(refs, point_count))
                 if is_curve:
-                    return self._dedupe_points(self._sample_curve_points(refs, line_spacing))
-                return self._dedupe_points(self._sample_polyline_points(refs, line_spacing))
+                    return _dedupe_points(_sample_curve_points(refs, line_spacing))
+                return _dedupe_points(_sample_polyline_points(refs, line_spacing))
             elif tool_name == "填充四边形" and len(refs) >= 3:
                 state = self._sampling_state(tool_name)
                 base_spacing = max(1e-9, float(self.field_info.grid_step) * float(state.get("spacing_steps", 2.0)))
                 shift_spacing = max(1e-9, float(self.field_info.grid_step) * float(state.get("spacing_steps_shift", state.get("spacing_steps", 2.0))))
                 base_point_count = int(state.get("point_count", 1))
                 shift_point_count = int(state.get("point_count_shift", 1))
-                return self._dedupe_points(
-                    self._sample_rectangle_fill_points_with_counts(
+                return _dedupe_points(
+                    _sample_rectangle_fill_points_with_counts(
                         refs[0],
                         refs[1],
                         refs[2],
@@ -1144,13 +927,13 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             end_scene = self._field_to_scene(*refs[1])
             through_scene = self._field_to_scene(*refs[2])
 
-            path = self._arc_path_from_three_points(
+            path = _arc_path_from_three_points(
                 (start_scene.x(), start_scene.y()),
                 (through_scene.x(), through_scene.y()),
                 (end_scene.x(), end_scene.y()),
             )
 
-            center = self._circumcenter(
+            center = _circumcenter(
                 (start_scene.x(), start_scene.y()),
                 (through_scene.x(), through_scene.y()),
                 (end_scene.x(), end_scene.y()),
@@ -1314,59 +1097,59 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         if tool_name not in self._sampling_settings:
             self._sampling_settings[tool_name] = dict(self._sampling_defaults)
         state = self._sampling_settings[tool_name]
-        self._enforce_sampling_auto_rule(tool_name, state)
+        _enforce_sampling_auto_rule(tool_name, state)
         return state
 
-    def _enforce_sampling_auto_rule(self, tool_name: str | None, state: dict, changed: str | None = None):
-        """个数与间隔不允许同时为自动：只允许都手动或仅一项自动。
-        同时保证至少有一项为自动（即不可全部手动）：当两项都为手动时，默认开启点数自动。
-        """
-        point_auto = not bool(state.get("point_count_manual", False))
-        spacing_auto = not bool(state.get("spacing_manual", False))
-        # 若两项同时为自动，则根据最近变更优先保留被手动的那一项
-        if point_auto and spacing_auto:
-            if changed == "point_count_auto":
-                state["spacing_manual"] = True
-                return
-            if changed == "spacing_auto":
-                state["point_count_manual"] = True
-                return
-            # 兜底：保留点数自动，间距手动
-            state["spacing_manual"] = True
-            return
+    # def _enforce_sampling_auto_rule(self, tool_name: str | None, state: dict, changed: str | None = None):
+    #     """个数与间隔不允许同时为自动：只允许都手动或仅一项自动。
+    #     同时保证至少有一项为自动（即不可全部手动）：当两项都为手动时，默认开启点数自动。
+    #     """
+    #     point_auto = not bool(state.get("point_count_manual", False))
+    #     spacing_auto = not bool(state.get("spacing_manual", False))
+    #     # 若两项同时为自动，则根据最近变更优先保留被手动的那一项
+    #     if point_auto and spacing_auto:
+    #         if changed == "point_count_auto":
+    #             state["spacing_manual"] = True
+    #             return
+    #         if changed == "spacing_auto":
+    #             state["point_count_manual"] = True
+    #             return
+    #         # 兜底：保留点数自动，间距手动
+    #         state["spacing_manual"] = True
+    #         return
 
-        # 仅对圆与多边形,若两项同时为手动（即都不是自动），默认启用点数自动以保证至少有一项自动适配；
-        # 对其他图形保持用户手动设置不变，避免影响现有行为。
-        if not point_auto and not spacing_auto:
-            tname = tool_name or ""
-            if tname in ("圆", "多边形"):
-                # 圆/多边形回退策略：当用户把其中一项切到“手动”导致两项都手动时，交换另一项为自动。
-                if changed == "point_count_manual":
-                    state["spacing_manual"] = False
-                    return
-                if changed == "spacing_manual":
-                    state["point_count_manual"] = False
-                    return
-                # 兜底：来源未知时默认保留“点数自动”。
-                state["point_count_manual"] = False
-            return
+    #     # 仅对圆与多边形,若两项同时为手动（即都不是自动），默认启用点数自动以保证至少有一项自动适配；
+    #     # 对其他图形保持用户手动设置不变，避免影响现有行为。
+    #     if not point_auto and not spacing_auto:
+    #         tname = tool_name or ""
+    #         if tname in ("圆", "多边形"):
+    #             # 圆/多边形回退策略：当用户把其中一项切到“手动”导致两项都手动时，交换另一项为自动。
+    #             if changed == "point_count_manual":
+    #                 state["spacing_manual"] = False
+    #                 return
+    #             if changed == "spacing_manual":
+    #                 state["point_count_manual"] = False
+    #                 return
+    #             # 兜底：来源未知时默认保留“点数自动”。
+    #             state["point_count_manual"] = False
+    #         return
 
-    def _enforce_sampling_shift_auto_rule(self, state: dict, changed: str | None = None):
-        """填充四边形第二方向（P0-P2）也不允许“点数自动+间隔自动”同时开启。"""
-        point_auto = not bool(state.get("point_count_shift_manual", False))
-        spacing_auto = not bool(state.get("spacing_shift_manual", False))
-        if not (point_auto and spacing_auto):
-            # 两项不同时为自动，无需调整
-            return
+    # def _enforce_sampling_shift_auto_rule(self, state: dict, changed: str | None = None):
+    #     """填充四边形第二方向（P0-P2）也不允许“点数自动+间隔自动”同时开启。"""
+    #     point_auto = not bool(state.get("point_count_shift_manual", False))
+    #     spacing_auto = not bool(state.get("spacing_shift_manual", False))
+    #     if not (point_auto and spacing_auto):
+    #         # 两项不同时为自动，无需调整
+    #         return
 
-        if changed == "point_count_shift_auto":
-            state["spacing_shift_manual"] = True
-            return
-        if changed == "spacing_shift_auto":
-            state["point_count_shift_manual"] = True
-            return
-        # 兜底：保留“点数自动”，把“间隔”落为手动。
-        state["spacing_shift_manual"] = True
+    #     if changed == "point_count_shift_auto":
+    #         state["spacing_shift_manual"] = True
+    #         return
+    #     if changed == "spacing_shift_auto":
+    #         state["point_count_shift_manual"] = True
+    #         return
+    #     # 兜底：保留“点数自动”，把“间隔”落为手动。
+    #     state["spacing_shift_manual"] = True
 
     def sampling_shift_point_count(self, tool_name: str) -> int:
         """获取填充四边形第二方向（P0-P2）的点位个数设置。"""
@@ -1383,9 +1166,9 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         state = self._sampling_state(tool_name)
         return max(2, int(state.get("polygon_sides", 6)))
 
-    def _polygon_side_count(self, tool_name: str) -> int:
-        """获取多边形工具的边数设置的内部方法，保证返回值至少为 2。"""
-        return self.polygon_side_count(tool_name)
+    # def polygon_side_count(self, tool_name: str) -> int:
+    #     """获取多边形工具的边数设置的内部方法，保证返回值至少为 2。"""
+    #     return self.polygon_side_count(tool_name)
 
     def is_sampling_point_count_auto(self, tool_name: str) -> bool:
         """获取指定工具的采样点位个数设置是否为自动。"""
@@ -1428,7 +1211,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 total += _distance(refs[idx], refs[idx + 1])
             return total
         if tool_name == "弧" and len(refs) >= 3:
-            center = self._circumcenter(refs[0], refs[2], refs[1])
+            center = _circumcenter(refs[0], refs[2], refs[1])
             if center is None:
                 return _distance(refs[0], refs[2]) + _distance(refs[2], refs[1])
             cx, cy = center
@@ -1463,7 +1246,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             radius = _distance(refs[0], refs[1])
             return 2.0 * math.pi * radius
         if tool_name == "多边形" and len(refs) >= 2:
-            vertices = self._make_polygon_points(refs[0], refs[1], self._polygon_side_count(tool_name))
+            vertices = _make_polygon_points(refs[0], refs[1], self.polygon_side_count(tool_name))
             if not vertices:
                 return 0.0
             total = 0.0
@@ -1507,18 +1290,22 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             return max(1, int(state.get("point_count_shift", 1)))
         return max(1, int(shift_len // spacing_shift) + 1)
 
-    def _sampling_shift_length_for_refs(self, tool_name: str, refs: list[tuple[float, float]]) -> float:
-        """计算填充四边形第二方向（P0-P2）的长度。"""
-        if tool_name != "填充四边形" or len(refs) < 3:
-            return 0.0
-        ax, ay = refs[0]
-        cx, cy = refs[2]
-        return math.hypot(cx - ax, cy - ay)
+    # def _sampling_shift_length_for_refs(self, tool_name: str, refs: list[tuple[float, float]]) -> float:
+    #     """计算填充四边形第二方向（P0-P2）的长度。"""
+    #     if tool_name != "填充四边形" or len(refs) < 3:
+    #         return 0.0
+    #     ax, ay = refs[0]
+    #     cx, cy = refs[2]
+    #     return math.hypot(cx - ax, cy - ay)
 
     def _sampling_auto_spacing_steps_shift_for_refs(self, tool_name: str, refs: list[tuple[float, float]]) -> float:
         """计算填充四边形第二方向（P0-P2）的自动间隔步数。"""
         state = self._sampling_state(tool_name)
-        length = self._sampling_shift_length_for_refs(tool_name, refs)
+        length = 0.0
+        if tool_name == "填充四边形" and len(refs) == 3:
+            ax, ay = refs[0]
+            cx, cy = refs[2]
+            length = math.hypot(cx - ax, cy - ay)
         point_count = max(1, int(state.get("point_count_shift", 1)))
         if length <= 1e-9 or point_count <= 1:
             return max(0.001, float(state.get("spacing_steps_shift", state.get("spacing_steps", 2.0))))
@@ -1607,7 +1394,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         """设置指定工具的采样点位个数自动启用或禁用。启用自动时会根据当前草稿参考点自动计算点数；禁用自动会保持当前点数不变并切换到手动模式。"""
         state = self._sampling_state(tool_name)
         state["point_count_manual"] = not bool(enabled)
-        self._enforce_sampling_auto_rule(
+        _enforce_sampling_auto_rule(
             tool_name,
             state,
             changed="point_count_auto" if enabled else "point_count_manual",
@@ -1622,7 +1409,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         state["point_count_shift_manual"] = not bool(enabled)
         if enabled:
             self._sync_sampling_auto_values_from_draft(tool_name)   # 设置第一方向
-            self._enforce_sampling_shift_auto_rule(state, changed="point_count_shift_auto") # 设置第二方向
+            _enforce_sampling_shift_auto_rule(state, changed="point_count_shift_auto") # 设置第二方向
         self._refresh_draft_preview_for_active_tool()
 
     def set_sampling_spacing(self, tool_name: str, spacing_steps: float):
@@ -1637,7 +1424,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         """设置指定工具的采样间距自动启用或禁用。启用自动时会根据当前草稿参考点自动计算间距；禁用自动会保持当前间距不变并切换到手动模式。"""
         state = self._sampling_state(tool_name)
         state["spacing_manual"] = not bool(enabled)
-        self._enforce_sampling_auto_rule(
+        _enforce_sampling_auto_rule(
             tool_name,
             state,
             changed="spacing_auto" if enabled else "spacing_manual",
@@ -1668,7 +1455,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         state["spacing_shift_manual"] = not bool(enabled)
         if enabled:
             self._sync_sampling_auto_values_from_draft(tool_name)   # 设置第一方向
-            self._enforce_sampling_shift_auto_rule(state, changed="spacing_shift_auto") # 设置第二方向
+            _enforce_sampling_shift_auto_rule(state, changed="spacing_shift_auto") # 设置第二方向
         self._refresh_draft_preview_for_active_tool()
 
     def set_polygon_side_count(self, tool_name: str, side_count: int):
@@ -1713,96 +1500,25 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self._draw_pending_reference_points()
             self.update()
 
-    def _make_polygon_points(self, center: tuple[float, float], radius_point: tuple[float, float], sides: int) -> list[tuple[float, float]]:
-        """根据中心点、半径点和边数，计算正多边形的顶点坐标。中心点和半径点定义了多边形的大小和初始方向，边数决定了多边形的形状。返回一个包含所有顶点坐标的列表。如果半径过小（小于等于 1e-9），则返回一个空列表；如果边数不足 2，则自动修正为至少 2。"""
-        cx, cy = center
-        rx, ry = radius_point
-        radius = math.hypot(rx - cx, ry - cy)
-        if radius <= 1e-9:
-            return []
-        count = max(2, int(sides))
-        start_angle = math.atan2(ry - cy, rx - cx)
-        points = []
-        for index in range(count):
-            angle = start_angle + 2 * math.pi * index / count
-            points.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
-        return points
+    # def _make_polygon_points(self, center: tuple[float, float], radius_point: tuple[float, float], sides: int) -> list[tuple[float, float]]:
+    #     """根据中心点、半径点和边数，计算正多边形的顶点坐标。中心点和半径点定义了多边形的大小和初始方向，边数决定了多边形的形状。返回一个包含所有顶点坐标的列表。如果半径过小（小于等于 1e-9），则返回一个空列表；如果边数不足 2，则自动修正为至少 2。"""
+    #     return _make_polygon_points(center, radius_point, sides)
 
-    def _circle_from_two_points(self, center: tuple[float, float], radius_point: tuple[float, float]) -> tuple[float, float, float]:
-        """根据中心点和半径点，计算圆的参数（中心坐标和半径）。中心点定义了圆心的位置，半径点定义了圆的大小。返回一个包含圆心坐标和半径的元组。如果半径过小（小于等于 1e-9），则半径会被修正为 0。"""
-        cx, cy = center
-        rx, ry = radius_point
-        radius = math.hypot(rx - cx, ry - cy)
-        return cx, cy, radius
+    # def _circle_from_two_points(self, center: tuple[float, float], radius_point: tuple[float, float]) -> tuple[float, float, float]:
+    #     """根据中心点和半径点，计算圆的参数（中心坐标和半径）。中心点定义了圆心的位置，半径点定义了圆的大小。返回一个包含圆心坐标和半径的元组。如果半径过小（小于等于 1e-9），则半径会被修正为 0。"""
+    #     return _circle_from_two_points(center, radius_point)
 
-    def _rectangle_from_three_points(self, a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]) -> list[tuple[float, float]]:
-        """根据三个点计算矩形的顶点坐标。返回一个包含所有顶点坐标的列表。"""
-        ax, ay = a
-        bx, by = b
-        cx, cy = c
-        dx = bx + (cx - ax)
-        dy = by + (cy - ay)
-        return [a, b, (dx, dy), c]
+    # def _rectangle_from_three_points(self, a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]) -> list[tuple[float, float]]:
+    #     """根据三个点计算矩形的顶点坐标。返回一个包含所有顶点坐标的列表。"""
+    #     return _rectangle_from_three_points(a, b, c)
 
-    def _circumcenter(self, p1: tuple[float, float], p2: tuple[float, float], p3: tuple[float, float]) -> tuple[float, float] | None:
-        """计算三角形的外心坐标。外心是三角形三个顶点的垂直平分线的交点，也是通过这三个点的圆的圆心。返回一个包含外心坐标的元组，如果三个点共线则返回 None。"""
-        x1, y1 = p1
-        x2, y2 = p2
-        x3, y3 = p3
-        d = 2 * (x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2))
-        if abs(d) < 1e-9:
-            return None
-        ux = ((x1 * x1 + y1 * y1) * (y2 - y3) + (x2 * x2 + y2 * y2) * (y3 - y1) + (x3 * x3 + y3 * y3) * (y1 - y2)) / d
-        uy = ((x1 * x1 + y1 * y1) * (x3 - x2) + (x2 * x2 + y2 * y2) * (x1 - x3) + (x3 * x3 + y3 * y3) * (x2 - x1)) / d
-        return ux, uy
+    # def _circumcenter(self, p1: tuple[float, float], p2: tuple[float, float], p3: tuple[float, float]) -> tuple[float, float] | None:
+    #     """计算三角形的外心坐标。外心是三角形三个顶点的垂直平分线的交点，也是通过这三个点的圆的圆心。返回一个包含外心坐标的元组，如果三个点共线则返回 None。"""
+    #     return _circumcenter(p1, p2, p3)
 
-    def _arc_path_from_three_points(self, start: tuple[float, float], through: tuple[float, float], end: tuple[float, float]) -> QPainterPath:
-        """根据起点、过渡点和终点，计算通过这三个点的圆弧路径。首先计算三点的外心作为圆心，然后根据圆心和起点计算半径，最后根据起点、过渡点和终点计算起始角度、过渡角度和结束角度，并确定弧线的方向（顺时针或逆时针）。返回一个 QPainterPath 对象表示该圆弧路径。如果三点共线，则返回一条连接起点、过渡点和终点的折线路径。"""
-        center = self._circumcenter(start, through, end)
-        path = QPainterPath()
-        path.moveTo(QPointF(*start))
-        if center is None:
-            path.lineTo(QPointF(*through))
-            path.lineTo(QPointF(*end))
-            return path
-
-        cx, cy = center
-        radius = math.hypot(start[0] - cx, start[1] - cy)
-        if radius <= 1e-9:
-            path.lineTo(QPointF(*end))
-            return path
-
-        start_angle = math.degrees(math.atan2(start[1] - cy, start[0] - cx))
-        through_angle = math.degrees(math.atan2(through[1] - cy, through[0] - cx))
-        end_angle = math.degrees(math.atan2(end[1] - cy, end[0] - cx))
-
-        def normalize(angle: float) -> float:
-            while angle < 0:
-                angle += 360
-            while angle >= 360:
-                angle -= 360
-            return angle
-
-        start_angle_n = normalize(start_angle)
-        through_angle_n = normalize(through_angle)
-        end_angle_n = normalize(end_angle)
-
-        clockwise = False
-        if start_angle_n <= end_angle_n:
-            clockwise = not (start_angle_n < through_angle_n < end_angle_n)
-        else:
-            clockwise = start_angle_n < through_angle_n or through_angle_n < end_angle_n
-
-        span = end_angle_n - start_angle_n
-        if clockwise and span > 0:
-            span -= 360
-        if not clockwise and span < 0:
-            span += 360
-
-        rect = QRectF(cx - radius, cy - radius, radius * 2, radius * 2)
-        path.arcMoveTo(rect, start_angle)
-        path.arcTo(rect, start_angle, span)
-        return path
+    # def _arc_path_from_three_points(self, start: tuple[float, float], through: tuple[float, float], end: tuple[float, float]) -> QPainterPath:
+    #     """根据起点、过渡点和终点，计算通过这三个点的圆弧路径。首先计算三点的外心作为圆心，然后根据圆心和起点计算半径，最后根据起点、过渡点和终点计算起始角度、过渡角度和结束角度，并确定弧线的方向（顺时针或逆时针）。返回一个 QPainterPath 对象表示该圆弧路径。如果三点共线，则返回一条连接起点、过渡点和终点的折线路径。"""
+    #     return _arc_path_from_three_points(start, through, end)
 
     def _draw_draft_overlay(self):
         self._clear_draft_items()   # 清除之前的草稿预览项和参考点项
@@ -1886,14 +1602,14 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         QTimer.singleShot(0, self._refresh_reference_overlay_for_active_tool)
         return self._field_to_scene(x, y)
 
-    @staticmethod
-    def _append_unique_reference_point(target: list[tuple[float, float]], field_point: tuple[float, float]) -> bool:
-        x, y = field_point
-        for px, py in target:
-            if abs(px - x) < 1e-9 and abs(py - y) < 1e-9:
-                return False
-        target.append(field_point)
-        return True
+    # @staticmethod
+    # def _append_unique_reference_point(target: list[tuple[float, float]], field_point: tuple[float, float]) -> bool:
+    #     x, y = field_point
+    #     for px, py in target:
+    #         if abs(px - x) < 1e-9 and abs(py - y) < 1e-9:
+    #             return False
+    #     target.append(field_point)
+    #     return True
 
     def _handle_draw_tool(self, tool_name: str, field_point: tuple[float, float]):
         # 非单点工具进入草稿态后，仅允许拖拽现有参考点，不再响应新增点击。
@@ -1906,11 +1622,11 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 self._draft_reference_points = [field_point]
                 self.draftStarted.emit("点")
             else:
-                self._append_unique_reference_point(self._draft_reference_points, field_point)
+                _append_unique_reference_point(self._draft_reference_points, field_point)
             self._draw_draft_overlay()
             return
 
-        self._append_unique_reference_point(self._pending_points, field_point)
+        _append_unique_reference_point(self._pending_points, field_point)
         if tool_name == "曲线/折线":
             self._sync_sampling_auto_values_from_draft("曲线/折线")
             # 取消右键确认：参考点>=2 时即可通过绘制控制台确认。
@@ -2095,8 +1811,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         if not views:
             return None
         return self.itemAt(scene_pos, views[0].transform())
-
-
 
     def mousePressEvent(self, event):
         """绘图模式下拦截鼠标：左键采样点。"""

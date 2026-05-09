@@ -572,8 +572,10 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
         btn_layout = QHBoxLayout()
         btn_layout.addStretch(1)
-        cancel_btn = QPushButton("取消", dlg)
-        confirm_btn = QPushButton("确认", dlg)
+        cancel_btn = QPushButton("取消 Esc", dlg)
+        cancel_btn.setShortcut("Esc")
+        confirm_btn = QPushButton("确认 Enter", dlg)
+        confirm_btn.setShortcut("Enter")
         confirm_btn.setStyleSheet("background:#d9534f;color:white;")
         cancel_btn.clicked.connect(dlg.reject)
         confirm_btn.clicked.connect(dlg.accept)
