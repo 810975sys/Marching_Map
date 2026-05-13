@@ -9,17 +9,17 @@ from PyQt6.QtGui import QPainterPath
 def _distance(p1: tuple[float, float], p2: tuple[float, float]) -> float:
     return math.hypot(p2[0] - p1[0], p2[1] - p1[1])
 
-def _dedupe_points(points: List[tuple[float, float]]) -> List[tuple[float, float]]:
-    """根据坐标值去重，避免重复点位导致的图元重叠与性能问题。"""
-    unique: List[tuple[float, float]] = []
-    seen = set()
-    for x, y in points:
-        key = (round(x, 6), round(y, 6))
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append((x, y))
-    return unique
+# def _dedupe_points(points: List[tuple[float, float]]) -> List[tuple[float, float]]:
+#     """根据坐标值去重，避免重复点位导致的图元重叠与性能问题。"""
+#     unique: List[tuple[float, float]] = []
+#     seen = set()
+#     for x, y in points:
+#         key = (round(x, 6), round(y, 6))
+#         if key in seen:
+#             continue
+#         seen.add(key)
+#         unique.append((x, y))
+#     return unique
 
 def _sample_line_points_with_count(p1: tuple[float, float], p2: tuple[float, float], spacing: float, point_count: int) -> List[tuple[float, float]]:
     """在线段上以固定间距和点位数量采样点位，包含起点但不包含终点；当点位数量过少时优先保证间距。"""
@@ -672,3 +672,31 @@ def _append_unique_reference_point(target: list[tuple[float, float]], field_poin
             return False
     target.append(field_point)
     return True
+
+def _bilinear_point(corners: list[tuple[float, float]], u: float, v: float) -> tuple[float, float]:
+    c0, c1, c2, c3 = corners
+    x = (
+        c0[0] * (1.0 - u) * (1.0 - v)
+        + c1[0] * u * (1.0 - v)
+        + c2[0] * u * v
+        + c3[0] * (1.0 - u) * v
+    )
+    y = (
+        c0[1] * (1.0 - u) * (1.0 - v)
+        + c1[1] * u * (1.0 - v)
+        + c2[1] * u * v
+        + c3[1] * (1.0 - u) * v
+    )
+    return x, y
+
+def _rotate_vector(x: float, y: float, angle_radians: float) -> tuple[float, float]:
+    cos_a = math.cos(angle_radians)
+    sin_a = math.sin(angle_radians)
+    return x * cos_a - y * sin_a, x * sin_a + y * cos_a
+
+def _field_rotate_point(point: tuple[float, float], center: tuple[float, float], angle_degrees: float) -> tuple[float, float]:
+    """以指定中心点和角度旋转一个场地坐标点，返回旋转后的坐标。"""
+    dx = point[0] - center[0]
+    dy = point[1] - center[1]
+    rx, ry = _rotate_vector(dx, dy, math.radians(float(angle_degrees)))
+    return center[0] + rx, center[1] + ry

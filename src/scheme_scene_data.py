@@ -6,7 +6,7 @@ class SchemeSceneData:
     """保存每张方案图的点位数据、分组信息、节点编辑状态等核心数据，并提供相关操作方法。"""
     def setup_scene_data(self):
         """初始化数据层状态。"""
-        self.node_points = {0: []}  # 按时间轴节点索引保存点位列表，每个点位包含 (id、x、y、group_id) 等信息
+        self.node_points = {0: []}  # 下标为时间轴节点索引保存点位列表，每个点位包含 (id、x、y、group_id) 等信息
         self.node_manual_edited = {0: False}    # 按时间轴节点索引保存是否手动编辑过的状态，自动插值时以此判断是否覆盖
         
         # node 为下标，存储[set(group_ids), ...]，
@@ -23,7 +23,6 @@ class SchemeSceneData:
         self._next_point_id = 1 # 点位ID自增计数器，确保每个新点位都有唯一ID
         # self._next_group_id = 1 # 分组ID自增计数器，确保每个新分组都有唯一ID
         self._pending_points = []   # 当前工具操作中尚未提交的数据点位列表，如绘制中的线段或多边形顶点等
-        self._selected_point_ids = set()    # 当前选中的点位ID集合，用于批量操作和分组等功能
 
     def ensure_node_exists(self, node_index: int):
         """确保目标节点存在；新节点默认复制前一节点点位。"""
@@ -176,10 +175,21 @@ class SchemeSceneData:
                 pass
         return int(node_index)
 
+    def _points_for_node_render(self, node_index: int) -> list[dict]:
+        """获取用于渲染的节点点位；调整会话中当前节点优先返回预览点位。"""
+        adjustment_active = bool(getattr(self, "_adjustment_active", False))
+        adjustment_preview_points = getattr(self, "_adjustment_preview_points", [])
+        active_node = int(getattr(self, "active_node", -1))
+        if adjustment_active and int(node_index) == active_node and adjustment_preview_points:
+            return adjustment_preview_points
+        return self.node_points.get(int(node_index), [])
+
     def _interpolate_points_between_nodes(self, start_node: int, end_node: int, target_node: int) -> list[dict]:
         """按节点起始拍对齐，计算 target_node 的插值点位。"""
-        start_points = self.node_points.get(start_node, [])
-        end_points = self.node_points.get(end_node, [])
+        # start_points = self.node_points.get(start_node, [])
+        # end_points = self.node_points.get(end_node, [])
+        start_points = self._points_for_node_render(start_node)
+        end_points = self._points_for_node_render(end_node)
         start_map = {int(p["id"]): p for p in start_points}
         end_map = {int(p["id"]): p for p in end_points}
 
@@ -220,8 +230,11 @@ class SchemeSceneData:
 
     def _interpolate_points_at_beat(self, start_node: int, end_node: int, target_beat: int) -> list[dict]:
         """按任意拍位进行插值，用于非节点拍位预览。"""
-        start_points = self.node_points.get(start_node, [])
-        end_points = self.node_points.get(end_node, [])
+        # start_points = self.node_points.get(start_node, [])
+        # end_points = self.node_points.get(end_node, [])
+        start_points = self._points_for_node_render(start_node)
+        end_points = self._points_for_node_render(end_node)
+        
         start_map = {int(p["id"]): p for p in start_points}
         end_map = {int(p["id"]): p for p in end_points}
 
@@ -281,7 +294,7 @@ class SchemeSceneData:
                 return left, left + 1
         return None
 
-    def set_preview_beat(self, beat: int):
+    def set_preview_beat(self, beat: int, *args):
         """设置当前预览拍位，并刷新显示。"""
         self.preview_beat = max(0, int(beat))
         self._render_points_for_active_node()

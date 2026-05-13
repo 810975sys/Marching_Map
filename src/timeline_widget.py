@@ -141,7 +141,7 @@ class TimelineWidget(QWidget):
         self.update()
 
     def _recalculate_width(self):
-        # 保持每拍像素间距恒定；总拍数增长时控件变宽，由外层滚动区域处理溢出。
+        """保持每拍像素间距恒定；总拍数增长时控件变宽，由外层滚动区域处理溢出。"""
         plus_size = 24  # 加号按钮尺寸
         plus_gap = 18   # 加号按钮与最后一个节点之间的间隔，避免挤在一起影响点击。
         desired_width = self._left_padding + sum(self.graph_list[1:]) * self._pixels_per_beat + plus_gap + plus_size + self._right_padding

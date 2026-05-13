@@ -4,6 +4,7 @@
 import math
 
 from PyQt6.QtWidgets import (
+    QApplication,
     QGraphicsEllipseItem,
     QGraphicsLineItem,
     QGraphicsPathItem,
@@ -16,11 +17,11 @@ from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QPainterPath, QPen, QPolygonF, QFont
 from field_info import FieldInfo
 from field_renderer import GridRenderer
-from scene_items import PerformerPointItem, ReferenceHandleItem
+from scene_items import PerformerPointItem, ReferenceHandleItem, MovementControlHandleItem
 from scheme_scene_data import SchemeSceneData
 from draw_utils import (
     _distance,
-    _dedupe_points,
+    # _dedupe_points,
     # _sample_line_points_with_count,
     _sample_polyline_points,
     _sample_polyline_points_with_count,
@@ -42,7 +43,10 @@ from draw_utils import (
     _enforce_sampling_shift_auto_rule,
     _sample_circle_points,
     _sample_circle_points_with_count,
-    _append_unique_reference_point
+    _append_unique_reference_point,
+    _bilinear_point,
+    _rotate_vector,
+    _field_rotate_point,
 )
 
 # distance helper imported from scheme_helpers
@@ -70,15 +74,32 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self.field_info = FieldInfo(self)
         self.grid_renderer = GridRenderer(self.field_info)  # 场地网格绘制器，依赖场地参数进行绘制。
         self.field_info.changed.connect(self._on_field_settings_changed)    # 场地参数变化时刷新场景显示。
+        
         self._current_items = []    # 当前显示的点位图元列表，用于快速清除与重建。每次切换节点或工具时会重建。
         self._previous_items = []   # 上一个节点的点位图元列表，仅在切换节点时保留；切换工具时会立即清除。
         self._label_items = []      # 当前显示的标签图元列表，用于快速清除与重建。每次切换节点或工具时会重建。
+        self._selected_point_ids = set()    # 当前选中的点位ID集合，用于批量操作和分组等功能
+        
         self.setup_scene_data()     # 初始化场景数据结构
         self._draft_tool_name = None    # 当前正在使用的绘图工具名称，None表示无草稿状态；非None表示草稿状态，值为对应工具名称。
         self._draft_reference_points = []   # 当前绘图草稿的参考点坐标列表
         self._draft_preview_items = []      # 当前绘图草稿的预览图元列表
         self._pending_preview_items = []    # 当前未确认阶段的参考线预览图元列表（如曲线/折线工具在输入至少2个点位后的实时预览）
         self._draft_handle_items = []       # 当前绘图草稿的可拖动参考点图元列表（如曲线/折线工具在输入至少2个点位后的可调整参考点）
+        self._adjustment_active = False     # 当前是否处于 “调整” 会话中
+        self._adjustment_mode = "比例"      # 调整模式：比例、伸展、倾斜、歪曲
+        self._adjustment_rotation = 0.0      # 调整角度（度）
+        self._adjustment_source_points = []   # 调整会话开始时的原始点位快照
+        self._adjustment_preview_points = []   # 当前调整预览点位（用于渲染，不直接写回）
+        self._adjustment_center = QPointF(0.0, 0.0)  # 调整参考框中心（field 坐标）
+        self._adjustment_center_handle = QPointF(0.0, 0.0)  # 调整中心手柄位置（field 坐标）
+        self._adjustment_preview_line_items = []  # 选中点 原始->预览 线段
+        self._adjustment_half_size = QPointF(1.0, 1.0)  # 调整参考框半宽/半高（field 坐标）
+        self._adjustment_corners_local = []  # 调整参考框四角的局部坐标（相对中心，未旋转）
+        self._adjustment_frame_item = None   # 调整参考框图元
+        self._adjustment_handle_items = []   # 调整参考框角点与中心点图元
+        self._updating_adjustment_handles = False  # 是否正在同步调整手柄位置
+        self._adjustment_drag_state = None   # 调整句柄拖拽快照，用于按拖拽起点计算相对位移
         # 曲线模式：'polyline' 或 'curve'，默认为折线(polyline)
         self._curve_mode = 'polyline'
         self._sampling_tools = {"线段", "弧", "曲线/折线", "圆", "多边形", "填充四边形"}
@@ -124,6 +145,22 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self.label_offset = 15  # label 相对于点位的距离
         self.label_pos = 6     # label 相对于点位的角度 以15°为单位，上限为24（360°），默认12（120° 下侧）
 
+    def _reset_adjustment_state(self, reset_controls: bool = True):
+        """重置调整会话状态与图元；可选是否同时重置模式与角度。"""
+        self._clear_adjustment_items()
+        self._adjustment_active = False
+        self._adjustment_drag_state = None
+        self._adjustment_source_points = []
+        self._adjustment_preview_points = []
+        self._adjustment_center = QPointF(0.0, 0.0)
+        self._adjustment_center_handle = QPointF(0.0, 0.0)
+        self._adjustment_preview_line_items = []
+        self._adjustment_half_size = QPointF(1.0, 1.0)
+        self._adjustment_corners_local = []
+        if reset_controls:
+            self._adjustment_mode = "比例"
+            self._adjustment_rotation = 0.0
+
     def _on_field_settings_changed(self):
         """场地配置变化后刷新场景绘制。"""
         self._render_points_for_active_node()
@@ -146,17 +183,31 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._point_items_by_id = {}
         self._label_items_by_id = {}
 
-    def set_active_tool(self, tool_name: str):
+    def set_active_tool(self, tool_name: str, preserve_selection: bool = False):
         """切换当前工具并清空临时草稿。"""
+        # if self.active_tool == "调整" and tool_name != "调整" and self._adjustment_active:
+        #     self._reset_adjustment_state(reset_controls=True)
+
         self.active_tool = tool_name
         self._pending_points = []   # 清空草稿点位
-        self._selected_point_ids.clear()    # 清空选中点位
+        should_clear_selection = (not preserve_selection) or (tool_name in {"选择", "框选"})
+        if should_clear_selection:
+            self._selected_point_ids.clear()    # 清空选中点位
         self._clear_selection_rect()    # 清除框选工具的选区矩形和相关状态
         self._clear_draft()             # 清除绘图工具的草稿图形
+        if tool_name != "调整":
+            self._reset_adjustment_state(reset_controls=True)
         self._render_points_for_active_node()   # 切换工具后刷新显示，确保界面状态与工具一致
+        if should_clear_selection:
+            self._refresh_point_selection_visuals()
+        if tool_name == "调整" and self._selected_point_ids:
+            self.begin_adjustment()
 
     def set_active_node(self, node_index: int):
         """切换当前时间轴节点并刷新显示。"""
+        if self.active_tool == "调整" and self._adjustment_active:
+            self._reset_adjustment_state(reset_controls=True)
+
         self.active_node = max(0, int(node_index))  # 确保节点索引非负
         self.ensure_node_exists(self.active_node)   # 确保目标节点存在，若不存在则初始化
         self._pending_points = []   # 清空草稿点位
@@ -232,8 +283,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         if not self._selected_point_ids:
             return
 
-        # 连接同一组内被选中的点位，使用不透明绿色线条。
-        pen = QPen(QColor("#f39c12"), 3, Qt.PenStyle.SolidLine)
+        # 连接同一组内被选中的点位，使用不透明线条。
+        pen = QPen(QColor("#f39c12"), 2, Qt.PenStyle.SolidLine)
         pen.setCosmetic(True)
 
         for group_info in self.group_to_point:
@@ -291,6 +342,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             但拖拽写回仅允许发生在“当前节点拍位”上。
             可避免在中间插值预览拍位误改真实节点点位。
         """
+        if getattr(self, "_adjustment_active", False):
+            return False
         return self.active_tool in {"框选", '选择'} and self._is_current_beat_editable()
 
     def _on_performer_point_moved(self, point_id: int, scene_pos: QPointF) -> QPointF:
@@ -359,6 +412,601 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self.removeItem(item)
         self._pending_preview_items = []
 
+    def _clear_adjustment_items(self):
+        """清除调整模式的参考框与手柄图元。"""
+        if self._adjustment_frame_item is not None:
+            self.removeItem(self._adjustment_frame_item)
+            self._adjustment_frame_item = None
+        for item in self._adjustment_handle_items:
+            self.removeItem(item)
+        self._adjustment_handle_items = []
+        for item in getattr(self, "_adjustment_preview_line_items", []):
+            try:
+                self.removeItem(item)
+            except Exception:
+                pass
+        self._adjustment_preview_line_items = []
+
+    def _adjustment_rotation_radians(self) -> float:
+        """将角度值转换为弧度，供内部计算使用。"""
+        return math.radians(float(self._adjustment_rotation))
+
+    def _adjustment_rotation_pivot(self) -> tuple[float, float]:
+        """调整旋转的中心点坐标，默认为调整参考框的中心。"""
+        return (float(self._adjustment_center_handle.x()), float(self._adjustment_center_handle.y()))
+
+    def begin_adjustment(self):
+        """基于当前选中点位进入调整会话。"""
+        if not self._selected_point_ids:
+            self._reset_adjustment_state(reset_controls=False)
+            return
+
+        source_points = [
+            {"id": int(point["id"]), "x": float(point["x"]), "y": float(point["y"]), **({"group_id": point.get("group_id")} if point.get("group_id") is not None else {})}
+            for point in self.node_points.get(self.active_node, [])
+        ]
+        self._adjustment_source_points = source_points
+
+        selected_points = [point for point in source_points if int(point.get("id", -1)) in self._selected_point_ids]
+        if not selected_points:
+            self._reset_adjustment_state(reset_controls=False)
+            return
+
+        min_x = min(float(point["x"]) for point in selected_points)
+        max_x = max(float(point["x"]) for point in selected_points)
+        min_y = min(float(point["y"]) for point in selected_points)
+        max_y = max(float(point["y"]) for point in selected_points)
+
+        width = max(1e-6, max_x - min_x)
+        height = max(1e-6, max_y - min_y)
+        self._adjustment_center = QPointF((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
+        self._adjustment_center_handle = QPointF(self._adjustment_center.x(), self._adjustment_center.y())
+        self._adjustment_half_size = QPointF(width / 2.0, height / 2.0)
+        self._adjustment_corners_local = [
+            (-width / 2.0, -height / 2.0),
+            (width / 2.0, -height / 2.0),
+            (width / 2.0, height / 2.0),
+            (-width / 2.0, height / 2.0),
+        ]
+        self._adjustment_preview_points = self._build_adjustment_preview_points()
+        self._adjustment_active = True
+        self._clear_adjustment_items()
+        self._render_points_for_active_node()
+
+    def set_adjustment_mode(self, mode_name: str):
+        """设置调整模式：比例、伸展、倾斜、歪曲；切换模式时会重新计算预览点位并刷新显示。"""
+        if mode_name not in {"比例", "伸展", "倾斜", "歪曲"}:
+            return
+        self._adjustment_mode = mode_name
+        if self._adjustment_active:
+            self._adjustment_preview_points = self._build_adjustment_preview_points()
+            self._render_points_for_active_node()
+
+    def set_adjustment_rotation(self, angle: float):
+        """设置调整旋转角度（度）；切换角度时会重新计算预览点位并刷新显示。"""
+        self._adjustment_rotation = float(angle)
+        if self._adjustment_active:
+            self._adjustment_preview_points = self._build_adjustment_preview_points()
+            self._render_points_for_active_node()
+
+    def refresh_adjustment_preview(self):
+        """在调整会话中强制刷新预览点位并重绘，适用于外部参数变化（如调整框大小）后需要更新预览的场景。"""
+        if not self._adjustment_active:
+            return
+        self._adjustment_preview_points = self._build_adjustment_preview_points()
+        self._render_points_for_active_node()
+
+    def confirm_current_adjustment(self):
+        """将当前调整预览点位写回节点数据，并标记节点为手动编辑过以触发后续自动调整；如果未处于调整会话中则无操作。"""
+        if not self._adjustment_active:
+            return
+        if not self._adjustment_preview_points:
+            self._adjustment_preview_points = self._build_adjustment_preview_points()
+
+        current_points = self.node_points.setdefault(self.active_node, [])
+        current_points[:] = [
+            {"id": int(point["id"]), "x": float(point["x"]), "y": float(point["y"]), **({"group_id": point.get("group_id")} if point.get("group_id") is not None else {})}
+            for point in self._adjustment_preview_points
+        ]
+        self._adjustment_source_points = [dict(point) for point in self._adjustment_preview_points]
+        self._mark_node_manual(self.active_node)
+        self._recalculate_following_auto_nodes(self.active_node, include_manual_nodes=True)
+        self._render_points_for_active_node()
+
+    def cancel_current_adjustment(self):
+        """取消当前调整会话，重置预览点位为初始状态并刷新显示；如果未处于调整会话中则无操作。"""
+        if not self._adjustment_active:
+            self._reset_adjustment_state(reset_controls=True)
+            return
+        self._reset_adjustment_state(reset_controls=True)
+        if self.active_tool == "调整" and self._selected_point_ids:
+            self.begin_adjustment()
+        self._render_points_for_active_node()
+
+    def _build_adjustment_preview_points(self, reset_to_source: bool = False) -> list[dict]:
+        """根据当前调整模式、旋转角度和参考框参数计算预览点位；如果 reset_to_source 为 True 则直接返回初始状态的点位快照。"""
+        if not self._adjustment_source_points:
+            return []
+
+        selected_points = [point for point in self._adjustment_source_points if int(point.get("id", -1)) in self._selected_point_ids]
+        if not selected_points:
+            return [dict(point) for point in self._adjustment_source_points]
+
+        if len(selected_points) == 1:
+            center_x = float(self._adjustment_center.x())
+            center_y = float(self._adjustment_center.y())
+            preview_points = []
+            selected_id = int(selected_points[0].get("id", -1))
+            for point in self._adjustment_source_points:
+                point_id = int(point.get("id", -1))
+                if point_id == selected_id:
+                    transformed = {"id": point_id, "x": center_x, "y": center_y}
+                    if point.get("group_id") is not None:
+                        transformed["group_id"] = point.get("group_id")
+                    preview_points.append(transformed)
+                else:
+                    preview_points.append(dict(point))
+            return preview_points
+
+        if reset_to_source:
+            return [dict(point) for point in self._adjustment_source_points]
+
+        center = (float(self._adjustment_center.x()), float(self._adjustment_center.y()))
+        angle = self._adjustment_rotation_radians()
+        pivot = self._adjustment_rotation_pivot()
+        local_corners = list(self._adjustment_corners_local)
+        current_corners = []
+        for x, y in local_corners:
+            base_x = center[0] + x
+            base_y = center[1] + y
+            current_corners.append(_field_rotate_point((base_x, base_y), pivot, self._adjustment_rotation))
+
+        min_x = min(float(point["x"]) for point in selected_points)
+        max_x = max(float(point["x"]) for point in selected_points)
+        min_y = min(float(point["y"]) for point in selected_points)
+        max_y = max(float(point["y"]) for point in selected_points)
+        width = max(1e-6, max_x - min_x)
+        height = max(1e-6, max_y - min_y)
+
+        preview_points = []
+        for point in self._adjustment_source_points:
+            point_id = int(point.get("id", -1))
+            if point_id not in self._selected_point_ids:
+                preview_points.append(dict(point))
+                continue
+
+            u = (float(point["x"]) - min_x) / width
+            v = (float(point["y"]) - min_y) / height
+            local_x, local_y = _bilinear_point(local_corners, u, v)
+            base_x = center[0] + local_x
+            base_y = center[1] + local_y
+            world_x, world_y = _field_rotate_point((base_x, base_y), pivot, self._adjustment_rotation)
+            transformed = {"id": point_id, "x": world_x, "y": world_y}
+            if point.get("group_id") is not None:
+                transformed["group_id"] = point.get("group_id")
+            preview_points.append(transformed)
+        return preview_points
+
+    def _sync_adjustment_handle_positions(self):
+        """根据当前调整参考框参数同步更新调整手柄的位置；在批量更新过程中会设置 _updating_adjustment_handles 标记以避免触发不必要的回调与重绘。"""
+        if not self._adjustment_handle_items or not self._adjustment_active:
+            return
+        if len(self._adjustment_handle_items) != 5:
+            return
+        self._updating_adjustment_handles = True
+        try:
+            center = (float(self._adjustment_center.x()), float(self._adjustment_center.y()))
+            pivot = self._adjustment_rotation_pivot()
+            for handle, (lx, ly) in zip(self._adjustment_handle_items[:4], self._adjustment_corners_local):
+                base_x = center[0] + lx
+                base_y = center[1] + ly
+                world_x, world_y = _field_rotate_point((base_x, base_y), pivot, self._adjustment_rotation)
+                handle.setPos(self._field_to_scene(world_x, world_y))
+            center_handle = self._adjustment_handle_items[4]
+            center_handle.setPos(self._field_to_scene(float(self._adjustment_center_handle.x()), float(self._adjustment_center_handle.y())))
+        finally:
+            self._updating_adjustment_handles = False
+
+    def _sync_adjustment_frame_item(self):
+        """根据当前中心、旋转和局部角点更新调整框路径，避免拖拽时重建图元。"""
+        if self._adjustment_frame_item is None:
+            return
+        center = (float(self._adjustment_center.x()), float(self._adjustment_center.y()))
+        pivot = self._adjustment_rotation_pivot()
+        corners = []
+        for lx, ly in self._adjustment_corners_local:
+            base_x = center[0] + lx
+            base_y = center[1] + ly
+            world_x, world_y = _field_rotate_point((base_x, base_y), pivot, self._adjustment_rotation)
+            corners.append(self._field_to_scene(world_x, world_y))
+        if len(corners) != 4:
+            return
+        path = QPainterPath()
+        path.moveTo(corners[0])
+        for point in corners[1:]:
+            path.lineTo(point)
+        path.closeSubpath()
+        self._adjustment_frame_item.setPath(path)
+
+    def _sync_adjustment_preview_items(self):
+        """将调整预览坐标增量同步到已存在点位/标签图元，减少拖拽卡顿。"""
+        if not self._adjustment_preview_points:
+            return
+        if not self._point_items_by_id:
+            self._render_points_for_active_node()
+            return
+        # 清理旧的原始->预览 线条
+        for item in getattr(self, "_adjustment_preview_line_items", []):
+            try:
+                self.removeItem(item)
+            except Exception:
+                pass
+        self._adjustment_preview_line_items = []
+
+        for point in self._adjustment_preview_points:
+            point_id = int(point.get("id", -1))
+            # 仅对选中的点进行绘制
+            if point_id not in self._selected_point_ids:
+                continue
+            item = self._point_items_by_id.get(point_id)
+            if item is None:
+                continue
+            pos = self._field_to_scene(float(point["x"]), float(point["y"]))
+            item.setPos(pos)
+
+            # 绘制从原始位置到预览位置的线段（黑色，1像素）
+            prev_points = self.node_points.get(self.active_node - 1, [])
+            if prev_points:
+                # 若有上一张图的点位（即非p0），则从上一张图的点位绘制
+                # 构建 id->上一图 field 坐标 映射
+                prev_map = {int(p.get("id", -1)): (float(p.get("x", 0.0)), float(p.get("y", 0.0))) for p in prev_points}
+                prev = prev_map.get(point_id)
+                if prev is not None:
+                    px, py = prev
+                    if abs(px - float(point["x"])) > 1e-12 or abs(py - float(point["y"])) > 1e-12:
+                        s_scene = self._field_to_scene(px, py)
+                        e_scene = pos
+                        line_item = QGraphicsLineItem(s_scene.x(), s_scene.y(), e_scene.x(), e_scene.y())
+                        pen = QPen(QColor("#000000"), 1)
+                        pen.setCosmetic(True)
+                        line_item.setPen(pen)
+                        line_item.setZValue(175)
+                        self.addItem(line_item)
+                        self._adjustment_preview_line_items.append(line_item)
+            else:
+                # 否则（当前为p0）从当前点位的原始位置绘制（即调整前位置）
+                # 构建 id->原始 field 坐标 映射
+                src_map = {int(p.get("id", -1)): (float(p.get("x", 0.0)), float(p.get("y", 0.0))) for p in self._adjustment_source_points}
+                src = src_map.get(point_id)
+                if src is not None:
+                    sx, sy = src
+                    if abs(sx - float(point["x"])) > 1e-12 or abs(sy - float(point["y"])) > 1e-12:
+                        s_scene = self._field_to_scene(sx, sy)
+                        e_scene = pos
+                        line_item = QGraphicsLineItem(s_scene.x(), s_scene.y(), e_scene.x(), e_scene.y())
+                        pen = QPen(QColor("#000000"), 1)
+                        pen.setCosmetic(True)
+                        line_item.setPen(pen)
+                        line_item.setZValue(175)
+                        self.addItem(line_item)
+                        self._adjustment_preview_line_items.append(line_item)
+                    
+
+            label = self._label_items_by_id.get(point_id)
+            if label is None:
+                continue
+            angle_deg = (int(self.label_pos) % 24) * 15
+            angle_rad = math.radians(angle_deg)
+            dx = math.cos(angle_rad) * float(self.label_offset)
+            dy = math.sin(angle_rad) * float(self.label_offset)
+            br = label.boundingRect()
+            label.setPos(pos.x() + dx - br.width() / 2.0, pos.y() + dy - br.height() / 2.0)
+
+    def _refresh_adjustment_drag_visuals(self):
+        """拖拽中进行轻量刷新：更新预览点位、选中连线、调整框和句柄位置。"""
+        self._sync_adjustment_preview_items()
+        self._refresh_selected_group_links()
+        self._sync_adjustment_frame_item()
+        self._sync_adjustment_handle_positions()
+
+    def _on_adjustment_handle_drag_started(self, index: int, scene_pos: QPointF, part: str | None = None):
+        """记录拖拽起点快照，保证位移以拖拽前位置为参考。"""
+        if not self._adjustment_active:
+            return
+        center = (float(self._adjustment_center.x()), float(self._adjustment_center.y()))
+        start_field = self._scene_to_field(scene_pos)
+        start_field = self._snap_field_point(*start_field)
+        state = {
+            "kind": "center" if index == 4 else "corner",
+            "index": int(index),
+            "part": part,
+            "start_field": start_field,
+            "start_center": center,
+            "start_center_handle": (float(self._adjustment_center_handle.x()), float(self._adjustment_center_handle.y())),
+            "start_corners_local": [tuple(c) for c in self._adjustment_corners_local],
+            "start_corner_fields": [],
+            "start_half_size": (
+                max(1e-6, float(self._adjustment_half_size.x())),
+                max(1e-6, float(self._adjustment_half_size.y())),
+            ),
+            "rotation": float(self._adjustment_rotation),
+            "mode": self._adjustment_mode,
+        }
+        pivot = self._adjustment_rotation_pivot()
+        for lx, ly in self._adjustment_corners_local:
+            base_x = center[0] + lx
+            base_y = center[1] + ly
+            state["start_corner_fields"].append(_field_rotate_point((base_x, base_y), pivot, self._adjustment_rotation))
+        if index >= 0 and index <= 3 and index < len(self._adjustment_corners_local):
+            lx, ly = self._adjustment_corners_local[index]
+            base_x = center[0] + lx
+            base_y = center[1] + ly
+            state["start_corner_field"] = _field_rotate_point((base_x, base_y), pivot, self._adjustment_rotation)
+        self._adjustment_drag_state = state
+
+    def _on_adjustment_handle_drag_finished(self, index: int, scene_pos: QPointF, part: str | None = None):
+        """清理拖拽快照。"""
+        self._adjustment_drag_state = None
+
+    def _draw_adjustment_overlay(self):
+        """在调整会话中绘制参考框与手柄；根据当前调整参数计算参考框四角的场景坐标并绘制框线图元，同时在四角和中心位置绘制可拖动的手柄图元；如果未处于调整会话中则不进行任何操作。"""
+        if not self._adjustment_active:
+            return
+
+        self._clear_adjustment_items()
+        center = (float(self._adjustment_center.x()), float(self._adjustment_center.y()))
+        pivot = self._adjustment_rotation_pivot()
+        corners = []
+        for lx, ly in self._adjustment_corners_local:
+            base_x = center[0] + lx
+            base_y = center[1] + ly
+            world_x, world_y = _field_rotate_point((base_x, base_y), pivot, self._adjustment_rotation)
+            corners.append(self._field_to_scene(world_x, world_y))
+
+        if len(corners) == 4:
+            path = QPainterPath()
+            path.moveTo(corners[0])
+            for point in corners[1:]:
+                path.lineTo(point)
+            path.closeSubpath()
+            frame_item = QGraphicsPathItem(path)
+            frame_item.setPen(QPen(QColor(210, 84, 0, 180), 1.4, Qt.PenStyle.DashLine))
+            frame_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            frame_item.setZValue(960)
+            self.addItem(frame_item)
+            self._adjustment_frame_item = frame_item
+
+        self._updating_adjustment_handles = True
+        try:
+            for index, corner in enumerate(corners):
+                handle = ReferenceHandleItem(
+                    index = index,
+                    center_scene_pos = corner,
+                    moved_callback=self._on_adjustment_corner_moved,
+                    drag_started_callback=self._on_adjustment_handle_drag_started,
+                    drag_finished_callback=self._on_adjustment_handle_drag_finished,
+                )
+                handle.setBrush(QBrush(QColor(210, 84, 0, 40)))
+                handle.setPen(QPen(QColor(210, 84, 0), 1.2))
+                handle.set_size(12.0)
+                handle.setZValue(970)
+                self.addItem(handle)
+                self._adjustment_handle_items.append(handle)
+
+            center_handle = MovementControlHandleItem(
+                4,
+                self._field_to_scene(float(self._adjustment_center_handle.x()), float(self._adjustment_center_handle.y())),
+                outer_moved_callback=self._on_adjustment_center_moved,
+                inner_moved_callback=self._on_adjustment_center_inner_moved,
+                drag_started_callback=self._on_adjustment_handle_drag_started,
+                drag_finished_callback=self._on_adjustment_handle_drag_finished,
+            )
+            center_handle.setBrush(QBrush(QColor(39, 174, 96, 70)))
+            center_handle.setPen(QPen(QColor(39, 174, 96), 1.2))
+            center_handle.set_size(32.0)
+            center_handle.set_inner_ratio(0.45)
+            center_handle.setZValue(975)
+            self.addItem(center_handle)
+            self._adjustment_handle_items.append(center_handle)
+        finally:
+            self._updating_adjustment_handles = False
+
+    def _on_adjustment_center_moved(self, index: int, scene_pos: QPointF) -> QPointF:
+        """调整中心点移动回调，根据新的场景坐标计算调整中心的场地坐标并更新预览点位；在批量更新过程中或调整未激活时会直接返回原始场景坐标以避免触发不必要的回调与重绘。"""
+        if self._updating_adjustment_handles or not self._adjustment_active:
+            return scene_pos
+        field_pos = self._scene_to_field(scene_pos)
+        field_pos = self._snap_field_point(*field_pos)
+        state = self._adjustment_drag_state
+        if state and state.get("kind") == "center" and int(state.get("index", -1)) == 4 and state.get("part") == "outer":
+            sx, sy = state.get("start_field", field_pos)
+            hx, hy = state.get("start_center_handle", (float(self._adjustment_center_handle.x()), float(self._adjustment_center_handle.y())))
+            dx = field_pos[0] - sx
+            dy = field_pos[1] - sy
+            field_pos = self._snap_field_point(hx + dx, hy + dy)
+        else:
+            self._adjustment_drag_state = None
+
+        self._adjustment_center_handle = QPointF(*field_pos)
+        return self._field_to_scene(*field_pos)
+
+    def _on_adjustment_center_inner_moved(self, index: int, scene_pos: QPointF) -> QPointF:
+        """内圈移动回调：移动选中点位并更新预览。
+
+        - 圆心吸附格点（与外圈相同），
+        - 只更新预览状态，不写回原始点位数据，确认时再统一提交。
+        """
+        if self._updating_adjustment_handles or not self._adjustment_active:
+            return scene_pos
+        new_field = self._scene_to_field(scene_pos)
+        new_field = self._snap_field_point(*new_field)
+        state = self._adjustment_drag_state
+
+        if state and state.get("kind") == "center" and int(state.get("index", -1)) == 4 and state.get("part") == "inner":
+            sx, sy = state.get("start_field", new_field)
+            start_hx, start_hy = state.get("start_center_handle", (float(self._adjustment_center_handle.x()), float(self._adjustment_center_handle.y())))
+            start_cx, start_cy = state.get("start_center", (float(self._adjustment_center.x()), float(self._adjustment_center.y())))
+            dx = new_field[0] - sx
+            dy = new_field[1] - sy
+            new_handle = self._snap_field_point(start_hx + dx, start_hy + dy)
+            delta_x = new_handle[0] - start_hx
+            delta_y = new_handle[1] - start_hy
+            new_center = (start_cx + delta_x, start_cy + delta_y)
+        else:
+            self._adjustment_drag_state = None
+            current_handle = (float(self._adjustment_center_handle.x()), float(self._adjustment_center_handle.y()))
+            current_center = (float(self._adjustment_center.x()), float(self._adjustment_center.y()))
+            delta_x = new_field[0] - current_handle[0]
+            delta_y = new_field[1] - current_handle[1]
+            new_handle = new_field
+            new_center = (current_center[0] + delta_x, current_center[1] + delta_y)
+
+        old_center = (float(self._adjustment_center.x()), float(self._adjustment_center.y()))
+        old_handle = (float(self._adjustment_center_handle.x()), float(self._adjustment_center_handle.y()))
+        if (
+            abs(new_center[0] - old_center[0]) <= 1e-12
+            and abs(new_center[1] - old_center[1]) <= 1e-12
+            and abs(new_handle[0] - old_handle[0]) <= 1e-12
+            and abs(new_handle[1] - old_handle[1]) <= 1e-12
+        ):
+            return self._field_to_scene(*new_handle)
+
+        self._adjustment_center = QPointF(*new_center)
+        self._adjustment_center_handle = QPointF(*new_handle)
+        self._adjustment_preview_points = self._build_adjustment_preview_points()
+        self._refresh_adjustment_drag_visuals()
+        return self._field_to_scene(*new_handle)
+
+    def _on_adjustment_corner_moved(self, index: int, scene_pos: QPointF) -> QPointF:
+        """调整角点移动回调，根据新的场景坐标计算调整框的局部坐标并更新预览点位；在批量更新过程中、调整未激活或索引无效时会直接返回原始场景坐标以避免触发不必要的回调与重绘。"""
+        if self._updating_adjustment_handles or not self._adjustment_active:
+            return scene_pos
+        if index < 0 or index > 3:
+            return scene_pos
+
+        center = (float(self._adjustment_center.x()), float(self._adjustment_center.y()))
+        field_pos = self._scene_to_field(scene_pos)
+        field_pos = self._snap_field_point(*field_pos)
+        state = self._adjustment_drag_state
+        if state and state.get("kind") == "corner" and int(state.get("index", -1)) == int(index):
+            sx, sy = state.get("start_field", field_pos)
+            corner_start = state.get("start_corner_field", field_pos)
+            dx = field_pos[0] - sx
+            dy = field_pos[1] - sy
+            field_pos = self._snap_field_point(corner_start[0] + dx, corner_start[1] + dy)
+        else:
+            self._adjustment_drag_state = None
+
+        pivot = self._adjustment_rotation_pivot()
+        local_pos = _field_rotate_point(field_pos, pivot, -self._adjustment_rotation)
+        lx = local_pos[0] - center[0]
+        ly = local_pos[1] - center[1]
+        state = self._adjustment_drag_state
+        if state and state.get("kind") == "corner" and int(state.get("index", -1)) == int(index):
+            base_hw, base_hh = state.get("start_half_size", (max(1e-6, float(self._adjustment_half_size.x())), max(1e-6, float(self._adjustment_half_size.y()))))
+            base_corners_local = [tuple(c) for c in state.get("start_corners_local", self._adjustment_corners_local)]
+        else:
+            base_hw = max(1e-6, float(self._adjustment_half_size.x()))
+            base_hh = max(1e-6, float(self._adjustment_half_size.y()))
+            base_corners_local = [tuple(c) for c in self._adjustment_corners_local]
+
+        if self._adjustment_mode == "比例":
+            scale = max(abs(lx) / base_hw, abs(ly) / base_hh, 0.1)
+            hw = base_hw * scale
+            hh = base_hh * scale
+            self._adjustment_corners_local = [
+                (-hw, -hh),
+                (hw, -hh),
+                (hw, hh),
+                (-hw, hh),
+            ]
+        elif self._adjustment_mode == "伸展":
+            shift_pressed = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier)
+            if shift_pressed and state and state.get("kind") == "corner" and int(state.get("index", -1)) == int(index):
+                start_corner_fields = state.get("start_corner_fields", [])
+                opposite_index = (index + 2) % 4
+                if len(start_corner_fields) > opposite_index:
+                    fixed_field = start_corner_fields[opposite_index]
+                    center_field = ((field_pos[0] + fixed_field[0]) / 2.0, (field_pos[1] + fixed_field[1]) / 2.0)
+                    fixed_local = _field_rotate_point(fixed_field, center_field, -self._adjustment_rotation)
+                    dragged_local = _field_rotate_point(field_pos, center_field, -self._adjustment_rotation)
+                    half_x = max(1e-6, abs(dragged_local[0] - fixed_local[0]) / 2.0)
+                    half_y = max(1e-6, abs(dragged_local[1] - fixed_local[1]) / 2.0)
+                    self._adjustment_center = QPointF(*center_field)
+                    self._adjustment_half_size = QPointF(half_x, half_y)
+                    self._adjustment_corners_local = [
+                        (-half_x, -half_y),
+                        (half_x, -half_y),
+                        (half_x, half_y),
+                        (-half_x, half_y),
+                    ]
+                else:
+                    hw = max(1e-6, abs(lx))
+                    hh = max(1e-6, abs(ly))
+                    self._adjustment_corners_local = [
+                        (-hw, -hh),
+                        (hw, -hh),
+                        (hw, hh),
+                        (-hw, hh),
+                    ]
+            else:
+                hw = max(1e-6, abs(lx))
+                hh = max(1e-6, abs(ly))
+                self._adjustment_corners_local = [
+                    (-hw, -hh),
+                    (hw, -hh),
+                    (hw, hh),
+                    (-hw, hh),
+                ]
+        elif self._adjustment_mode == "倾斜":
+            if state and state.get("kind") == "corner" and int(state.get("index", -1)) == int(index):
+                start_corner_fields = [tuple(point) for point in state.get("start_corner_fields", [])]
+            else:
+                angle = self._adjustment_rotation_radians()
+                start_corner_fields = []
+                for corner_lx, corner_ly in base_corners_local:
+                    corner_rx, corner_ry = _rotate_vector(corner_lx, corner_ly, angle)
+                    start_corner_fields.append((center[0] + corner_rx, center[1] + corner_ry))
+
+            if len(start_corner_fields) != 4:
+                return scene_pos
+
+            moved_index = int(index) % 4
+            clockwise_index = (moved_index + 1) % 4
+            drag_start_field = start_corner_fields[moved_index]
+            drag_dx = field_pos[0] - drag_start_field[0]
+            drag_dy = field_pos[1] - drag_start_field[1]
+
+            updated_corner_fields = [tuple(point) for point in start_corner_fields]
+            updated_corner_fields[moved_index] = tuple(field_pos)
+            next_start_x, next_start_y = start_corner_fields[clockwise_index]
+            updated_corner_fields[clockwise_index] = self._snap_field_point(next_start_x + drag_dx, next_start_y + drag_dy)
+
+            center_field = (
+                sum(point[0] for point in updated_corner_fields) / 4.0,
+                sum(point[1] for point in updated_corner_fields) / 4.0,
+            )
+            updated_corners_local = []
+            for corner_field in updated_corner_fields:
+                local_corner = _field_rotate_point(corner_field, center_field, -self._adjustment_rotation)
+                updated_corners_local.append((local_corner[0] - center_field[0], local_corner[1] - center_field[1]))
+
+            local_xs = [corner[0] for corner in updated_corners_local]
+            local_ys = [corner[1] for corner in updated_corners_local]
+            self._adjustment_center = QPointF(*center_field)
+            self._adjustment_half_size = QPointF(
+                max(1e-6, (max(local_xs) - min(local_xs)) / 2.0),
+                max(1e-6, (max(local_ys) - min(local_ys)) / 2.0),
+            )
+            self._adjustment_corners_local = updated_corners_local
+        else:
+            self._adjustment_corners_local = list(base_corners_local)
+            self._adjustment_corners_local[index] = (lx, ly)
+
+        self._adjustment_preview_points = self._build_adjustment_preview_points()
+        self._refresh_adjustment_drag_visuals()
+        return self._field_to_scene(*field_pos)
+
     def _clear_draft_preview_items(self):
         """仅清除草稿预览图元，保留可拖动参考点。"""
         for item in self._draft_preview_items:
@@ -389,6 +1037,11 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def _refresh_reference_overlay_for_active_tool(self):
         """重建当前参考点相关图元，避免拖动后残留旧图元。"""
+        if self._adjustment_active:
+            self._clear_adjustment_items()
+            self._draw_adjustment_overlay()
+            return
+
         if self._draft_tool_name:
             self._clear_draft_preview_items()
             self._sync_draft_handle_positions()
@@ -466,34 +1119,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 self.addItem(dot)
                 self._pending_preview_items.append(dot)
 
-    # def _dedupe_points(self, points: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    #     """根据坐标值去重，避免重复点位导致的图元重叠与性能问题。"""
-    #     return _dedupe_points(points)
-
-    # def _sample_line_points_with_count(self, p1: tuple[float, float], p2: tuple[float, float], spacing: float, point_count: int) -> list[tuple[float, float]]:
-    #     """在线段上以固定间距和点位数量采样点位，包含起点但不包含终点；当点位数量过少时优先保证间距。"""
-    #     return _sample_line_points_with_count(p1, p2, spacing, point_count)
-
-    # def _sample_polyline_points(self, points: list[tuple[float, float]], spacing: float) -> list[tuple[float, float]]:
-    #     """在线段上以固定间距采样点位，包含起点但不包含终点。"""
-    #     return _sample_polyline_points(points, spacing)
-
-    # def _sample_polyline_points_with_count(self, points: list[tuple[float, float]], point_count: int) -> list[tuple[float, float]]:
-    #     """在线段上以固定间距和点位数量采样点位，包含起点但不包含终点；当点位数量过少时优先保证间距。"""
-    #     return _sample_polyline_points_with_count(points, point_count)
-
-    # def _sample_polyline_points_with_count_and_spacing(self, points: list[tuple[float, float]], point_count: int, spacing: float) -> list[tuple[float, float]]:
-    #     """在线段上以固定间距和点位数量采样点位，包含起点但不包含终点；当点位数量过少时优先保证间距；当点位数量过多时优先保证数量。"""
-    #     return _sample_polyline_points_with_count_and_spacing(points, point_count, spacing)
-
-    # def _sample_curve_points(self, points: list[tuple[float, float]], spacing: float) -> list[tuple[float, float]]:
-    #     """基于 Catmull-Rom 样条生成平滑曲线并按 spacing 重新等距采样（返回 field 坐标点）。"""
-    #     return _sample_curve_points(points, spacing)
-
-    # def _build_dense_curve_points(self, points: list[tuple[float, float]], spacing_hint: float) -> list[tuple[float, float]]:
-    #     """生成 Catmull-Rom 曲线的密集折线点，为不同采样策略提供统一输入。"""
-    #     return _build_dense_curve_points(points, spacing_hint)
-
     def _sample_curve_points_with_count(self, points: list[tuple[float, float]], point_count: int) -> list[tuple[float, float]]:
         """基于 Catmull-Rom 样条生成平滑曲线，并按目标点数重新采样。"""
         dense = _build_dense_curve_points(points, float(self.field_info.grid_step))
@@ -515,258 +1140,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self._draw_pending_reference_preview()
         self.update()
 
-    # def _sample_circle_points(self, center: tuple[float, float], radius_point: tuple[float, float], spacing: float) -> list[tuple[float, float]]:
-    #     """圆绘制点位预览"""
-    #     cx, cy, radius = _circle_from_two_points(center, radius_point)
-    #     if radius <= 1e-9:
-    #         return [center]
-    #     circumference = 2.0 * math.pi * radius
-    #     # 从第二个参考点开始，沿逆时针方向按固定弧长步进生成点位。
-    #     # 若末尾剩余弧长不足 spacing，则不生成接近起点的最后一个点，避免尾段过短。
-    #     # 原实现（向下取整）：
-    #     # point_count = int(circumference // max(1e-9, spacing))
-    #     # 改为四舍五入以与按点数采样的生成规则保持一致性
-    #     point_count = max(1, int(round(circumference / max(1e-9, spacing))))
-    #     if point_count <= 0:
-    #         return [radius_point]
-
-    #     start_angle = math.atan2(radius_point[1] - cy, radius_point[0] - cx)
-    #     points = []
-    #     for index in range(point_count):
-    #         arc_length = spacing * index
-    #         angle = start_angle - arc_length / radius
-    #         points.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
-    #     return points
-
-    # def _sample_circle_points_with_count(self, center: tuple[float, float], radius_point: tuple[float, float], point_count: int) -> list[tuple[float, float]]:
-    #     """圆绘制点位预览（按点位数量采样）"""
-    #     cx, cy, radius = _circle_from_two_points(center, radius_point)
-    #     if radius <= 1e-9:
-    #         return [center]
-    #     count = max(1, int(point_count))
-    #     if count == 1:
-    #         return [radius_point]
-
-    #     start_angle = math.atan2(radius_point[1] - cy, radius_point[0] - cx)
-    #     points = []
-    #     for index in range(count):
-    #         angle = start_angle - 2.0 * math.pi * index / count
-    #         points.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
-    #     return points
-
-    # def _sample_arc_points(self, start: tuple[float, float], through: tuple[float, float], end: tuple[float, float], spacing: float) -> list[tuple[float, float]]:
-    #     """弧绘制点位预览，基于三点确定的圆弧生成点位。"""
-    #     center = _circumcenter(start, through, end)
-    #     if center is None:
-    #         # 退化为折线时，按整段折线连续等距采样（只保证起点落点）。
-    #         return _sample_polyline_points([start, through, end], spacing)
-
-    #     cx, cy = center
-    #     radius = math.hypot(start[0] - cx, start[1] - cy)
-    #     if radius <= 1e-9:
-    #         return [start, end]
-
-    #     start_angle = math.atan2(start[1] - cy, start[0] - cx)
-    #     through_angle = math.atan2(through[1] - cy, through[0] - cx)
-    #     end_angle = math.atan2(end[1] - cy, end[0] - cx)
-
-    #     def norm(a):
-    #         while a < 0:
-    #             a += 2.0 * math.pi
-    #         while a >= 2.0 * math.pi:
-    #             a -= 2.0 * math.pi
-    #         return a
-
-    #     s = norm(start_angle)
-    #     m = norm(through_angle)
-    #     e = norm(end_angle)
-    #     tau = 2.0 * math.pi
-
-    #     # 判定第三点属于 start->end 的 CCW 弧，还是 CW 弧。
-    #     ccw_se = (e - s) % tau
-    #     ccw_sm = (m - s) % tau
-    #     use_ccw = ccw_sm <= ccw_se
-
-    #     # 仅采样包含第三参考点的那段弧，并拆成两段确保必经 through。
-    #     if use_ccw:
-    #         d1 = ccw_sm
-    #         d2 = ccw_se - ccw_sm
-    #     else:
-    #         cw_sm = (s - m) % tau
-    #         cw_se = (s - e) % tau
-    #         d1 = -cw_sm
-    #         d2 = -(cw_se - cw_sm)
-
-    #     total_delta = d1 + d2
-    #     total_len = abs(total_delta) * radius
-    #     count = int(total_len // spacing)
-    #     points = []
-    #     for i in range(count + 1):
-    #         distance = spacing * i
-    #         angle = s + (distance / radius) * (1.0 if total_delta >= 0 else -1.0)
-    #         points.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
-    #     return points
-
-    # def _sample_arc_points_with_count(self, start: tuple[float, float], through: tuple[float, float], end: tuple[float, float], point_count: int) -> list[tuple[float, float]]:
-    #     """弧绘制点位预览，基于三点确定的圆弧生成点位（按点位数量采样）。"""
-    #     center = _circumcenter(start, through, end)
-    #     if center is None:
-    #         count = max(1, int(point_count))
-    #         if count == 1:
-    #             return [start]
-    #         total_length = _distance(start, through) + _distance(through, end)
-    #         spacing = max(1e-9, total_length / (count - 1))
-    #         return _sample_polyline_points([start, through, end], spacing)
-
-    #     cx, cy = center
-    #     radius = math.hypot(start[0] - cx, start[1] - cy)
-    #     if radius <= 1e-9:
-    #         return [start, end]
-
-    #     start_angle = math.atan2(start[1] - cy, start[0] - cx)
-    #     through_angle = math.atan2(through[1] - cy, through[0] - cx)
-    #     end_angle = math.atan2(end[1] - cy, end[0] - cx)
-
-    #     def norm(a):
-    #         while a < 0:
-    #             a += 2.0 * math.pi
-    #         while a >= 2.0 * math.pi:
-    #             a -= 2.0 * math.pi
-    #         return a
-
-    #     s = norm(start_angle)
-    #     m = norm(through_angle)
-    #     e = norm(end_angle)
-    #     tau = 2.0 * math.pi
-    #     ccw_se = (e - s) % tau
-    #     ccw_sm = (m - s) % tau
-    #     use_ccw = ccw_sm <= ccw_se
-
-    #     if use_ccw:
-    #         total_delta = ccw_se
-    #     else:
-    #         total_delta = -((s - e) % tau)
-
-    #     count = max(1, int(point_count))
-    #     if count == 1:
-    #         return [start]
-
-    #     points = []
-    #     for i in range(count):
-    #         distance = abs(total_delta) * radius * i / (count - 1)
-    #         angle = s + (distance / radius) * (1.0 if total_delta >= 0 else -1.0)
-    #         points.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
-    #     return points
-
-    # def _sample_arc_points_with_count_and_spacing(self, start: tuple[float, float], through: tuple[float, float], end: tuple[float, float], point_count: int, spacing: float) -> list[tuple[float, float]]:
-    #     """按起点开始、固定间隔和固定个数采样弧：
-    #     - 从 start 出发，每隔 spacing 放一个点，直到达到 point_count。
-    #     - 若弧长不足以放下所有点，超出部分沿终点处切线方向延申。
-    #     返回 field 单位坐标点列表。
-    #     """
-    #     count = max(1, int(point_count))
-    #     spacing = max(1e-9, float(spacing))
-
-    #     center = _circumcenter(start, through, end)
-    #     if center is None:
-    #         # 退化为折线：重用折线按个数与间隔采样的实现
-    #         return _sample_polyline_points_with_count_and_spacing([start, through, end], count, spacing)
-
-    #     cx, cy = center
-    #     radius = math.hypot(start[0] - cx, start[1] - cy)
-    #     if radius <= 1e-9:
-    #         return [start]
-
-    #     start_angle = math.atan2(start[1] - cy, start[0] - cx)
-    #     through_angle = math.atan2(through[1] - cy, through[0] - cx)
-    #     end_angle = math.atan2(end[1] - cy, end[0] - cx)
-
-    #     def norm(a):
-    #         while a < 0:
-    #             a += 2.0 * math.pi
-    #         while a >= 2.0 * math.pi:
-    #             a -= 2.0 * math.pi
-    #         return a
-
-    #     s = norm(start_angle)
-    #     m = norm(through_angle)
-    #     e = norm(end_angle)
-    #     tau = 2.0 * math.pi
-
-    #     ccw_se = (e - s) % tau
-    #     ccw_sm = (m - s) % tau
-    #     use_ccw = ccw_sm <= ccw_se
-
-    #     if use_ccw:
-    #         if ccw_se >= 0:
-    #             total_delta = ccw_se
-    #         else:
-    #             total_delta = -( (s - e) % tau )
-    #     else:
-    #         # clockwise negative delta
-    #         total_delta = -((s - e) % tau)
-
-    #     total_len = abs(total_delta) * radius
-
-    #     points: list[tuple[float, float]] = []
-    #     # 方向标记：角度增大为正
-    #     sign = 1.0 if total_delta >= 0 else -1.0
-
-    #     # 计算单位切向量（沿着角度变化的方向）在终点处，用于延申
-    #     ux_t = -math.sin(end_angle)
-    #     uy_t = math.cos(end_angle)
-    #     unit_tangent_x = sign * ux_t
-    #     unit_tangent_y = sign * uy_t
-
-    #     for i in range(count):
-    #         target_dist = spacing * i
-    #         if target_dist <= total_len + 1e-9:
-    #             angle = s + (target_dist / radius) * sign
-    #             points.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
-    #         else:
-    #             extra = target_dist - total_len
-    #             # 起点为弧终点位置
-    #             arc_end_x = cx + radius * math.cos(e)
-    #             arc_end_y = cy + radius * math.sin(e)
-    #             points.append((arc_end_x + unit_tangent_x * extra, arc_end_y + unit_tangent_y * extra))
-
-    #     return points
-
-    # def _sample_rectangle_fill_points_with_counts(self, a: tuple[float, float], b: tuple[float, float], c: tuple[float, float], spacing_base: float, spacing_shift: float, base_point_count: int, shift_point_count: int) -> list[tuple[float, float]]:
-    #     """按两个方向的点位个数与间隔采样填充四边形点位。"""
-    #     ax, ay = a
-    #     bx, by = b
-    #     cx, cy = c
-    #     base_dx, base_dy = bx - ax, by - ay
-    #     shift_dx, shift_dy = cx - ax, cy - ay
-    #     base_len = math.hypot(base_dx, base_dy)
-    #     shift_len = math.hypot(shift_dx, shift_dy)
-    #     if base_len <= 1e-9 or shift_len <= 1e-9:
-    #         return [a, b, c]
-
-    #     base_unit_x = base_dx / base_len
-    #     base_unit_y = base_dy / base_len
-    #     shift_unit_x = shift_dx / shift_len
-    #     shift_unit_y = shift_dy / shift_len
-
-    #     base_point_count = max(1, int(base_point_count))
-    #     shift_point_count = max(1, int(shift_point_count))
-
-    #     base_line = _sample_line_points_with_count(a, b, spacing_base, base_point_count)
-    #     if not base_line:
-    #         base_line = [a]
-
-    #     points = []
-    #     for shift_index in range(shift_point_count):
-    #         shift_distance = spacing_shift * shift_index
-    #         row = [(
-    #             px + shift_unit_x * shift_distance,
-    #             py + shift_unit_y * shift_distance,
-    #         ) for px, py in base_line]
-    #         points.extend(row)
-
-    #     return points or [a, b, c]
-
     def _sample_polygon_perimeter_points(self, center: tuple[float, float], radius_point: tuple[float, float], spacing: float) -> list[tuple[float, float]]:
         """多边形绘制点位预览"""
         vertices = _make_polygon_points(center, radius_point, self.polygon_side_count("多边形"))
@@ -774,14 +1147,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             return []
         points = _sample_closed_polyline_points_with_spacing(vertices, spacing)
         return points
-
-    # def _sample_closed_polyline_points_with_spacing(self, points: list[tuple[float, float]], spacing: float) -> list[tuple[float, float]]:
-    #     """按固定间距采样闭合折线：包含起点，不包含回到起点的闭合末点。"""
-    #     return _sample_closed_polyline_points_with_spacing(points, spacing)
-
-    # def _sample_closed_polyline_points_with_count(self, points: list[tuple[float, float]], point_count: int) -> list[tuple[float, float]]:
-    #     """按点位个数采样闭合折线点位"""
-    #     return _sample_closed_polyline_points_with_count(points, point_count)
 
     def _sample_polygon_perimeter_points_with_count(self, center: tuple[float, float], radius_point: tuple[float, float], point_count: int) -> list[tuple[float, float]]:
         """按点位个数采样多边形周长点位"""
@@ -794,7 +1159,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         """根据当前草稿工具和参考点生成最终的执行点位列表（field 坐标）。"""
         spacing = max(1e-9, float(self.field_info.grid_step) * 2.0)
         if tool_name == "点" and refs:
-            return _dedupe_points(refs)
+            # return _dedupe_points(refs)
+            return refs
         if tool_name in self._sampling_tools and len(refs) >= 2:
             state = self._sampling_state(tool_name)
             line_spacing = max(1e-9, float(self.field_info.grid_step) * float(state["spacing_steps"]))
@@ -805,66 +1171,72 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 is_curve = False
                 # 与曲线/折线分支保持一致的优先级：手动间距+手动点数 -> 手动点数 -> 手动间距 -> 自动间距
                 if state.get("spacing_manual", False) and state.get("point_count_manual", False):
-                    return _dedupe_points(_sample_polyline_points_with_count_and_spacing(refs, point_count, line_spacing))
+                    return _sample_polyline_points_with_count_and_spacing(refs, point_count, line_spacing)
+                    # return _dedupe_points(_sample_polyline_points_with_count_and_spacing(refs, point_count, line_spacing))
                 if state.get("spacing_manual", False):
-                    return _dedupe_points(_sample_polyline_points(refs, line_spacing))
+                    return _sample_polyline_points(refs, line_spacing)
+                    # return _dedupe_points(_sample_polyline_points(refs, line_spacing))
                 if state.get("point_count_manual", False):
-                    return _dedupe_points(_sample_polyline_points_with_count(refs, point_count))
-                return _dedupe_points(_sample_polyline_points(refs, line_spacing))
+                    return _sample_polyline_points_with_count(refs, point_count)
+                    # return _dedupe_points(_sample_polyline_points_with_count(refs, point_count))
+                return _sample_polyline_points(refs, line_spacing)
+                # return _dedupe_points(_sample_polyline_points(refs, line_spacing))
             elif tool_name == "弧":
                 if state.get("point_count_manual", False) and state.get("spacing_manual", False):
-                    return _dedupe_points(_sample_arc_points_with_count_and_spacing(refs[0], refs[2], refs[1], point_count, line_spacing))
+                    return _sample_arc_points_with_count_and_spacing(refs[0], refs[2], refs[1], point_count, line_spacing)
+                    # return _dedupe_points(_sample_arc_points_with_count_and_spacing(refs[0], refs[2], refs[1], point_count, line_spacing))
                 if state.get("point_count_manual", False):
-                    return _dedupe_points(_sample_arc_points_with_count(refs[0], refs[2], refs[1], point_count))
-                # return _dedupe_points(_sample_arc_points(refs[0], refs[2], refs[1], spacing))
-                return _dedupe_points(_sample_arc_points(refs[0], refs[2], refs[1], line_spacing))
+                    return _sample_arc_points_with_count(refs[0], refs[2], refs[1], point_count)
+                    # return _dedupe_points(_sample_arc_points_with_count(refs[0], refs[2], refs[1], point_count))
+                return _sample_arc_points(refs[0], refs[2], refs[1], line_spacing)
+                # return _dedupe_points(_sample_arc_points(refs[0], refs[2], refs[1], line_spacing))
             elif tool_name == "圆":
                 if state["point_count_manual"]:
-                    return _dedupe_points(_sample_circle_points_with_count(refs[0], refs[1], point_count))
-                return _dedupe_points(_sample_circle_points(refs[0], refs[1], line_spacing))
+                    return _sample_circle_points_with_count(refs[0], refs[1], point_count)
+                    # return _dedupe_points(_sample_circle_points_with_count(refs[0], refs[1], point_count))
+                return _sample_circle_points(refs[0], refs[1], line_spacing)
+                # return _dedupe_points(_sample_circle_points(refs[0], refs[1], line_spacing))
             elif tool_name == "多边形":
                 if state["point_count_manual"]:
-                    return _dedupe_points(self._sample_polygon_perimeter_points_with_count(refs[0], refs[1], point_count))
-                return _dedupe_points(self._sample_polygon_perimeter_points(refs[0], refs[1], line_spacing))
-        # if tool_name == "弧" and len(refs) >= 3:
-        #     # 弧工具参考点语义：端点1、端点2、弧上一点。
-        #     return _dedupe_points(_sample_arc_points(refs[0], refs[2], refs[1], spacing))
+                    return self._sample_polygon_perimeter_points_with_count(refs[0], refs[1], point_count)
+                    # return _dedupe_points(self._sample_polygon_perimeter_points_with_count(refs[0], refs[1], point_count))
+                return self._sample_polygon_perimeter_points(refs[0], refs[1], line_spacing)
+                # return _dedupe_points(self._sample_polygon_perimeter_points(refs[0], refs[1], line_spacing))
             elif tool_name == "曲线/折线" and len(refs) >= 2:
                 is_curve = getattr(self, '_curve_mode', 'polyline') == 'curve'
                 if state["spacing_manual"] and state["point_count_manual"]:
                     if is_curve:
                         # dense_curve = _sample_curve_points(refs, line_spacing)
                         dense_curve = _build_dense_curve_points(refs, line_spacing)
-                        return _dedupe_points(_sample_polyline_points_with_count_and_spacing(dense_curve, point_count, line_spacing))
-                    return _dedupe_points(_sample_polyline_points_with_count_and_spacing(refs, point_count, line_spacing))
+                        return _sample_polyline_points_with_count_and_spacing(dense_curve, point_count, line_spacing)
+                        # return _dedupe_points(_sample_polyline_points_with_count_and_spacing(dense_curve, point_count, line_spacing))
+                    return _sample_polyline_points_with_count_and_spacing(refs, point_count, line_spacing)
+                    # return _dedupe_points(_sample_polyline_points_with_count_and_spacing(refs, point_count, line_spacing))
                 if state["spacing_manual"]:
                     if is_curve:
-                        return _dedupe_points(_sample_curve_points(refs, line_spacing))
-                    return _dedupe_points(_sample_polyline_points(refs, line_spacing))
+                        return _sample_curve_points(refs, line_spacing)
+                        # return _dedupe_points(_sample_curve_points(refs, line_spacing))
+                    return _sample_polyline_points(refs, line_spacing)
+                    # return _dedupe_points(_sample_polyline_points(refs, line_spacing))
                 if state["point_count_manual"]:
                     if is_curve:
-                        return _dedupe_points(self._sample_curve_points_with_count(refs, point_count))
-                    return _dedupe_points(_sample_polyline_points_with_count(refs, point_count))
+                        return self._sample_curve_points_with_count(refs, point_count)
+                        # return _dedupe_points(self._sample_curve_points_with_count(refs, point_count))
+                    return _sample_polyline_points_with_count(refs, point_count)
+                    # return _dedupe_points(_sample_polyline_points_with_count(refs, point_count))
                 if is_curve:
-                    return _dedupe_points(_sample_curve_points(refs, line_spacing))
-                return _dedupe_points(_sample_polyline_points(refs, line_spacing))
+                    return _sample_curve_points(refs, line_spacing)
+                    # return _dedupe_points(_sample_curve_points(refs, line_spacing))
+                return _sample_polyline_points(refs, line_spacing)
+                # return _dedupe_points(_sample_polyline_points(refs, line_spacing))
             elif tool_name == "填充四边形" and len(refs) >= 3:
                 state = self._sampling_state(tool_name)
                 base_spacing = max(1e-9, float(self.field_info.grid_step) * float(state.get("spacing_steps", 2.0)))
                 shift_spacing = max(1e-9, float(self.field_info.grid_step) * float(state.get("spacing_steps_shift", state.get("spacing_steps", 2.0))))
                 base_point_count = int(state.get("point_count", 1))
                 shift_point_count = int(state.get("point_count_shift", 1))
-                return _dedupe_points(
-                    _sample_rectangle_fill_points_with_counts(
-                        refs[0],
-                        refs[1],
-                        refs[2],
-                        base_spacing,
-                        shift_spacing,
-                        base_point_count,
-                        shift_point_count,
-                    )
-                )
+                return _sample_rectangle_fill_points_with_counts(refs[0], refs[1], refs[2], base_spacing, shift_spacing, base_point_count, shift_point_count)
+                # return _dedupe_points(_sample_rectangle_fill_points_with_counts(refs[0], refs[1], refs[2], base_spacing, shift_spacing, base_point_count, shift_point_count))
         return []
 
     def _reference_graphic_item(self):
@@ -1100,57 +1472,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         _enforce_sampling_auto_rule(tool_name, state)
         return state
 
-    # def _enforce_sampling_auto_rule(self, tool_name: str | None, state: dict, changed: str | None = None):
-    #     """个数与间隔不允许同时为自动：只允许都手动或仅一项自动。
-    #     同时保证至少有一项为自动（即不可全部手动）：当两项都为手动时，默认开启点数自动。
-    #     """
-    #     point_auto = not bool(state.get("point_count_manual", False))
-    #     spacing_auto = not bool(state.get("spacing_manual", False))
-    #     # 若两项同时为自动，则根据最近变更优先保留被手动的那一项
-    #     if point_auto and spacing_auto:
-    #         if changed == "point_count_auto":
-    #             state["spacing_manual"] = True
-    #             return
-    #         if changed == "spacing_auto":
-    #             state["point_count_manual"] = True
-    #             return
-    #         # 兜底：保留点数自动，间距手动
-    #         state["spacing_manual"] = True
-    #         return
-
-    #     # 仅对圆与多边形,若两项同时为手动（即都不是自动），默认启用点数自动以保证至少有一项自动适配；
-    #     # 对其他图形保持用户手动设置不变，避免影响现有行为。
-    #     if not point_auto and not spacing_auto:
-    #         tname = tool_name or ""
-    #         if tname in ("圆", "多边形"):
-    #             # 圆/多边形回退策略：当用户把其中一项切到“手动”导致两项都手动时，交换另一项为自动。
-    #             if changed == "point_count_manual":
-    #                 state["spacing_manual"] = False
-    #                 return
-    #             if changed == "spacing_manual":
-    #                 state["point_count_manual"] = False
-    #                 return
-    #             # 兜底：来源未知时默认保留“点数自动”。
-    #             state["point_count_manual"] = False
-    #         return
-
-    # def _enforce_sampling_shift_auto_rule(self, state: dict, changed: str | None = None):
-    #     """填充四边形第二方向（P0-P2）也不允许“点数自动+间隔自动”同时开启。"""
-    #     point_auto = not bool(state.get("point_count_shift_manual", False))
-    #     spacing_auto = not bool(state.get("spacing_shift_manual", False))
-    #     if not (point_auto and spacing_auto):
-    #         # 两项不同时为自动，无需调整
-    #         return
-
-    #     if changed == "point_count_shift_auto":
-    #         state["spacing_shift_manual"] = True
-    #         return
-    #     if changed == "spacing_shift_auto":
-    #         state["point_count_shift_manual"] = True
-    #         return
-    #     # 兜底：保留“点数自动”，把“间隔”落为手动。
-    #     state["spacing_shift_manual"] = True
-
     def sampling_shift_point_count(self, tool_name: str) -> int:
         """获取填充四边形第二方向（P0-P2）的点位个数设置。"""
         state = self._sampling_state(tool_name)
@@ -1165,10 +1486,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         """获取多边形工具的边数设置。"""
         state = self._sampling_state(tool_name)
         return max(2, int(state.get("polygon_sides", 6)))
-
-    # def polygon_side_count(self, tool_name: str) -> int:
-    #     """获取多边形工具的边数设置的内部方法，保证返回值至少为 2。"""
-    #     return self.polygon_side_count(tool_name)
 
     def is_sampling_point_count_auto(self, tool_name: str) -> bool:
         """获取指定工具的采样点位个数设置是否为自动。"""
@@ -1186,21 +1503,16 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         """发出采样点位个数改变的信号。"""
         point_count = max(1, int(point_count))
         self.samplingPointCountChanged.emit(tool_name, point_count)
-        # if tool_name == "线段":
-        #     self.lineSegmentPointCountChanged.emit(point_count)
 
     def _emit_sampling_shift_point_count_changed(self, tool_name: str, point_count: int):
         """发出填充四边形第二方向（P0-P2）采样点位个数改变的信号。"""
         point_count = max(1, int(point_count))
         self.samplingShiftPointCountChanged.emit(tool_name, point_count)
-        # no special-case for line segments
 
     def _emit_sampling_spacing_changed(self, tool_name: str, spacing_steps: float):
         """发出采样间距改变的信号。spacing_steps 是 field 网格单位的倍数。"""
         spacing_steps = max(0.001, float(spacing_steps))
         self.samplingSpacingChanged.emit(tool_name, spacing_steps)
-        # if tool_name == "线段":
-        #     self.lineSegmentSpacingChanged.emit(spacing_steps)
 
     def _sampling_length_for_tool(self, tool_name: str, refs: list[tuple[float, float]]) -> float:
         if tool_name == "线段" and len(refs) >= 2:
@@ -1500,26 +1812,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self._draw_pending_reference_points()
             self.update()
 
-    # def _make_polygon_points(self, center: tuple[float, float], radius_point: tuple[float, float], sides: int) -> list[tuple[float, float]]:
-    #     """根据中心点、半径点和边数，计算正多边形的顶点坐标。中心点和半径点定义了多边形的大小和初始方向，边数决定了多边形的形状。返回一个包含所有顶点坐标的列表。如果半径过小（小于等于 1e-9），则返回一个空列表；如果边数不足 2，则自动修正为至少 2。"""
-    #     return _make_polygon_points(center, radius_point, sides)
-
-    # def _circle_from_two_points(self, center: tuple[float, float], radius_point: tuple[float, float]) -> tuple[float, float, float]:
-    #     """根据中心点和半径点，计算圆的参数（中心坐标和半径）。中心点定义了圆心的位置，半径点定义了圆的大小。返回一个包含圆心坐标和半径的元组。如果半径过小（小于等于 1e-9），则半径会被修正为 0。"""
-    #     return _circle_from_two_points(center, radius_point)
-
-    # def _rectangle_from_three_points(self, a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]) -> list[tuple[float, float]]:
-    #     """根据三个点计算矩形的顶点坐标。返回一个包含所有顶点坐标的列表。"""
-    #     return _rectangle_from_three_points(a, b, c)
-
-    # def _circumcenter(self, p1: tuple[float, float], p2: tuple[float, float], p3: tuple[float, float]) -> tuple[float, float] | None:
-    #     """计算三角形的外心坐标。外心是三角形三个顶点的垂直平分线的交点，也是通过这三个点的圆的圆心。返回一个包含外心坐标的元组，如果三个点共线则返回 None。"""
-    #     return _circumcenter(p1, p2, p3)
-
-    # def _arc_path_from_three_points(self, start: tuple[float, float], through: tuple[float, float], end: tuple[float, float]) -> QPainterPath:
-    #     """根据起点、过渡点和终点，计算通过这三个点的圆弧路径。首先计算三点的外心作为圆心，然后根据圆心和起点计算半径，最后根据起点、过渡点和终点计算起始角度、过渡角度和结束角度，并确定弧线的方向（顺时针或逆时针）。返回一个 QPainterPath 对象表示该圆弧路径。如果三点共线，则返回一条连接起点、过渡点和终点的折线路径。"""
-    #     return _arc_path_from_three_points(start, through, end)
-
     def _draw_draft_overlay(self):
         self._clear_draft_items()   # 清除之前的草稿预览项和参考点项
         self._draw_draft_preview()  # 根据当前草稿工具和参考点绘制新的草稿预览项
@@ -1555,9 +1847,9 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._updating_draft_handles = True
         for index, (x, y) in enumerate(self._draft_reference_points):
             handle = ReferenceHandleItem(
-                index,
-                self._field_to_scene(x, y),
-                self._on_reference_handle_moved,
+                index = index,
+                center_scene_pos = self._field_to_scene(x, y),
+                moved_callback = self._on_reference_handle_moved,
             )
             self.addItem(handle)
             self._draft_handle_items.append(handle)
@@ -1570,9 +1862,9 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._updating_draft_handles = True
         for index, (x, y) in enumerate(self._pending_points):
             handle = ReferenceHandleItem(
-                index,
-                self._field_to_scene(x, y),
-                self._on_pending_reference_handle_moved,
+                index = index,
+                center_scene_pos = self._field_to_scene(x, y),
+                moved_callback = self._on_pending_reference_handle_moved,
             )
             self.addItem(handle)
             self._draft_handle_items.append(handle)
@@ -1599,17 +1891,11 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._pending_points[index] = (x, y)
         if self.active_tool in self._sampling_tools:
             self._sync_sampling_auto_values_from_draft(self.active_tool)
-        QTimer.singleShot(0, self._refresh_reference_overlay_for_active_tool)
+        # 拖拽进行中仅刷新待确认参考线预览，避免重建 handle 导致拖拽中失焦。
+        self._clear_pending_preview_items()
+        self._draw_pending_reference_preview()
+        self.update()
         return self._field_to_scene(x, y)
-
-    # @staticmethod
-    # def _append_unique_reference_point(target: list[tuple[float, float]], field_point: tuple[float, float]) -> bool:
-    #     x, y = field_point
-    #     for px, py in target:
-    #         if abs(px - x) < 1e-9 and abs(py - y) < 1e-9:
-    #             return False
-    #     target.append(field_point)
-    #     return True
 
     def _handle_draw_tool(self, tool_name: str, field_point: tuple[float, float]):
         # 非单点工具进入草稿态后，仅允许拖拽现有参考点，不再响应新增点击。
@@ -1668,7 +1954,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 prev_points = self.node_points.get(preview_node - 1, [])
                 for point in prev_points:
                     self._draw_point_item(point, pre_view=True, draw_label=False)
-            current_points = self.node_points.get(preview_node, [])
+            current_points = self._points_for_node_render(preview_node)
         else:
             # 拍位位于两节点之间，显示左节点为 pre_view，当前层显示线性插值结果。
             segment = self._segment_for_beat(self.preview_beat)
@@ -1684,10 +1970,15 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                     prev_points = self.node_points.get(self.active_node - 1, [])
                     for point in prev_points:
                         self._draw_point_item(point, pre_view=True, draw_label=False)
-                current_points = self.node_points.get(self.active_node, [])
+                current_points = self._points_for_node_render(self.active_node)
 
         for point in current_points:
             self._draw_point_item(point, pre_view=False, draw_label=True)
+
+        if self._adjustment_active:
+            self._draw_adjustment_overlay()
+            self._refresh_adjustment_drag_visuals()
+            return
 
         if self._draft_tool_name:
             self._draw_draft_overlay()
@@ -1696,7 +1987,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self._draw_pending_reference_preview()
             self._draw_pending_reference_points()
 
-        self._refresh_selected_group_links()
 
     def delete_selected_points(self):
         """删除当前选中的点位：在所有节点中移除对应点位 ID，重排剩余点位 ID 并同步 group_to_point 与 _next_point_id。"""
@@ -1816,7 +2106,14 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         """绘图模式下拦截鼠标：左键采样点。"""
         if event.button() == Qt.MouseButton.LeftButton:
             item = self._scene_item_under_cursor(event.scenePos())
-            if isinstance(item, ReferenceHandleItem):
+            if self.active_tool == "调整":
+                if isinstance(item, (ReferenceHandleItem, MovementControlHandleItem)):
+                    super().mousePressEvent(event)
+                else:
+                    event.accept()
+                return
+
+            if isinstance(item, (ReferenceHandleItem, MovementControlHandleItem)):
                 super().mousePressEvent(event)
                 return
 
@@ -1838,7 +2135,10 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                             else:
                                 selected_ids.add(group_point_id)
                     elif (modifiers & Qt.KeyboardModifier.ControlModifier):
-                        selected_ids.add(item.point_id)
+                        if item.point_id in selected_ids:
+                            selected_ids.discard(item.point_id)
+                        else:
+                            selected_ids.add(item.point_id)
                     else:
                         selected_ids = set(self._group_point_ids_for_point_id(item.point_id))
                 else:

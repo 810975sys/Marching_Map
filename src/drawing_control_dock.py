@@ -7,6 +7,7 @@ from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
+    QButtonGroup,
     QDockWidget,
     QDoubleSpinBox,
     QFormLayout,
@@ -49,12 +50,64 @@ class DrawingControlDock(QDockWidget):
         self.statusLabel = QLabel("", content)  # 当前绘制状态提示
         layout.addWidget(self.statusLabel)
 
-        self.confirmButton = QPushButton("确认绘制 Enter", content)   # 确认按钮，完成绘制并清空草稿状态
-        self._confirm_shortcut_enter = QShortcut(QKeySequence(Qt.Key.Key_Enter), self)  # 绑定快捷键
+        self.adjustWidget = QWidget(content)
+        adjust_layout = QVBoxLayout(self.adjustWidget)
+        adjust_layout.setContentsMargins(0, 0, 0, 0)
+        adjust_layout.setSpacing(6)
+
+        adjust_mode_row = QWidget(self.adjustWidget)
+        adjust_mode_layout = QHBoxLayout(adjust_mode_row)
+        adjust_mode_layout.setContentsMargins(0, 0, 0, 0)
+        adjust_mode_layout.setSpacing(6)
+
+        self.adjustModeGroup = QButtonGroup(self.adjustWidget)
+        self.adjustModeGroup.setExclusive(True)
+        self.adjustModeButtons = {}
+        self._adjustment_mode_tips = {
+            "比例": "保持长宽比缩放，整体等比例变化。",
+            "伸展": "沿拖拽方向拉伸或压缩，可单独改变宽高。",
+            "倾斜": "拖动角点产生斜切效果，保持对边关系。",
+            "歪曲": "对四角做非均匀变形，允许更自由的形变。",
+        }
+        for mode_name in ["比例", "伸展", "倾斜", "歪曲"]:
+            button = QToolButton(self.adjustWidget)
+            button.setText(mode_name)
+            button.setCheckable(True)
+            button.setToolTip(self._adjustment_mode_tips[mode_name])
+            self.adjustModeGroup.addButton(button)
+            self.adjustModeButtons[mode_name] = button
+            adjust_mode_layout.addWidget(button)
+            button.toggled.connect(lambda checked, name=mode_name: self._on_adjustment_mode_button_toggled(name, checked))
+
+        self.adjustModeTipLabel = QLabel("", self.adjustWidget)
+        self.adjustModeTipLabel.setWordWrap(True)
+        self.adjustModeTipLabel.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        
+        self.rotationAngleLabel = QLabel("旋转角度", self.adjustWidget)
+        self.rotationAngleLabel.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.rotationAngleSpin = QDoubleSpinBox(self.adjustWidget)
+        self.rotationAngleSpin.setRange(-360.0, 360.0)
+        self.rotationAngleSpin.setDecimals(1)
+        self.rotationAngleSpin.setSingleStep(1.0)
+        
+        rotation_row = QWidget(self.adjustWidget)
+        rotation_layout = QHBoxLayout(rotation_row)
+        rotation_layout.setContentsMargins(0, 0, 0, 0)
+        rotation_layout.setSpacing(6)
+        rotation_layout.addWidget(self.rotationAngleLabel)
+        rotation_layout.addWidget(self.rotationAngleSpin)
+
+        adjust_layout.addWidget(adjust_mode_row)
+        adjust_layout.addWidget(self.adjustModeTipLabel)
+        adjust_layout.addWidget(rotation_row)
+        layout.addWidget(self.adjustWidget)
+
+        self.confirmButton = QPushButton("确认 Enter", content)   # 确认按钮，完成绘制并清空草稿状态
+        self._confirm_shortcut_enter = QShortcut(QKeySequence(Qt.Key.Key_Return), self)  # 绑定快捷键
         self._confirm_shortcut_enter.setContext(Qt.ShortcutContext.ApplicationShortcut) # 设置快捷方式上下文为应用程序级，确保在任何情况下按下 Enter 都能触发确认操作
         self._confirm_shortcut_enter.activated.connect(self._trigger_confirm_shortcut)
         
-        self.cancelButton = QPushButton("取消绘制 Esc", content)    # 取消按钮，放弃草稿并清空草稿状态
+        self.cancelButton = QPushButton("取消 Esc", content)    # 取消按钮，放弃草稿并清空草稿状态
         self._cancel_shortcut_esc = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         self._cancel_shortcut_esc.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self._cancel_shortcut_esc.activated.connect(self._trigger_cancel_shortcut)
@@ -173,6 +226,7 @@ class DrawingControlDock(QDockWidget):
         self._draft_active = False  # 设置绘制草稿状态标志，控制确认/取消按钮的启用状态
         # self.setLineSegmentVisible(False)   # 默认隐藏线段工具参数区域，直到绑定场景并设置工具后根据工具类型显示相应参数
         self.setCurveModeVisible(False)     # 默认隐藏曲线/折线模式选择，直到绑定场景并设置工具后根据工具类型显示
+        self.setAdjustmentControlsVisible(False)
         
         # 连接信号与槽函数
             # 线段工具参数控制
@@ -201,6 +255,31 @@ class DrawingControlDock(QDockWidget):
             # if hasattr(scene, 'set_curve_mode'):
             scene.set_curve_mode(mode)
         self.curveModeCombo.currentIndexChanged.connect(_on_curve_mode_changed)
+
+    def setAdjustmentControlsVisible(self, visible: bool):
+        """设置调整模式控制的可见性"""
+        self.adjustWidget.setVisible(bool(visible))
+
+    def setAdjustmentMode(self, mode_name: str):
+        """设置调整模式，并同步按钮状态"""
+        button = self.adjustModeButtons.get(mode_name)
+        if button is not None:
+            button.setChecked(True)
+        self._update_adjustment_mode_tip(mode_name)
+
+    def setAdjustmentRotation(self, angle: float):
+        """设置调整旋转角度，并同步数值显示"""
+        self.rotationAngleSpin.blockSignals(True)
+        self.rotationAngleSpin.setValue(float(angle))
+        self.rotationAngleSpin.blockSignals(False)
+
+    def _update_adjustment_mode_tip(self, mode_name: str):
+        tip_text = self._adjustment_mode_tips.get(mode_name, "")
+        self.adjustModeTipLabel.setText(tip_text)
+
+    def _on_adjustment_mode_button_toggled(self, mode_name: str, checked: bool):
+        if checked:
+            self._update_adjustment_mode_tip(mode_name)
 
     def bind_scene(self, scene):
         """绑定场景引用，以便根据场景状态同步控制显示内容"""

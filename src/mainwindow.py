@@ -41,11 +41,14 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self._sampling_tools = {"线段", "弧", "曲线/折线", "圆", "多边形", "填充四边形"}    # 需要在绘制控制台显示采样设置的工具
         # self._dialog_required_tools = {
         #     "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形",
-        #     "调整", "旋转", "跟随", "路径", "间隔行进",
+        #     "调整", "跟随", "路径", "间隔行进",
         #     "标签", "文本", "箭头",
         # }
         self._drawing_tools = {"点", "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形"}
-        self.select_tools = {"选择", "框选"}
+        self._select_tools = {"选择", "框选"}
+        self._transform_tools = {"调整", "跟随", "路径", "间隔行进"}
+        self._p0_forbidden_transform_tools = {"跟随", "路径", "间隔行进"}
+        
         self.setupMenus()   # 菜单栏
         self.setupToolBar()    # 工具栏
         # self.setupDockWidgets()
@@ -213,25 +216,25 @@ class MainWindow(MainWindowNotice, QMainWindow):
             '圆': "确定圆心和圆上任意一点；拖动空心矩形可对单点进行修正。",
             '多边形': "确定多边形中心点及一个顶点；拖动空心矩形可对单点进行修正。",
             '填充四边形': "确定填充四边形三个顶点；拖动空心矩形可对单点进行修正。",
-            '曲线/折线': "确定曲线/折线的经过点；拖动空心矩形可对单点进行修正。"
+            '曲线/折线': "确定曲线/折线的经过点；拖动空心矩形可对单点进行修正。",
+            '调整': "拖动角点与中心点调整所选点位",
         }
         self.drawingControlDock.statusLabel.setText(tool_text.get(tool_name, ""))
 
-        self._apply_active_tool(tool_name)
-        self.drawingControlDock.setSamplingToolVisible(tool_name if tool_name in self._sampling_tools else None, tool_name in self._sampling_tools)
-        self.drawingControlDock.setCurveModeVisible(tool_name == "曲线/折线")
-        self.drawingControlDock.setDraftActive(tool_name == "点")
-        if tool_name in self._sampling_tools:
-            self.drawingControlDock.sync_sampling_settings(tool_name)
-        self.drawingControlDock.confirmButton.setEnabled(False)
-        self.drawingControlDock.cancelButton.setEnabled(False)
-        
-        if tool_name in self.select_tools:
+        if tool_name == "调整" and not self.scene._selected_point_ids:
+            self._show_menu_notice("请先选中点位，再进入调整模式。", failed=True)
+            self._set_active_tool("框选")
+            return
+
+        self._apply_active_tool(tool_name, preserve_selection=(tool_name == "调整"))
+        self._configure_drawing_control_dock(tool_name)
+
+        if tool_name in self._select_tools:
             self.drawingControlDock.hide()
         else:
             self.drawingControlDock.show()
-        self._positionDrawingControlDock()
-        self.drawingControlDock.raise_()
+            self._positionDrawingControlDock()
+            self.drawingControlDock.raise_()
         
     def setupCentralView(self):
         """创建场景与视图。"""
@@ -307,6 +310,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.timelineMainWidget.nodeSelected.connect(self.onTimelineNodeSelected)
         self.timelineMainWidget.currentBeatChanged.connect(self.scene.set_preview_beat)
         self.timelineMainWidget.currentBeatChanged.connect(self.updateDrawToolAvailability)
+        self.timelineMainWidget.currentBeatChanged.connect(self.updateConvertToolAvailability)
+
         self.timelineMainWidget.nodeAdded.connect(self.scene.on_node_added)
         self.timelineMainWidget.nodeInserted.connect(self.scene.on_node_inserted)
         self.timelineMainWidget.nodeDeleted.connect(self.onTimelineNodeDeleted)
@@ -333,12 +338,35 @@ class MainWindow(MainWindowNotice, QMainWindow):
             btn.setChecked(name == checked_tool)
             btn.blockSignals(False)
 
-    def _apply_active_tool(self, tool_name: str):
+    def _apply_active_tool(self, tool_name: str, preserve_selection: bool = False):
         """应用工具切换到场景，并更新按钮状态。"""
         self._sync_tool_button_states(tool_name)
         self.activeToolName = tool_name
-        # if hasattr(self, "scene"):
-        self.scene.set_active_tool(tool_name)
+        self.scene.set_active_tool(tool_name, preserve_selection=preserve_selection)
+
+    def _configure_drawing_control_dock(self, tool_name: str):
+        """按当前工具切换绘制控制台的可见内容和按钮文案。"""
+        if tool_name == "调整":
+            # self.drawingControlDock.setOperationLabels("确认调整 Enter", "取消调整 Esc")
+            self.drawingControlDock.setAdjustmentControlsVisible(True)
+            self.drawingControlDock.setSamplingToolVisible(None, False)
+            self.drawingControlDock.setCurveModeVisible(False)
+            self.drawingControlDock.setDraftActive(True)
+            self.drawingControlDock.confirmButton.setEnabled(True)
+            self.drawingControlDock.cancelButton.setEnabled(True)
+            self.drawingControlDock.setAdjustmentMode(self.scene._adjustment_mode)
+            self.drawingControlDock.setAdjustmentRotation(self.scene._adjustment_rotation)
+            return
+
+        # self.drawingControlDock.setOperationLabels("确认绘制 Enter", "取消绘制 Esc")
+        self.drawingControlDock.setAdjustmentControlsVisible(False)
+        self.drawingControlDock.setSamplingToolVisible(tool_name if tool_name in self._sampling_tools else None, tool_name in self._sampling_tools)
+        self.drawingControlDock.setCurveModeVisible(tool_name == "曲线/折线")
+        self.drawingControlDock.setDraftActive(tool_name == "点")
+        if tool_name in self._sampling_tools:
+            self.drawingControlDock.sync_sampling_settings(tool_name)
+        self.drawingControlDock.confirmButton.setEnabled(False)
+        self.drawingControlDock.cancelButton.setEnabled(False)
 
     def _set_active_tool(self, tool_name: str):
         """通过按钮点击触发工具切换，保留现有行为。"""
@@ -356,9 +384,11 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
     def onSelectedPointsChanged(self, selected_count: int):
         """场景选中点位变化后，刷新绘制与变换工具可用状态。"""
-        self.updateContextToolAvailability(self.timelineMainWidget.selected_node, int(selected_count))
+        self.updateContextToolAvailability(self.timelineMainWidget.current_beat, int(selected_count))
         # 启用/禁用 删除点位 菜单
         self.actionDeletePoint.setEnabled(int(selected_count) > 0)
+        if self.activeToolName == "调整":
+            self.scene.refresh_adjustment_preview()
 
 
     def onSamplingPointCountChanged(self, tool_name: str, point_count: int):
@@ -422,32 +452,33 @@ class MainWindow(MainWindowNotice, QMainWindow):
     def updateDrawToolAvailability(self, beat: int, has_selection: bool = False):
         """根据当前节拍和选中点位数量，控制绘制工具可用性。"""
         is_p0 = int(beat) == 0
-        for name in ["点", "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形"]:
+        beat_at_node = self.timelineMainWidget.node_index_at_beat(beat) is not None
+        for name in self._drawing_tools:
             btn = self.toolButtons.get(name)
             if btn is not None:
-                btn.setEnabled(is_p0 or has_selection)
+                btn.setEnabled(beat_at_node and (is_p0 or has_selection))
+                
+    def updateConvertToolAvailability(self, beat: int, has_selection: bool = False):
+        """根据当前节点和选中点位数量，控制变换工具可用性。"""
+        is_p0 = int(beat) == 0
+        beat_at_node = self.timelineMainWidget.node_index_at_beat(beat) is not None
+        for name in self._transform_tools:
+            btn = self.toolButtons.get(name)
+            if btn is not None:
+                btn.setEnabled(beat_at_node and has_selection and not (is_p0 and name in self._p0_forbidden_transform_tools))
 
-    def updateContextToolAvailability(self, node_index: int, selected_count: int):
+    def updateContextToolAvailability(self, beat: int, selected_count: int):
         """根据当前节点和选中点位数量，控制绘制与变换工具可用性。"""
-        is_p0 = int(node_index) == 0
+        is_p0 = int(beat) == 0
         has_selection = int(selected_count) > 0
 
-        drawing_tools = ["点", "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形"]
-        transform_tools = ["调整", "跟随", "路径", "间隔行进"]
-        p0_forbidden_transform_tools = {"跟随", "路径", "间隔行进"}
-
-        self.updateDrawToolAvailability(node_index, has_selection)
-
-        # P0 时禁止部分变换工具，其他节点无选中时禁止所有变换工具
-        for name in transform_tools:
-            btn = self.toolButtons.get(name)
-            if btn is not None:
-                btn.setEnabled(has_selection and not (is_p0 and name in p0_forbidden_transform_tools))
+        self.updateDrawToolAvailability(beat, has_selection)
+        self.updateConvertToolAvailability(beat, has_selection)
 
         # 自动切换工具：如果当前工具不可用，且没有选中点位，则切换到框选；如果在P0且当前工具在P0禁止列表中，也切换到框选。
-        if not (is_p0 or has_selection) and self.activeToolName in drawing_tools + transform_tools:
+        if not (is_p0 or has_selection) and (self.activeToolName in self._drawing_tools | self._transform_tools):
             self._set_active_tool("框选")
-        elif is_p0 and self.activeToolName in p0_forbidden_transform_tools:
+        elif is_p0 and self.activeToolName in self._p0_forbidden_transform_tools:
             self._set_active_tool("框选")
 
     def setupMainLayout(self):
@@ -546,8 +577,36 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.drawingControlDock.cancelButton.setEnabled(False)
         self.drawingControlDock.setSamplingToolVisible(None, False)
         self.drawingControlDock.setCurveModeVisible(False)
-        self.drawingControlDock.confirmButton.clicked.connect(self.scene.confirm_current_drawing)
-        self.drawingControlDock.cancelButton.clicked.connect(self.scene.cancel_current_drawing)
+        self.drawingControlDock.confirmButton.clicked.connect(self._on_control_confirmed)
+        self.drawingControlDock.cancelButton.clicked.connect(self._on_control_cancelled)
+        self.drawingControlDock.rotationAngleSpin.valueChanged.connect(self.scene.set_adjustment_rotation)
+        for mode_name, button in self.drawingControlDock.adjustModeButtons.items():
+            button.toggled.connect(lambda checked=False, mode=mode_name: self._on_adjustment_mode_toggled(mode, checked))
+
+    def _on_adjustment_mode_toggled(self, mode_name: str, checked: bool):
+        if not checked or self.activeToolName != "调整":
+            return
+        self.scene.set_adjustment_mode(mode_name)
+
+    # def _on_adjustment_rotation_changed(self, angle: float):
+    #     if self.activeToolName != "调整":
+    #         return
+    #     self.scene.set_adjustment_rotation(float(angle))
+
+    def _on_control_confirmed(self):
+        if self.activeToolName == "调整":
+            self.scene.confirm_current_adjustment()
+        else:
+            self.scene.confirm_current_drawing()
+        self.onToolButtonClicked("框选")  # 草稿完成后自动切回选择工具
+
+    def _on_control_cancelled(self):
+        if self.activeToolName == "调整":
+            self.scene.cancel_current_adjustment()
+            self.drawingControlDock.setAdjustmentMode(self.scene._adjustment_mode)
+            self.drawingControlDock.setAdjustmentRotation(self.scene._adjustment_rotation)
+            return
+        self.scene.cancel_current_drawing()
 
     def _on_delete_points_triggered(self):
         """响应菜单删除点位：弹出确认对话框，确认后调用场景删除方法。"""
@@ -575,7 +634,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         cancel_btn = QPushButton("取消 Esc", dlg)
         cancel_btn.setShortcut("Esc")
         confirm_btn = QPushButton("确认 Enter", dlg)
-        confirm_btn.setShortcut("Enter")
+        confirm_btn.setShortcut("Return")
         confirm_btn.setStyleSheet("background:#d9534f;color:white;")
         cancel_btn.clicked.connect(dlg.reject)
         confirm_btn.clicked.connect(dlg.accept)
