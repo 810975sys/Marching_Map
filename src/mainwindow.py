@@ -27,6 +27,7 @@ from timeline_widget import TimelineWidget, TimelineScrollArea
 # from mainwindow_docks import DrawingControlDock, TimelineScrollArea, ToolOptionDock
 from drawing_control_dock import DrawingControlDock
 from mainwindow_notice import MainWindowNotice
+from tip_window import TipWindow
 from field_info import _field_default_dir
 
 class MainWindow(MainWindowNotice, QMainWindow):
@@ -101,9 +102,24 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.actionDeletePoint.setShortcut("Delete")
         self.actionDeletePoint.setEnabled(False)
         self.actionDeletePoint.triggered.connect(self._on_delete_points_triggered)
+        
+        self.tips = self.menuBar().addAction("Tips")
+        self.tips.triggered.connect(self._show_tips_window)
+        self.tipWindow = TipWindow(self)
 
         # 菜单栏右侧非阻塞提示。
         self.setup_menu_notice()
+
+    def _show_tips_window(self):
+        """显示 Tips 弹窗，若已存在则直接前置。"""
+        if self.tipWindow.isVisible():
+            self.tipWindow.raise_()
+            self.tipWindow.activateWindow()
+            return
+
+        self.tipWindow.show()
+        self.tipWindow.raise_()
+        self.tipWindow.activateWindow()
         
     def _save_field_info(self):
         try:
@@ -226,7 +242,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self._set_active_tool("框选")
             return
 
-        self._apply_active_tool(tool_name, preserve_selection=(tool_name == "调整"))
+        self._apply_active_tool(tool_name)
         self._configure_drawing_control_dock(tool_name)
 
         if tool_name in self._select_tools:
@@ -338,17 +354,17 @@ class MainWindow(MainWindowNotice, QMainWindow):
             btn.setChecked(name == checked_tool)
             btn.blockSignals(False)
 
-    def _apply_active_tool(self, tool_name: str, preserve_selection: bool = False):
+    def _apply_active_tool(self, tool_name: str):
         """应用工具切换到场景，并更新按钮状态。"""
         self._sync_tool_button_states(tool_name)
         self.activeToolName = tool_name
-        self.scene.set_active_tool(tool_name, preserve_selection=preserve_selection)
+        self.scene.set_active_tool(tool_name)
 
     def _configure_drawing_control_dock(self, tool_name: str):
-        """按当前工具切换绘制控制台的可见内容和按钮文案。"""
+        """按当前工具切换绘制控制台的可见内容"""
+        self.drawingControlDock.setAdjustmentControlsVisible(tool_name == "调整")
         if tool_name == "调整":
             # self.drawingControlDock.setOperationLabels("确认调整 Enter", "取消调整 Esc")
-            self.drawingControlDock.setAdjustmentControlsVisible(True)
             self.drawingControlDock.setSamplingToolVisible(None, False)
             self.drawingControlDock.setCurveModeVisible(False)
             self.drawingControlDock.setDraftActive(True)
@@ -359,7 +375,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
             return
 
         # self.drawingControlDock.setOperationLabels("确认绘制 Enter", "取消绘制 Esc")
-        self.drawingControlDock.setAdjustmentControlsVisible(False)
         self.drawingControlDock.setSamplingToolVisible(tool_name if tool_name in self._sampling_tools else None, tool_name in self._sampling_tools)
         self.drawingControlDock.setCurveModeVisible(tool_name == "曲线/折线")
         self.drawingControlDock.setDraftActive(tool_name == "点")
