@@ -676,19 +676,23 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
     def _on_delete_points_triggered(self):
         """响应菜单删除点位：弹出确认对话框，确认后调用场景删除方法。"""
-        ok = self._confirm_delete_points_dialog(len(self.scene._selected_point_ids))
-        if not ok:
+        action = self._confirm_delete_points_dialog(len(self.scene._selected_point_ids))
+        if not action:
             return
-        # 执行删除
         try:
-            self.scene.delete_selected_points()
-            # 同步 UI 状态
-            self._show_menu_notice("删除成功！")
+            if action == "delete":
+                self.scene.delete_selected_points()
+                self._show_menu_notice("删除成功！")
+            elif action == "restore":
+                self.scene.restore_selected_points_to_prev()
+                self._show_menu_notice("已恢复转换点位置。")
+            else:
+                return
         except Exception as e:
-            self._show_menu_notice(f"删除失败：{e}", failed=True)
+            self._show_menu_notice(f"操作失败：{e}", failed=True)
 
-    def _confirm_delete_points_dialog(self, count: int) -> bool:
-        """显示确认对话框，返回 True 表示确认删除，False 表示取消。"""
+    def _confirm_delete_points_dialog(self, count: int) -> str | None:
+        """显示确认对话框，返回动作字符串：'delete'、'restore' 或 None（取消）。"""
         dlg = QDialog(self)
         dlg.setWindowTitle("删除")
         layout = QVBoxLayout()
@@ -705,13 +709,24 @@ class MainWindow(MainWindowNotice, QMainWindow):
         del_point.setShortcut("Return")
         del_point.setStyleSheet("background:#d9534f;color:white;")
         cancel_btn.clicked.connect(dlg.reject)
-        del_point.clicked.connect(dlg.accept)
+        # 区分按钮动作：del_switch -> 恢复转换点（restore），del_point -> 删除点位（delete）
+        cancel_btn.clicked.connect(lambda: setattr(dlg, "result_action", None))
+        del_switch.clicked.connect(lambda: (setattr(dlg, "result_action", "restore"), dlg.accept()))
+        del_point.clicked.connect(lambda: (setattr(dlg, "result_action", "delete"), dlg.accept()))
         btn_layout.addWidget(cancel_btn)
         btn_layout.addWidget(del_switch)
         btn_layout.addWidget(del_point)
         layout.addLayout(btn_layout)
         dlg.setLayout(layout)
-        return dlg.exec() == QDialog.DialogCode.Accepted
+        # p0 仅允许删除表演者点位，禁用恢复按钮
+        try:
+            if getattr(self.scene, "active_node", 0) == 0:
+                del_switch.setEnabled(False)
+        except Exception:
+            pass
+
+        res = dlg.exec()
+        return getattr(dlg, "result_action", None)
 
     def _positionDrawingControlDock(self):
         """将绘制控制台放到绘图区左上角。"""

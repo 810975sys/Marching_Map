@@ -2436,6 +2436,44 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._recalculate_following_auto_nodes(self.active_node, include_manual_nodes=True)
         self._render_points_for_active_node()
 
+    def restore_selected_points_to_prev(self):
+        """将当前选中的点位恢复到前一节点对应点位的位置。
+
+        - 仅在 active_node > 0 时可用。
+        - 对每个被选中的点，如果前一节点存在相同 id 的点位，则将 x,y 恢复到前一节点的值。
+        - 如果实际发生了任何变更，则标记当前节点为手动编辑并触发后续自动计算；
+          否则将 node_manual_edited[current_node] 置为 False。
+        """
+        if not getattr(self, "_selected_point_ids", None):
+            return
+        if int(getattr(self, "active_node", 0)) <= 0:
+            return
+
+        prev_points = {int(p.get("id", -1)): (float(p.get("x", 0.0)), float(p.get("y", 0.0)))
+                       for p in self.node_points.get(self.active_node - 1, [])}
+        if not prev_points:
+            return
+
+        current_points = self.node_points.get(self.active_node, [])
+        changed = False
+        for p in current_points:
+            pid = int(p.get("id", -1))
+            if pid in self._selected_point_ids and pid in prev_points:
+                px, py = prev_points[pid]
+                if abs(float(p.get("x", 0.0)) - px) > 1e-9 or abs(float(p.get("y", 0.0)) - py) > 1e-9:
+                    p["x"] = px
+                    p["y"] = py
+                    changed = True
+
+        if changed:
+            self._mark_node_manual(self.active_node)
+            self._recalculate_following_auto_nodes(self.active_node, include_manual_nodes=True)
+        else:
+            # 若没有实际变更，则认为当前节点未被手动编辑过
+            self.node_manual_edited[self.active_node] = False
+
+        self._render_points_for_active_node()
+
     def _draw_point_item(self, point: dict, pre_view: bool, draw_label: bool):
         """在场景中绘制一个点位项。根据 point 字典中的信息创建一个 PerformerPointItem，并将其添加到场景中。
         pre_view 参数用于确定该点位是否为预览状态，预览状态的点位通常会使用半透明的颜色来区分于正式绘制的点位。
