@@ -57,6 +57,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
     draftStarted = pyqtSignal(str)  # 工具名称
     draftFinished = pyqtSignal()    # 无参数，表示草稿结束（确认或取消）
     selectedPointsChanged = pyqtSignal(int) # 当前选中点位数量
+    drawingRematchStateChanged = pyqtSignal()   # 绘图重匹配状态变化时刷新控制台按钮
     # lineSegmentPointCountChanged = pyqtSignal(int)  # 线段工具采样点位数量
     # lineSegmentSpacingChanged = pyqtSignal(float)   # 线段工具采样间距
     
@@ -100,6 +101,14 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._adjustment_handle_items = []   # 调整参考框角点与中心点图元
         self._updating_adjustment_handles = False  # 是否正在同步调整手柄位置
         self._adjustment_drag_state = None   # 调整句柄拖拽快照，用于按拖拽起点计算相对位移
+        self._drawing_rematch_state = {
+            "active": False,
+            "cursor": 0,
+            "history": [],
+            "preview_to_point": {},
+            "point_to_preview": {},
+            "candidate_point_id": None,
+        }
         # 曲线模式：'polyline' 或 'curve'，默认为折线(polyline)
         self._curve_mode = 'polyline'
         self._sampling_tools = {"线段", "弧", "曲线/折线", "圆", "多边形", "填充四边形"}
@@ -124,6 +133,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._selection_start_position = None      # 框选工具的起始场景坐标，记录鼠标按下时的位置，用于计算选区矩形；仅在框选工具激活时有效，切换工具时会被清除。
         self._selection_current_position = None    # 框选工具的当前场景坐标，记录鼠标拖动时的位置，用于计算选区矩形；仅在框选工具激活时有效，切换工具时会被清除。
         self._selection_link_items = []     # 选中点位之间的连线图元，仅连接每个组内被选中的点。
+        self._rematch_helper_items = []     # 绘图重匹配时的原点位辅助选择圈图元
         self._point_items_by_id = {}    # 当前显示的点位图元字典，key为点位ID，value为对应的 PerformerPointItem 图元；用于快速定位与更新特定点位的图元。
         self._label_items_by_id = {}    # 当前显示的标签图元字典，key为点位ID，value为对应的 QGraphicsSimpleTextItem 图元；用于快速定位与更新特定点位的标签图元。
 
@@ -166,6 +176,202 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._render_points_for_active_node()
         self.update()
 
+    def _ordered_selected_point_ids_for_drawing(self) -> list[int]:
+        """按当前节点顺序返回被选中的点位 ID。"""
+        if not self._selected_point_ids:
+            return []
+        return [
+            int(point.get("id", -1))
+            for point in self.node_points.get(self.active_node, [])
+            if int(point.get("id", -1)) in self._selected_point_ids
+        ]
+
+    def _current_drawing_preview_points(self) -> list[tuple[float, float]]:
+        """返回当前绘图流程用于确认的预览点位。"""
+        tool_name = self._draft_tool_name
+        refs = list(self._draft_reference_points)
+        if (not tool_name or not refs) and self.active_tool == "曲线/折线" and len(self._pending_points) >= 2:
+            tool_name = "曲线/折线"
+            refs = list(self._pending_points)
+        if not tool_name or not refs:
+            return []
+        return self._generate_performer_points(tool_name, refs)
+
+    def _reset_drawing_rematch_state(self, active: bool = False):
+        """重置绘图重匹配状态。"""
+        self._drawing_rematch_state = {
+            "active": bool(active),
+            "cursor": 0,
+            "history": [],
+            "preview_to_point": {},
+            "point_to_preview": {},
+            "candidate_point_id": None,
+        }
+
+    def _drawing_rematch_snapshot(self) -> dict:
+        """返回绘图重匹配状态快照。"""
+        state = getattr(self, "_drawing_rematch_state", {})
+        selected_ids = self._ordered_selected_point_ids_for_drawing()
+        preview_points = self._current_drawing_preview_points()
+        preview_count = len(preview_points)
+        active = bool(state.get("active", False)) and bool(selected_ids) and preview_count > 0
+        cursor = max(0, min(int(state.get("cursor", 0)), preview_count))
+        preview_to_point = {int(k): int(v) for k, v in state.get("preview_to_point", {}).items()}
+        point_to_preview = {int(k): int(v) for k, v in state.get("point_to_preview", {}).items()}
+        committed_preview_indexes = {idx for idx in preview_to_point.keys() if 0 <= idx < preview_count}
+        matched_ids = {point_id for point_id in point_to_preview.keys() if point_id in selected_ids}
+        candidate_point_id = state.get("candidate_point_id")
+        if candidate_point_id is not None:
+            candidate_point_id = int(candidate_point_id)
+        current_preview_index = cursor if active and cursor < preview_count else None
+        current_point_id = None
+        if current_preview_index is not None and current_preview_index < len(selected_ids):
+            current_point_id = int(selected_ids[current_preview_index])
+        resolved_point_id = candidate_point_id if candidate_point_id is not None else current_point_id
+        all_selected_matched = bool(selected_ids) and all(point_id in matched_ids for point_id in selected_ids)
+        keep_enabled = bool(
+            active
+            and current_preview_index is not None
+            and current_preview_index not in committed_preview_indexes
+            and current_point_id is not None
+            and resolved_point_id is not None
+        )
+        return {
+            "active": active,
+            "selected_ids": selected_ids,
+            "preview_points": preview_points,
+            "preview_count": preview_count,
+            "cursor": cursor,
+            "current_preview_index": current_preview_index,
+            "current_point_id": current_point_id,
+            "resolved_point_id": resolved_point_id,
+            "preview_to_point": preview_to_point,
+            "point_to_preview": point_to_preview,
+            "committed_preview_indexes": committed_preview_indexes,
+            "matched_ids": matched_ids,
+            "candidate_point_id": candidate_point_id,
+            "all_selected_matched": all_selected_matched,
+            "rematch_enabled": bool(selected_ids) and preview_count > 0,
+            "previous_enabled": bool(state.get("history", [])),
+            "next_enabled": active and current_preview_index is not None and not all_selected_matched,
+            "keep_enabled": keep_enabled,
+            # 注：确认按钮的可用性由界面层决定，此处不再返回 confirm_enabled 字段以避免冗余。
+        }
+
+    def get_drawing_rematch_status(self) -> dict:
+        """提供给主窗口的绘图重匹配状态快照。"""
+        return self._drawing_rematch_snapshot()
+
+    def start_drawing_rematch(self):
+        """在绘图流程中清空匹配并从第一个预览点位重新分配。"""
+        snapshot = self._drawing_rematch_snapshot()
+        if not snapshot["rematch_enabled"]:
+            return False
+        self._reset_drawing_rematch_state(active=True)
+        self._render_points_for_active_node()
+        self.drawingRematchStateChanged.emit()
+        return True
+
+    def drawing_match_set_candidate(self, point_id: int):
+        """为当前预览点位设置候选原点位（未确认）。"""
+        snapshot = self._drawing_rematch_snapshot()
+        if not snapshot["active"]:
+            return False
+        current_preview_index = snapshot["current_preview_index"]
+        if current_preview_index is None:
+            return False
+        point_id = int(point_id)
+        if point_id not in snapshot["selected_ids"]:
+            return False
+        self._drawing_rematch_state["candidate_point_id"] = point_id
+        self._render_points_for_active_node()
+        self.drawingRematchStateChanged.emit()
+        return True
+
+    def drawing_match_previous(self):
+        """回退上一条匹配记录。"""
+        state = getattr(self, "_drawing_rematch_state", None)
+        if not state or not bool(state.get("active", False)):
+            return False
+        history = state.get("history", [])
+        if not history:
+            return False
+        action = history.pop()
+        state["candidate_point_id"] = None
+        state["cursor"] = max(0, int(action.get("cursor_before", 0)))
+        if action.get("action") == "keep":
+            preview_index = int(action.get("preview_index", -1))
+            point_id = int(action.get("point_id", -1))
+            previous_preview_index = action.get("previous_preview_index")
+            previous_point_id = action.get("previous_point_id")
+            preview_to_point = state.get("preview_to_point", {})
+            point_to_preview = state.get("point_to_preview", {})
+            preview_to_point.pop(preview_index, None)
+            point_to_preview.pop(point_id, None)
+            if previous_preview_index is not None:
+                previous_preview_index = int(previous_preview_index)
+                preview_to_point[previous_preview_index] = point_id
+                point_to_preview[point_id] = previous_preview_index
+            if previous_point_id is not None:
+                previous_point_id = int(previous_point_id)
+                preview_to_point[preview_index] = previous_point_id
+                point_to_preview[previous_point_id] = preview_index
+        self._render_points_for_active_node()
+        self.drawingRematchStateChanged.emit()
+        return True
+
+    def drawing_match_next(self):
+        """跳过当前预览点位。"""
+        snapshot = self._drawing_rematch_snapshot()
+        if not snapshot["active"]:
+            return False
+        current_preview_index = snapshot["current_preview_index"]
+        if current_preview_index is None:
+            return False
+        state = self._drawing_rematch_state
+        state.setdefault("history", []).append({
+            "action": "skip",
+            "cursor_before": int(current_preview_index),
+            "preview_index": int(current_preview_index),
+        })
+        state["cursor"] = int(current_preview_index) + 1
+        state["candidate_point_id"] = None
+        self._render_points_for_active_node()
+        self.drawingRematchStateChanged.emit()
+        return True
+
+    def drawing_match_keep(self):
+        """确认当前预览点对应的原点位匹配并继续前进。"""
+        snapshot = self._drawing_rematch_snapshot()
+        if not snapshot["keep_enabled"]:
+            return False
+        state = self._drawing_rematch_state
+        preview_index = int(snapshot["current_preview_index"])
+        point_id = int(snapshot["resolved_point_id"])
+        preview_to_point = state.setdefault("preview_to_point", {})
+        point_to_preview = state.setdefault("point_to_preview", {})
+        previous_preview_index = point_to_preview.get(point_id)
+        previous_point_id = preview_to_point.get(preview_index)
+        if previous_preview_index is not None and int(previous_preview_index) != preview_index:
+            preview_to_point.pop(int(previous_preview_index), None)
+        if previous_point_id is not None and int(previous_point_id) != point_id:
+            point_to_preview.pop(int(previous_point_id), None)
+        preview_to_point[preview_index] = point_id
+        point_to_preview[point_id] = preview_index
+        state.setdefault("history", []).append({
+            "action": "keep",
+            "cursor_before": preview_index,
+            "preview_index": preview_index,
+            "point_id": point_id,
+            "previous_preview_index": previous_preview_index,
+            "previous_point_id": previous_point_id,
+        })
+        state["cursor"] = preview_index + 1
+        state["candidate_point_id"] = None
+        self._render_points_for_active_node()
+        self.drawingRematchStateChanged.emit()
+        return True
+
     def drawBackground(self, painter, rect):
         """场景背景绘制入口。"""
         self.grid_renderer.draw_background_grid(painter, rect)
@@ -174,12 +380,13 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def _clear_overlay_items(self):
         """清除当前所有点位与标签图元，准备重建。"""
-        for item in self._current_items + self._previous_items + self._label_items + self._selection_link_items:
+        for item in self._current_items + self._previous_items + self._label_items + self._selection_link_items + self._rematch_helper_items:
             self.removeItem(item)
         self._current_items = []
         self._previous_items = []
         self._label_items = []
         self._selection_link_items = []
+        self._rematch_helper_items = []
         self._point_items_by_id = {}
         self._label_items_by_id = {}
 
@@ -190,6 +397,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
         self.active_tool = tool_name
         self._pending_points = []   # 清空草稿点位
+        self._reset_drawing_rematch_state(active=False)
         self._clear_selection_rect()    # 清除框选工具的选区矩形和相关状态
         self._clear_draft()             # 清除绘图工具的草稿图形
         if tool_name != "调整":
@@ -199,6 +407,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._render_points_for_active_node()   # 刷新点位显示
         if tool_name == "调整" and self._selected_point_ids:
             self.begin_adjustment()
+        self.drawingRematchStateChanged.emit()
 
     def set_active_node(self, node_index: int):
         """切换当前时间轴节点并刷新显示。"""
@@ -208,10 +417,12 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self.active_node = max(0, int(node_index))  # 确保节点索引非负
         self.ensure_node_exists(self.active_node)   # 确保目标节点存在，若不存在则初始化
         self._pending_points = []   # 清空草稿点位
+        self._reset_drawing_rematch_state(active=False)
         self._selected_point_ids.clear()
         self._clear_selection_rect()
         self._clear_draft()
         self._render_points_for_active_node()
+        self.drawingRematchStateChanged.emit()
 
     def _clear_selection_rect(self):
         """清除框选工具的选区矩形和相关状态。"""
@@ -263,10 +474,13 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def _refresh_point_selection_visuals(self):
         """刷新当前点位图元的选中状态视觉效果，并发出选中点位数量变化信号。"""
+        if getattr(self, "_drawing_rematch_state", {}).get("active", False):
+            self._reset_drawing_rematch_state(active=False)
         for point_id, item in self._point_items_by_id.items():
             item.set_selected_visual(point_id in self._selected_point_ids)
         self._refresh_selected_group_links()
         self.selectedPointsChanged.emit(len(self._selected_point_ids))
+        self.drawingRematchStateChanged.emit()
 
     def _clear_selection_link_items(self):
         """清除选中点位之间的连线图元。"""
@@ -641,6 +855,66 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         path.closeSubpath()
         self._adjustment_frame_item.setPath(path)
 
+    def _build_preview_line_items(self, dst_points: list, src_points: list[dict] | None = None, *, z: float = 175) -> list:
+        """根据目标点位集构建原始->目标的连线图元。"""
+        line_items = []
+        if not dst_points:
+            return line_items
+
+        prev_points = self.node_points.get(self.active_node - 1, [])
+        source_points = prev_points if prev_points else (src_points or [])
+        if not source_points:
+            return line_items
+
+        if isinstance(dst_points[0], dict):
+            src_map = {
+                int(point.get("id", -1)): (float(point.get("x", 0.0)), float(point.get("y", 0.0)))
+                for point in source_points
+            }
+            for point in dst_points:
+                point_id = int(point.get("id", -1))
+                src = src_map.get(point_id)
+                if src is None:
+                    continue
+                sx, sy = src
+                dx = float(point.get("x", 0.0))
+                dy = float(point.get("y", 0.0))
+                if abs(sx - dx) <= 1e-12 and abs(sy - dy) <= 1e-12:
+                    continue
+
+                s_scene = self._field_to_scene(sx, sy)
+                e_scene = self._field_to_scene(dx, dy)
+                line_item = QGraphicsLineItem(s_scene.x(), s_scene.y(), e_scene.x(), e_scene.y())
+                pen = QPen(QColor("#000000"), 1)
+                pen.setCosmetic(True)
+                line_item.setPen(pen)
+                line_item.setZValue(z)
+                self.addItem(line_item)
+                line_items.append(line_item)
+            return line_items
+
+        match_count = min(len(source_points), len(dst_points))
+        for i in range(match_count):
+            src = source_points[i]
+            dst = dst_points[i]
+            sx, sy = float(src.get("x", 0.0)), float(src.get("y", 0.0))
+            dx = float(dst[0])
+            dy = float(dst[1])
+            if abs(sx - dx) <= 1e-12 and abs(sy - dy) <= 1e-12:
+                continue
+
+            s_scene = self._field_to_scene(sx, sy)
+            e_scene = self._field_to_scene(dx, dy)
+            line_item = QGraphicsLineItem(s_scene.x(), s_scene.y(), e_scene.x(), e_scene.y())
+            pen = QPen(QColor("#000000"), 1)
+            pen.setCosmetic(True)
+            line_item.setPen(pen)
+            line_item.setZValue(z)
+            self.addItem(line_item)
+            line_items.append(line_item)
+
+        return line_items
+
     def _sync_adjustment_preview_items(self):
         """将调整预览坐标增量同步到已存在点位/标签图元，减少拖拽卡顿。"""
         if not self._adjustment_preview_points:
@@ -666,8 +940,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 continue
             pos = self._field_to_scene(float(point["x"]), float(point["y"]))
             item.setPos(pos)
-            # （延后绘制连接线，统一使用匹配逻辑）
-                    
 
             label = self._label_items_by_id.get(point_id)
             if label is None:
@@ -679,61 +951,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             br = label.boundingRect()
             label.setPos(pos.x() + dx - br.width() / 2.0, pos.y() + dy - br.height() / 2.0)
 
-        # 若存在选中点集，使用索引匹配的方式绘制原始->预览的连接线
-        if self._selected_point_ids:
-            # 按源快照中的顺序收集被选中点（原始位置）
-            src_ordered = [p for p in self._adjustment_source_points if int(p.get("id", -1)) in self._selected_point_ids]
-            # 按预览点集合中的顺序收集被选中点（预览位置）
-            dst_ordered = [p for p in self._adjustment_preview_points if int(p.get("id", -1)) in self._selected_point_ids]
-            match_count = min(len(src_ordered), len(dst_ordered))
-            for i in range(match_count):
-                sx, sy = float(src_ordered[i].get("x", 0.0)), float(src_ordered[i].get("y", 0.0))
-                dx, dy = float(dst_ordered[i].get("x", 0.0)), float(dst_ordered[i].get("y", 0.0))
-                if abs(sx - dx) > 1e-12 or abs(sy - dy) > 1e-12:
-                    s_scene = self._field_to_scene(sx, sy)
-                    e_scene = self._field_to_scene(dx, dy)
-                    line_item = QGraphicsLineItem(s_scene.x(), s_scene.y(), e_scene.x(), e_scene.y())
-                    pen = QPen(QColor("#000000"), 1)
-                    pen.setCosmetic(True)
-                    line_item.setPen(pen)
-                    line_item.setZValue(175)
-                    self.addItem(line_item)
-                    self._adjustment_preview_line_items.append(line_item)
-        else:
-            # 兼容原有按 id 绘制的逻辑（上一节点或源快照）
-            for point in self._adjustment_preview_points:
-                point_id = int(point.get("id", -1))
-                prev_points = self.node_points.get(self.active_node - 1, [])
-                if prev_points:
-                    prev_map = {int(p.get("id", -1)): (float(p.get("x", 0.0)), float(p.get("y", 0.0))) for p in prev_points}
-                    prev = prev_map.get(point_id)
-                    if prev is not None:
-                        px, py = prev
-                        if abs(px - float(point.get("x", 0.0))) > 1e-12 or abs(py - float(point.get("y", 0.0))) > 1e-12:
-                            s_scene = self._field_to_scene(px, py)
-                            e_scene = self._field_to_scene(float(point.get("x", 0.0)), float(point.get("y", 0.0)))
-                            line_item = QGraphicsLineItem(s_scene.x(), s_scene.y(), e_scene.x(), e_scene.y())
-                            pen = QPen(QColor("#000000"), 1)
-                            pen.setCosmetic(True)
-                            line_item.setPen(pen)
-                            line_item.setZValue(175)
-                            self.addItem(line_item)
-                            self._adjustment_preview_line_items.append(line_item)
-                else:
-                    src_map = {int(p.get("id", -1)): (float(p.get("x", 0.0)), float(p.get("y", 0.0))) for p in self._adjustment_source_points}
-                    src = src_map.get(point_id)
-                    if src is not None:
-                        sx, sy = src
-                        if abs(sx - float(point.get("x", 0.0))) > 1e-12 or abs(sy - float(point.get("y", 0.0))) > 1e-12:
-                            s_scene = self._field_to_scene(sx, sy)
-                            e_scene = self._field_to_scene(float(point.get("x", 0.0)), float(point.get("y", 0.0)))
-                            line_item = QGraphicsLineItem(s_scene.x(), s_scene.y(), e_scene.x(), e_scene.y())
-                            pen = QPen(QColor("#000000"), 1)
-                            pen.setCosmetic(True)
-                            line_item.setPen(pen)
-                            line_item.setZValue(175)
-                            self.addItem(line_item)
-                            self._adjustment_preview_line_items.append(line_item)
+        dst_ordered = [p for p in self._adjustment_preview_points if int(p.get("id", -1)) in self._selected_point_ids]
+        self._adjustment_preview_line_items = self._build_preview_line_items(dst_ordered, self._adjustment_source_points)
 
     def _refresh_adjustment_drag_visuals(self):
         """拖拽中进行轻量刷新：更新预览点位、选中连线、调整框和句柄位置。"""
@@ -1143,7 +1362,11 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         # 未确认阶段同样显示按默认“两步间隔”采样的表演者预览点位。
         if self.active_tool == "曲线/折线" and len(self._pending_points) >= 2:
             preview_points = self._generate_performer_points("曲线/折线", self._pending_points)
-            dots = self.render_preview_points(preview_points)
+            rematch_snapshot = self._drawing_rematch_snapshot()
+            if rematch_snapshot["active"]:
+                dots = self._render_preview_points_for_drawing_rematch(preview_points)
+            else:
+                dots = self.render_preview_points(preview_points)
             for d in dots:
                 self._pending_preview_items.append(d)
 
@@ -1284,29 +1507,49 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             items.append(item)
         
         # 若存在已选点集，按索引匹配原点位->新点位并绘制连线以保持连贯性
-        try:
-            if getattr(self, "_selected_point_ids", None):
-                current_points = self.node_points.get(self.active_node, [])
-                # 源点按当前节点中的顺序筛选出被选中的点
-                src_ordered = [p for p in current_points if int(p.get("id", -1)) in self._selected_point_ids]
-                dst_ordered = list(preview_points)
-                match_count = min(len(src_ordered), len(dst_ordered))
-                for i in range(match_count):
-                    sx, sy = float(src_ordered[i].get("x", 0.0)), float(src_ordered[i].get("y", 0.0))
-                    dx, dy = float(dst_ordered[i][0]), float(dst_ordered[i][1])
-                    if abs(sx - dx) > 1e-12 or abs(sy - dy) > 1e-12:
-                        s_scene = self._field_to_scene(sx, sy)
-                        e_scene = self._field_to_scene(dx, dy)
-                        line_item = QGraphicsLineItem(s_scene.x(), s_scene.y(), e_scene.x(), e_scene.y())
-                        pen = QPen(QColor("#000000"), 1)
-                        pen.setCosmetic(True)
-                        line_item.setPen(pen)
-                        line_item.setZValue(z - 10)
-                        self.addItem(line_item)
-                        items.append(line_item)
-        except Exception:
-            pass
+        if getattr(self, "_selected_point_ids", None):
+            current_points = self.node_points.get(self.active_node, [])
+            src_ordered = [p for p in current_points if int(p.get("id", -1)) in self._selected_point_ids]
+            items.extend(self._build_preview_line_items(list(preview_points), src_ordered, z=z - 10))
         
+        return items
+
+    def _render_preview_points_for_drawing_rematch(self, preview_points: list[tuple[float, float]], *, z: float = 900) -> list:
+        """在重匹配流程下渲染预览点和已确认的匹配连线。"""
+        snapshot = self._drawing_rematch_snapshot()
+        items = []
+        committed_indexes = set(snapshot.get("committed_preview_indexes", set()))
+        current_index = snapshot.get("current_preview_index")
+
+        for index, (x, y) in enumerate(preview_points):
+            pos = self._field_to_scene(x, y)
+            item = QGraphicsEllipseItem(pos.x() - 3.5, pos.y() - 3.5, 7.0, 7.0)
+            if snapshot["active"] and current_index is not None and int(index) == int(current_index):
+                item.setPen(QPen(QColor("#c0392b"), 1.2))
+                item.setBrush(QBrush(QColor("#e74c3c")))
+            elif int(index) in committed_indexes:
+                item.setPen(QPen(QColor("#27ae60"), 1.2))
+                item.setBrush(QBrush(QColor(39, 174, 96, 140)))
+            else:
+                item.setPen(QPen(QColor("#d35400"), 1))
+                item.setBrush(QBrush(QColor(243, 156, 18, 90)))
+            item.setZValue(z)
+            self.addItem(item)
+            items.append(item)
+
+        point_map = {
+            int(point.get("id", -1)): point
+            for point in self.node_points.get(self.active_node, [])
+        }
+        dst_ordered = []
+        for point_id, preview_index in sorted(snapshot.get("point_to_preview", {}).items(), key=lambda item: int(item[1])):
+            idx = int(preview_index)
+            if idx < 0 or idx >= len(preview_points):
+                continue
+            dx, dy = preview_points[idx]
+            dst_ordered.append({"id": int(point_id), "x": dx, "y": dy})
+        items.extend(self._build_preview_line_items(dst_ordered, list(point_map.values()), z=z - 10))
+
         return items
 
     def _reference_graphic_item(self):
@@ -1421,6 +1664,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         """进入草稿确认阶段，等待控制台确认或取消。"""
         self._draft_tool_name = tool_name
         self._draft_reference_points = list(refs)
+        self._reset_drawing_rematch_state(active=False)
         self._clear_pending_preview_items()
         if tool_name in self._sampling_tools:
             self._sync_sampling_auto_values_from_draft(tool_name)
@@ -1428,6 +1672,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         #     self._sync_line_segment_auto_values_from_draft()
         self._render_points_for_active_node()
         self.draftStarted.emit(tool_name)
+        self.drawingRematchStateChanged.emit()
 
     def _on_reference_handle_moved(self, index: int, scene_pos: QPointF) -> QPointF:
         """草稿参考点被移动时的回调，用于更新参考点位置和草稿预览图形。返回更新后的 scene_pos（可能被吸附）。"""
@@ -1444,6 +1689,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         if self._draft_tool_name in self._sampling_tools:
             self._sync_sampling_auto_values_from_draft(self._draft_tool_name)
         QTimer.singleShot(0, self._refresh_reference_overlay_for_active_tool)
+        self.drawingRematchStateChanged.emit()
         return snapped_scene_pos
 
     def confirm_current_drawing(self):
@@ -1463,25 +1709,44 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             if not had_draft:
                 self.draftFinished.emit()
             self._render_points_for_active_node()
-            return
+            self.drawingRematchStateChanged.emit()
+            return False
         
         generated = self._generate_performer_points(tool_name, refs)    # 生成最终点位列表（field 坐标）
         current_points = self.node_points.setdefault(self.active_node, [])  # 当前节点的点位列表
 
         # 如果有选中点，则按索引匹配移动已存在的点；多余的生成点不新增
         if getattr(self, "_selected_point_ids", None):
-            # 源点按当前节点中的顺序筛选出被选中的点
-            src_ordered = [p for p in current_points if int(p.get("id", -1)) in self._selected_point_ids]
-            dst_ordered = [p for p in generated]
-            match_count = min(len(src_ordered), len(dst_ordered))
+            rematch_snapshot = self._drawing_rematch_snapshot()
             id_to_index = {int(p.get("id", -1)): idx for idx, p in enumerate(current_points)}
-            for i in range(match_count):
-                sid = int(src_ordered[i].get("id", -1))
-                dx, dy = dst_ordered[i]
-                if sid in id_to_index:
-                    idx = id_to_index[sid]
+            if rematch_snapshot["active"]:
+                # 允许在未全部匹配的情况下确认：只将已有匹配关系的预览点写回对应原点，
+                # 未匹配的原点保持原位置，未匹配的预览点直接舍弃（不新增）。
+                for point_id in rematch_snapshot["selected_ids"]:
+                    preview_index = rematch_snapshot["point_to_preview"].get(int(point_id))
+                    if preview_index is None:
+                        continue
+                    preview_index = int(preview_index)
+                    if preview_index < 0 or preview_index >= len(generated):
+                        continue
+                    idx = id_to_index.get(int(point_id))
+                    if idx is None:
+                        continue
+                    dx, dy = generated[preview_index]
                     current_points[idx]["x"] = float(dx)
                     current_points[idx]["y"] = float(dy)
+            else:
+                # 源点按当前节点中的顺序筛选出被选中的点
+                src_ordered = [p for p in current_points if int(p.get("id", -1)) in self._selected_point_ids]
+                dst_ordered = [p for p in generated]
+                match_count = min(len(src_ordered), len(dst_ordered))
+                for i in range(match_count):
+                    sid = int(src_ordered[i].get("id", -1))
+                    dx, dy = dst_ordered[i]
+                    if sid in id_to_index:
+                        idx = id_to_index[sid]
+                        current_points[idx]["x"] = float(dx)
+                        current_points[idx]["y"] = float(dy)
         else:
             new_point_ids = []
             group_id = len(self.group_to_point)
@@ -1506,12 +1771,15 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
         self._pending_points = []
         self._draft_reference_points = []
+        self._reset_drawing_rematch_state(active=False)
         self._mark_node_manual(self.active_node)
         self._recalculate_following_auto_nodes(self.active_node, include_manual_nodes=True)
         self._clear_draft()
         if not had_draft:
             self.draftFinished.emit()
         self._render_points_for_active_node()
+        self.drawingRematchStateChanged.emit()
+        return True
 
     def cancel_current_drawing(self):
         """取消当前草稿，不写入点位。"""
@@ -1522,11 +1790,16 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         if self.active_tool in self._sampling_tools:
             tools_to_reset.add(self.active_tool)
         for t in tools_to_reset:
-            self.reset_sampling_defaults(t)
+            if self._selected_point_ids:
+                self.sync_sampling_values_from_selection(t)
+            else:
+                self.reset_sampling_defaults(t)
         self._pending_points = []
+        self._reset_drawing_rematch_state(active=False)
         self._clear_draft()
         self.draftFinished.emit()
         self._render_points_for_active_node()
+        self.drawingRematchStateChanged.emit()
 
     def _field_to_scene(self, x: float, y: float) -> QPointF:
         """将 field 坐标转换为 scene 坐标用于显示。"""
@@ -1957,7 +2230,11 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
         preview_points = self._generate_performer_points(self._draft_tool_name, self._draft_reference_points)
         if preview_points:
-            items = self.render_preview_points(preview_points)
+            rematch_snapshot = self._drawing_rematch_snapshot()
+            if rematch_snapshot["active"]:
+                items = self._render_preview_points_for_drawing_rematch(preview_points)
+            else:
+                items = self.render_preview_points(preview_points)
             for it in items:
                 self._draft_preview_items.append(it)
 
@@ -2017,6 +2294,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._clear_pending_preview_items()
         self._draw_pending_reference_preview()
         self.update()
+        self.drawingRematchStateChanged.emit()
         return self._field_to_scene(x, y)
 
     def _handle_draw_tool(self, tool_name: str, field_point: tuple[float, float]):
@@ -2031,6 +2309,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 self.draftStarted.emit("点")
             else:
                 _append_unique_reference_point(self._draft_reference_points, field_point)
+            self.drawingRematchStateChanged.emit()
             self._draw_draft_overlay()
             return
 
@@ -2042,6 +2321,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 self.draftStarted.emit("曲线/折线")
             else:
                 self.draftFinished.emit()
+            self.drawingRematchStateChanged.emit()
             return
 
         required_points = {
@@ -2058,6 +2338,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self._start_draft(tool_name, refs)
         elif required_points:
             self.draftFinished.emit()
+        self.drawingRematchStateChanged.emit()
 
     def _is_drawing_tool(self) -> bool:
         return self.active_tool in {"点", "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形"}
@@ -2186,6 +2467,33 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             )
             self._current_items.append(item)
             self._point_items_by_id[int(point["id"])] = item
+
+            rematch_snapshot = self._drawing_rematch_snapshot()
+            if (
+                rematch_snapshot["active"]
+                and int(point["id"]) in rematch_snapshot["selected_ids"]
+            ):
+                helper_radius = 10.5
+                helper = QGraphicsEllipseItem(
+                    pos.x() - helper_radius,
+                    pos.y() - helper_radius,
+                    helper_radius * 2,
+                    helper_radius * 2,
+                )
+                point_id = int(point["id"])
+                if point_id == rematch_snapshot.get("candidate_point_id"):
+                    helper_pen = QPen(QColor("#2980b9"), 1.8)
+                elif point_id in rematch_snapshot.get("matched_ids", set()):
+                    helper_pen = QPen(QColor("#27ae60"), 1.6)
+                else:
+                    helper_pen = QPen(QColor("#7f8c8d"), 1.4)
+                helper.setPen(helper_pen)
+                helper.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+                helper.setZValue(230)
+                helper.setData(0, "drawing_rematch_helper")
+                helper.setData(1, point_id)
+                self.addItem(helper)
+                self._rematch_helper_items.append(helper)
         self.addItem(item)
 
         if draw_label:
@@ -2237,6 +2545,30 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
             if isinstance(item, (ReferenceHandleItem, MovementControlHandleItem)):
                 super().mousePressEvent(event)
+                return
+
+            rematch_snapshot = self._drawing_rematch_snapshot()
+            clicked_point_id = None
+            if isinstance(item, PerformerPointItem):
+                clicked_point_id = int(item.point_id)
+            elif item is not None and item.data(0) == "drawing_rematch_helper":
+                helper_point_id = item.data(1)
+                if helper_point_id is not None:
+                    clicked_point_id = int(helper_point_id)
+
+            if rematch_snapshot["active"] and self._is_drawing_tool() and clicked_point_id is not None:
+                # 点击时先将该点设置为当前预览的候选匹配，若设置成功则立即确认匹配并前进。
+                if self.drawing_match_set_candidate(clicked_point_id):
+                    # 自动确认当前候选匹配（等同于用户点击“Keep”按钮），然后阻止事件继续传播。
+                    try:
+                        self.drawing_match_keep()
+                    except Exception:
+                        # 若确认失败，则保持已选候选但仍阻止事件传播
+                        pass
+                    event.accept()
+                    return
+            if rematch_snapshot["active"] and self._is_drawing_tool():
+                event.accept()
                 return
 
             # 非单点草稿态：禁止新增参考点点击，仅保留手柄拖拽。

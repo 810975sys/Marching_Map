@@ -50,6 +50,20 @@ class DrawingControlDock(QDockWidget):
         self.statusLabel = QLabel("", content)  # 当前绘制状态提示
         layout.addWidget(self.statusLabel)
 
+        self.drawingRematchWidget = QWidget(content)
+        drawing_rematch_layout = QHBoxLayout(self.drawingRematchWidget)
+        drawing_rematch_layout.setContentsMargins(0, 0, 0, 0)
+        drawing_rematch_layout.setSpacing(6)
+        self.rematchButton = QPushButton("重新匹配点位", self.drawingRematchWidget)
+        self.previousMatchButton = QPushButton("上一个", self.drawingRematchWidget)
+        self.nextMatchButton = QPushButton("下一个", self.drawingRematchWidget)
+        self.keepMatchButton = QPushButton("保持", self.drawingRematchWidget)
+        drawing_rematch_layout.addWidget(self.rematchButton)
+        drawing_rematch_layout.addWidget(self.previousMatchButton)
+        drawing_rematch_layout.addWidget(self.nextMatchButton)
+        drawing_rematch_layout.addWidget(self.keepMatchButton)
+        layout.addWidget(self.drawingRematchWidget)
+
         self.adjustWidget = QWidget(content)
         adjust_layout = QVBoxLayout(self.adjustWidget)
         adjust_layout.setContentsMargins(0, 0, 0, 0)
@@ -227,6 +241,7 @@ class DrawingControlDock(QDockWidget):
         # self.setLineSegmentVisible(False)   # 默认隐藏线段工具参数区域，直到绑定场景并设置工具后根据工具类型显示相应参数
         self.setCurveModeVisible(False)     # 默认隐藏曲线/折线模式选择，直到绑定场景并设置工具后根据工具类型显示
         self.setAdjustmentControlsVisible(False)
+        self.setDrawingRematchVisible(False)
         
         # 连接信号与槽函数
             # 线段工具参数控制
@@ -259,6 +274,18 @@ class DrawingControlDock(QDockWidget):
     def setAdjustmentControlsVisible(self, visible: bool):
         """设置调整模式控制的可见性"""
         self.adjustWidget.setVisible(bool(visible))
+
+    def setDrawingRematchVisible(self, visible: bool):
+        """设置绘图重匹配控制区可见性。"""
+        self.drawingRematchWidget.setVisible(bool(visible))
+
+    def setDrawingRematchState(self, *, rematch_enabled: bool, previous_enabled: bool, next_enabled: bool, keep_enabled: bool, confirm_enabled: bool):
+        """同步绘图重匹配按钮状态。"""
+        self.rematchButton.setEnabled(bool(rematch_enabled))
+        self.previousMatchButton.setEnabled(bool(previous_enabled))
+        self.nextMatchButton.setEnabled(bool(next_enabled))
+        self.keepMatchButton.setEnabled(bool(keep_enabled))
+        self.confirmButton.setEnabled(bool(confirm_enabled))
 
     def setAdjustmentMode(self, mode_name: str):
         """设置调整模式，并同步按钮状态"""

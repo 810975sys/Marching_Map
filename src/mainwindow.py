@@ -79,8 +79,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
         saveAs.setShortcut("Ctrl+Shift+S")
         fileMenu.addSeparator()
         fileMenu.addAction("导出为PDF")
-        # fileMenu.addSeparator()
-        # fileMenu.addAction("设置")
+        fileMenu.addSeparator()
+        fileMenu.addAction("设置")  # 设置字号、点位大小、颜色、拖动框等全局设置
 
         # 撤销和重做直接作为主菜单栏按钮，添加图标
         undo_icon = QIcon.fromTheme("edit-undo")
@@ -333,6 +333,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.timelineMainWidget.nodeDeleted.connect(self.onTimelineNodeDeleted)
         
         self.scene.selectedPointsChanged.connect(self.onSelectedPointsChanged)
+        self.scene.drawingRematchStateChanged.connect(self._sync_drawing_rematch_controls)
         self.scene.draftStarted.connect(self.onDraftStarted)
         self.scene.draftFinished.connect(self.onDraftFinished)
         # self.scene.lineSegmentPointCountChanged.connect(self.onLineSegmentPointCountChanged)
@@ -363,6 +364,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
     def _configure_drawing_control_dock(self, tool_name: str):
         """按当前工具切换绘制控制台的可见内容"""
         self.drawingControlDock.setAdjustmentControlsVisible(tool_name == "调整")
+        self.drawingControlDock.setDrawingRematchVisible(False)
         if tool_name == "调整":
             # self.drawingControlDock.setOperationLabels("确认调整 Enter", "取消调整 Esc")
             self.drawingControlDock.setSamplingToolVisible(None, False)
@@ -382,6 +384,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self.drawingControlDock.sync_sampling_settings(tool_name)
         self.drawingControlDock.confirmButton.setEnabled(False)
         self.drawingControlDock.cancelButton.setEnabled(False)
+        self._sync_drawing_rematch_controls()
 
     def _set_active_tool(self, tool_name: str):
         """通过按钮点击触发工具切换，保留现有行为。"""
@@ -404,6 +407,32 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.actionDeletePoint.setEnabled(int(selected_count) > 0)
         if self.activeToolName == "调整":
             self.scene.refresh_adjustment_preview()
+        self._sync_drawing_rematch_controls()
+
+    def _sync_drawing_rematch_controls(self):
+        """根据场景中的绘图重匹配状态同步控制台按钮。"""
+        if not hasattr(self, "drawingControlDock"):
+            return
+        if self.activeToolName not in self._drawing_tools:
+            self.drawingControlDock.setDrawingRematchVisible(False)
+            return
+
+        status = self.scene.get_drawing_rematch_status()
+        visible = bool(status.get("selected_ids"))
+        self.drawingControlDock.setDrawingRematchVisible(visible)
+        if not visible:
+            return
+
+        # 当进入重匹配激活状态时，允许确认操作（由场景逻辑控制实际写回行为），因此在 active 时直接启用确认按钮；
+        # 非 active 时保留当前按钮状态。
+        confirm_enabled = True if bool(status.get("active", False)) else self.drawingControlDock.confirmButton.isEnabled()
+        self.drawingControlDock.setDrawingRematchState(
+            rematch_enabled=bool(status.get("rematch_enabled", False)),
+            previous_enabled=bool(status.get("previous_enabled", False)),
+            next_enabled=bool(status.get("next_enabled", False)),
+            keep_enabled=bool(status.get("keep_enabled", False)),
+            confirm_enabled=confirm_enabled,
+        )
 
 
     def onSamplingPointCountChanged(self, tool_name: str, point_count: int):
@@ -594,6 +623,10 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.drawingControlDock.setCurveModeVisible(False)
         self.drawingControlDock.confirmButton.clicked.connect(self._on_control_confirmed)
         self.drawingControlDock.cancelButton.clicked.connect(self._on_control_cancelled)
+        self.drawingControlDock.rematchButton.clicked.connect(self._on_drawing_rematch_requested)
+        self.drawingControlDock.previousMatchButton.clicked.connect(self._on_drawing_match_previous_requested)
+        self.drawingControlDock.nextMatchButton.clicked.connect(self._on_drawing_match_next_requested)
+        self.drawingControlDock.keepMatchButton.clicked.connect(self._on_drawing_match_keep_requested)
         self.drawingControlDock.rotationAngleSpin.valueChanged.connect(self.scene.set_adjustment_rotation)
         for mode_name, button in self.drawingControlDock.adjustModeButtons.items():
             button.toggled.connect(lambda checked=False, mode=mode_name: self._on_adjustment_mode_toggled(mode, checked))
@@ -612,8 +645,26 @@ class MainWindow(MainWindowNotice, QMainWindow):
         if self.activeToolName == "调整":
             self.scene.confirm_current_adjustment()
         else:
-            self.scene.confirm_current_drawing()
+            if self.scene.confirm_current_drawing() is False:
+                self._sync_drawing_rematch_controls()
+                return
         self.onToolButtonClicked("框选")  # 草稿完成后自动切回选择工具
+
+    def _on_drawing_rematch_requested(self):
+        if self.scene.start_drawing_rematch():
+            self._sync_drawing_rematch_controls()
+
+    def _on_drawing_match_previous_requested(self):
+        if self.scene.drawing_match_previous():
+            self._sync_drawing_rematch_controls()
+
+    def _on_drawing_match_next_requested(self):
+        if self.scene.drawing_match_next():
+            self._sync_drawing_rematch_controls()
+
+    def _on_drawing_match_keep_requested(self):
+        if self.scene.drawing_match_keep():
+            self._sync_drawing_rematch_controls()
 
     def _on_control_cancelled(self):
         if self.activeToolName == "调整":
@@ -639,22 +690,25 @@ class MainWindow(MainWindowNotice, QMainWindow):
     def _confirm_delete_points_dialog(self, count: int) -> bool:
         """显示确认对话框，返回 True 表示确认删除，False 表示取消。"""
         dlg = QDialog(self)
-        dlg.setWindowTitle("确认删除点位")
+        dlg.setWindowTitle("删除")
         layout = QVBoxLayout()
-        label = QLabel(f"确认删除选中的 {count} 个点位？此操作不可撤销。")
+        label = QLabel(f"确认删除选中的 {count} 个点位？")
         layout.addWidget(label)
 
         btn_layout = QHBoxLayout()
         btn_layout.addStretch(1)
         cancel_btn = QPushButton("取消 Esc", dlg)
         cancel_btn.setShortcut("Esc")
-        confirm_btn = QPushButton("确认 Enter", dlg)
-        confirm_btn.setShortcut("Return")
-        confirm_btn.setStyleSheet("background:#d9534f;color:white;")
+        del_switch = QPushButton("删除转换点 Backspace", dlg)
+        del_switch.setShortcut("Backspace")
+        del_point = QPushButton("删除表演者 Enter", dlg)
+        del_point.setShortcut("Return")
+        del_point.setStyleSheet("background:#d9534f;color:white;")
         cancel_btn.clicked.connect(dlg.reject)
-        confirm_btn.clicked.connect(dlg.accept)
+        del_point.clicked.connect(dlg.accept)
         btn_layout.addWidget(cancel_btn)
-        btn_layout.addWidget(confirm_btn)
+        btn_layout.addWidget(del_switch)
+        btn_layout.addWidget(del_point)
         layout.addLayout(btn_layout)
         dlg.setLayout(layout)
         return dlg.exec() == QDialog.DialogCode.Accepted
@@ -687,6 +741,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.drawingControlDock.setFloating(True)
         self.drawingControlDock.confirmButton.setEnabled(True)
         self.drawingControlDock.cancelButton.setEnabled(True)
+        self._sync_drawing_rematch_controls()
         self.drawingControlDock.show()
         self._positionDrawingControlDock()
         self.drawingControlDock.raise_()
@@ -721,6 +776,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.drawingControlDock.setCurveModeVisible(False)
         self.drawingControlDock.confirmButton.setEnabled(False)
         self.drawingControlDock.cancelButton.setEnabled(False)
+        self._sync_drawing_rematch_controls()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
