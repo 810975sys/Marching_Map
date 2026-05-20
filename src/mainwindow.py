@@ -46,6 +46,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         #     "标签", "文本", "箭头",
         # }
         self._drawing_tools = {"点", "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形"}
+        self._text_tools = {"文本"}
         self._select_tools = {"选择", "框选"}
         self._transform_tools = {"调整", "跟随", "路径", "间隔行进"}
         self._p0_forbidden_transform_tools = {"跟随", "路径", "间隔行进"}
@@ -233,6 +234,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             '多边形': "确定多边形中心点及一个顶点；拖动空心矩形可对单点进行修正。",
             '填充四边形': "确定填充四边形三个顶点；拖动空心矩形可对单点进行修正。",
             '曲线/折线': "确定曲线/折线的经过点；拖动空心矩形可对单点进行修正。",
+            '文本': "确定对角点绘制文本框",
             '调整': "拖动角点与中心点调整所选点位",
         }
         self.drawingControlDock.statusLabel.setText(tool_text.get(tool_name, ""))
@@ -334,6 +336,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         
         self.scene.selectedPointsChanged.connect(self.onSelectedPointsChanged)
         self.scene.drawingRematchStateChanged.connect(self._sync_drawing_rematch_controls)
+        self.scene.textBoxSelectionChanged.connect(self._on_textbox_selection_changed)
         self.scene.draftStarted.connect(self.onDraftStarted)
         self.scene.draftFinished.connect(self.onDraftFinished)
         # self.scene.lineSegmentPointCountChanged.connect(self.onLineSegmentPointCountChanged)
@@ -365,6 +368,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         """按当前工具切换绘制控制台的可见内容"""
         self.drawingControlDock.setAdjustmentControlsVisible(tool_name == "调整")
         self.drawingControlDock.setDrawingRematchVisible(False)
+        self.drawingControlDock.setTextBoxControlsVisible(tool_name == "文本")
         if tool_name == "调整":
             # self.drawingControlDock.setOperationLabels("确认调整 Enter", "取消调整 Esc")
             self.drawingControlDock.setSamplingToolVisible(None, False)
@@ -374,6 +378,16 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self.drawingControlDock.cancelButton.setEnabled(True)
             self.drawingControlDock.setAdjustmentMode(self.scene._adjustment_mode)
             self.drawingControlDock.setAdjustmentRotation(self.scene._adjustment_rotation)
+            return
+
+        if tool_name == "文本":
+            self.drawingControlDock.setSamplingToolVisible(None, False)
+            self.drawingControlDock.setCurveModeVisible(False)
+            self.drawingControlDock.setDraftActive(True)
+            self.drawingControlDock.confirmButton.setEnabled(True)
+            self.drawingControlDock.cancelButton.setEnabled(True)
+            self.drawingControlDock.setTextBoxFontSize(int(getattr(self.scene, "_textbox_font_size", 14)))
+            self.drawingControlDock.setDeleteTextBoxEnabled(False)
             return
 
         # self.drawingControlDock.setOperationLabels("确认绘制 Enter", "取消绘制 Esc")
@@ -501,6 +515,10 @@ class MainWindow(MainWindowNotice, QMainWindow):
             btn = self.toolButtons.get(name)
             if btn is not None:
                 btn.setEnabled(beat_at_node and (is_p0 or has_selection))
+        for name in self._text_tools:
+            btn = self.toolButtons.get(name)
+            if btn is not None:
+                btn.setEnabled(bool(beat_at_node))
                 
     def updateConvertToolAvailability(self, beat: int, has_selection: bool = False):
         """根据当前节点和选中点位数量，控制变换工具可用性。"""
@@ -523,6 +541,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
         if not (is_p0 or has_selection) and (self.activeToolName in self._drawing_tools | self._transform_tools):
             self._set_active_tool("框选")
         elif is_p0 and self.activeToolName in self._p0_forbidden_transform_tools:
+            self._set_active_tool("框选")
+        elif self.timelineMainWidget.node_index_at_beat(beat) is None and self.activeToolName in self._text_tools:
             self._set_active_tool("框选")
 
     def setupMainLayout(self):
@@ -621,8 +641,11 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.drawingControlDock.cancelButton.setEnabled(False)
         self.drawingControlDock.setSamplingToolVisible(None, False)
         self.drawingControlDock.setCurveModeVisible(False)
+        self.drawingControlDock.setTextBoxControlsVisible(False)
         self.drawingControlDock.confirmButton.clicked.connect(self._on_control_confirmed)
         self.drawingControlDock.cancelButton.clicked.connect(self._on_control_cancelled)
+        self.drawingControlDock.deleteTextBoxButton.clicked.connect(self._on_delete_textbox_requested)
+        self.drawingControlDock.textBoxFontSizeSpin.valueChanged.connect(self._on_textbox_font_size_changed)
         self.drawingControlDock.rematchButton.clicked.connect(self._on_drawing_rematch_requested)
         self.drawingControlDock.previousMatchButton.clicked.connect(self._on_drawing_match_previous_requested)
         self.drawingControlDock.nextMatchButton.clicked.connect(self._on_drawing_match_next_requested)
@@ -644,6 +667,9 @@ class MainWindow(MainWindowNotice, QMainWindow):
     def _on_control_confirmed(self):
         if self.activeToolName == "调整":
             self.scene.confirm_current_adjustment()
+        elif self.activeToolName == "文本":
+            if self.scene.confirm_textbox_preview() is False:
+                return
         else:
             if self.scene.confirm_current_drawing() is False:
                 self._sync_drawing_rematch_controls()
@@ -672,7 +698,29 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self.drawingControlDock.setAdjustmentMode(self.scene._adjustment_mode)
             self.drawingControlDock.setAdjustmentRotation(self.scene._adjustment_rotation)
             return
+        if self.activeToolName == "文本":
+            self.scene.cancel_textbox_preview()
+            self.drawingControlDock.setDeleteTextBoxEnabled(False)
+            return
         self.scene.cancel_current_drawing()
+
+    def _on_delete_textbox_requested(self):
+        if self.activeToolName != "文本":
+            return
+        if self.scene.delete_selected_textbox():
+            self.drawingControlDock.setDeleteTextBoxEnabled(False)
+
+    def _on_textbox_font_size_changed(self, value: int):
+        if self.activeToolName != "文本":
+            return
+        self.scene.set_textbox_font_size(int(value))
+
+    def _on_textbox_selection_changed(self, textbox_id):
+        if self.activeToolName != "文本":
+            return
+        has_selection = textbox_id is not None and int(textbox_id) > 0
+        self.drawingControlDock.setDeleteTextBoxEnabled(bool(has_selection))
+        self.drawingControlDock.setTextBoxFontSize(int(self.scene.selected_textbox_font_size()))
 
     def _on_delete_points_triggered(self):
         """响应菜单删除点位：弹出确认对话框，确认后调用场景删除方法。"""

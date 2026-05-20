@@ -17,7 +17,7 @@ from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QPainterPath, QPen, QPolygonF, QFont
 from field_info import FieldInfo
 from field_renderer import GridRenderer
-from scene_items import PerformerPointItem, ReferenceHandleItem, MovementControlHandleItem
+from scene_items import PerformerPointItem, ReferenceHandleItem, MovementControlHandleItem, TextBoxItem
 from scheme_scene_data import SchemeSceneData
 from draw_utils import (
     _distance,
@@ -58,6 +58,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
     draftFinished = pyqtSignal()    # 无参数，表示草稿结束（确认或取消）
     selectedPointsChanged = pyqtSignal(int) # 当前选中点位数量
     drawingRematchStateChanged = pyqtSignal()   # 绘图重匹配状态变化时刷新控制台按钮
+    textBoxSelectionChanged = pyqtSignal(object)  # 文本框选择变化（当前选中文本框ID，未选中为 None）
     # lineSegmentPointCountChanged = pyqtSignal(int)  # 线段工具采样点位数量
     # lineSegmentSpacingChanged = pyqtSignal(float)   # 线段工具采样间距
     
@@ -87,6 +88,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._draft_preview_items = []      # 当前绘图草稿的预览图元列表
         self._pending_preview_items = []    # 当前未确认阶段的参考线预览图元列表（如曲线/折线工具在输入至少2个点位后的实时预览）
         self._draft_handle_items = []       # 当前绘图草稿的可拖动参考点图元列表（如曲线/折线工具在输入至少2个点位后的可调整参考点）
+        
         self._adjustment_active = False     # 当前是否处于 “调整” 会话中
         self._adjustment_mode = "比例"      # 调整模式：比例、伸展、倾斜、歪曲
         self._adjustment_rotation = 0.0      # 调整角度（度）
@@ -136,6 +138,15 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._rematch_helper_items = []     # 绘图重匹配时的原点位辅助选择圈图元
         self._point_items_by_id = {}    # 当前显示的点位图元字典，key为点位ID，value为对应的 PerformerPointItem 图元；用于快速定位与更新特定点位的图元。
         self._label_items_by_id = {}    # 当前显示的标签图元字典，key为点位ID，value为对应的 QGraphicsSimpleTextItem 图元；用于快速定位与更新特定点位的标签图元。
+        
+        self._textbox_items = []    # 当前显示的文本框图元列表
+        self._textbox_items_by_id = {}  # 当前显示的文本框图元字典
+        self._textbox_handle_items = [] # 文本框参考点手柄（对角点）
+        self._textbox_hover_scene_pos = None  # 文本工具第一参考点后的鼠标吸附位置（scene 坐标）
+        self._textbox_preview = []  # 文本工具下的文本框预览副本
+        self._textbox_pending_points = []  # 文本工具创建文本框时的待确认两点
+        self._selected_textbox_id = None   # 当前选中的预览文本框ID
+        self._textbox_font_size = 8   # 文本工具默认字号
 
         # 固定为启动时的初始场景大小，避免新增图元导致 sceneRect 自动变化。
         initial_field_rect = self.field_info.field_rect
@@ -175,6 +186,202 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         """场地配置变化后刷新场景绘制。"""
         self._render_points_for_active_node()
         self.update()
+
+    def _copy_textboxes_for_node(self, node_index: int) -> list[dict]:
+        return [dict(tb) for tb in self.node_textboxes.get(int(node_index), [])]
+
+    def _ensure_textbox_ids(self, textboxes: list[dict]):
+        for tb in textboxes:
+            if int(tb.get("id", 0)) <= 0:
+                tb["id"] = int(self._next_textbox_id)
+                self._next_textbox_id += 1
+
+    def _emit_textbox_selection_changed(self):
+        selected = self._selected_preview_textbox()
+        if selected is None:
+            self.textBoxSelectionChanged.emit(None)
+            return
+        self.textBoxSelectionChanged.emit(int(selected.get("id", -1)))
+
+    def selected_textbox_font_size(self) -> int:
+        """返回当前选中文本框字号；无选中时返回当前默认字号。"""
+        selected = self._selected_preview_textbox()
+        if selected is None:
+            return int(self._textbox_font_size)
+        selected_id = int(selected.get("id", -1))
+        item = self._textbox_items_by_id.get(selected_id)
+        if item is not None:
+            try:
+                return int(item.font_size())
+            except Exception:
+                pass
+        return int(selected.get("font_size", self._textbox_font_size))
+
+    def _selected_preview_textbox(self) -> dict | None:
+        if self._selected_textbox_id is None:
+            return None
+        for tb in self._textbox_preview:
+            if int(tb.get("id", -1)) == int(self._selected_textbox_id):
+                return tb
+        return None
+
+    # def _selected_textbox_item(self):
+    #     selected = self._selected_preview_textbox()
+    #     if selected is None:
+    #         return None
+    #     return self._textbox_items_by_id.get(int(selected.get("id", -1)))
+
+    def _set_selected_textbox_id(self, textbox_id: int | None, *, refresh: bool = True):
+        self._selected_textbox_id = int(textbox_id) if textbox_id is not None else None
+        self._emit_textbox_selection_changed()
+        if refresh and self.active_tool == "文本":
+            self._render_points_for_active_node()
+
+    def _clear_textbox_items(self):
+        for item in self._textbox_items:
+            self.removeItem(item)
+        self._textbox_items = []
+        self._textbox_items_by_id = {}
+
+    def _clear_textbox_handles(self):
+        for item in self._textbox_handle_items:
+            self.removeItem(item)
+        self._textbox_handle_items = []
+
+    def _field_rect_from_textbox(self, textbox: dict) -> QRectF:
+        p1 = self._field_to_scene(float(textbox.get("x1", 0.0)), float(textbox.get("y1", 0.0)))
+        p2 = self._field_to_scene(float(textbox.get("x2", 0.0)), float(textbox.get("y2", 0.0)))
+        return QRectF(p1, p2).normalized()
+
+    def _draw_textbox_items(self):
+        self._clear_textbox_items()
+        node_at_beat = self._node_index_at_beat(self.preview_beat)
+        if self.active_tool == "文本":
+            textboxes = self._textbox_preview if self._is_current_beat_editable() else []
+        elif node_at_beat is not None:
+            textboxes = self.node_textboxes.get(node_at_beat, [])
+        else:
+            textboxes = []
+
+        for tb in textboxes:
+            tb_id = int(tb.get("id", -1))
+            rect = self._field_rect_from_textbox(tb)
+            item = TextBoxItem(
+                textbox_id=tb_id,
+                rect=rect,
+                text=str(tb.get("text", "")),
+                font_size=int(tb.get("font_size", self._textbox_font_size)),
+                selection_requested_callback=lambda selected_id, self=self: self._set_selected_textbox_id(selected_id, refresh=False),
+                text_changed_callback=self._on_textbox_item_text_changed,
+            )
+            item.setData(0, "textbox")
+            item.setData(1, tb_id)
+            item.setAcceptedMouseButtons(Qt.MouseButton.LeftButton if self.active_tool == "文本" else Qt.MouseButton.NoButton)
+            item.set_mouse_interactive(self.active_tool == "文本")
+            self.addItem(item)
+            self._textbox_items.append(item)
+            self._textbox_items_by_id[tb_id] = item
+            item.set_selected(tb_id == self._selected_textbox_id)
+            item.set_editable(self.active_tool == "文本" and self._is_current_beat_editable() and tb_id == self._selected_textbox_id)
+
+    def _rebuild_textbox_handles(self):
+        self._clear_textbox_handles()
+        if self.active_tool != "文本" or not self._is_current_beat_editable():
+            return
+        selected = self._selected_preview_textbox()
+        if selected is None:
+            return
+        p1 = self._field_to_scene(float(selected.get("x1", 0.0)), float(selected.get("y1", 0.0)))
+        p2 = self._field_to_scene(float(selected.get("x2", 0.0)), float(selected.get("y2", 0.0)))
+        for index, pos in enumerate([p1, p2]):
+            handle = ReferenceHandleItem(index=index, center_scene_pos=pos, moved_callback=self._on_textbox_handle_moved)
+            handle.setZValue(100)
+            self.addItem(handle)
+            self._textbox_handle_items.append(handle)
+
+    def _on_textbox_handle_moved(self, index: int, scene_pos: QPointF) -> QPointF:
+        selected = self._selected_preview_textbox()
+        if selected is None:
+            return scene_pos
+        fx, fy = self._scene_to_field(scene_pos)
+        fx, fy = self._snap_field_point(fx, fy)
+        if int(index) == 0:
+            selected["x1"] = float(fx)
+            selected["y1"] = float(fy)
+        else:
+            selected["x2"] = float(fx)
+            selected["y2"] = float(fy)
+        tb_id = int(selected.get("id", -1))
+        item = self._textbox_items_by_id.get(tb_id)
+        if item is not None:
+            item.set_rect(self._field_rect_from_textbox(selected))
+        return self._field_to_scene(fx, fy)
+
+    def _on_textbox_item_text_changed(self, textbox_id: int, text: str):
+        for textbox in self._textbox_preview:
+            if int(textbox.get("id", -1)) == int(textbox_id):
+                textbox["text"] = str(text)
+                break
+
+    def _enter_textbox_mode(self):
+        self._textbox_preview = self._copy_textboxes_for_node(self.active_node)
+        self._ensure_textbox_ids(self._textbox_preview)
+        self._textbox_pending_points = []
+        self._textbox_hover_scene_pos = None
+        self._set_selected_textbox_id(None)
+
+    def _exit_textbox_mode(self):
+        self._textbox_preview = []
+        self._textbox_pending_points = []
+        self._textbox_hover_scene_pos = None
+        self._set_selected_textbox_id(None)
+        self._clear_textbox_handles()
+
+    def set_textbox_font_size(self, font_size: int):
+        self._textbox_font_size = max(1, int(font_size))
+        selected = self._selected_preview_textbox()
+        if selected is not None:
+            selected["font_size"] = int(self._textbox_font_size)
+            item = self._textbox_items_by_id.get(int(selected.get("id", -1)))
+            if item is not None:
+                item.set_font_size(int(self._textbox_font_size))
+            self._emit_textbox_selection_changed()
+
+    def delete_selected_textbox(self):
+        if self.active_tool != "文本":
+            return False
+        selected = self._selected_preview_textbox()
+        if selected is None:
+            return False
+        selected_id = int(selected.get("id", -1))
+        self._textbox_preview = [tb for tb in self._textbox_preview if int(tb.get("id", -1)) != selected_id]
+        self._set_selected_textbox_id(None)
+        self._render_points_for_active_node()
+        return True
+
+    def confirm_textbox_preview(self):
+        if self.active_tool != "文本" or not self._is_current_beat_editable():
+            return False
+        for textbox in self._textbox_preview:
+            item = self._textbox_items_by_id.get(int(textbox.get("id", -1)))
+            if item is not None:
+                textbox["text"] = item.text()
+                textbox["font_size"] = item.font_size()
+        self.node_textboxes[self.active_node] = [dict(tb) for tb in self._textbox_preview]
+        max_id = max((int(tb.get("id", 0)) for tb in self.node_textboxes[self.active_node]), default=0)
+        self._next_textbox_id = max(int(self._next_textbox_id), max_id + 1)
+        self._textbox_pending_points = []
+        self._set_selected_textbox_id(None)
+        self._render_points_for_active_node()
+        return True
+
+    def cancel_textbox_preview(self):
+        if self.active_tool != "文本":
+            return
+        self._textbox_preview = self._copy_textboxes_for_node(self.active_node)
+        self._textbox_pending_points = []
+        self._set_selected_textbox_id(None)
+        self._render_points_for_active_node()
 
     def _ordered_selected_point_ids_for_drawing(self) -> list[int]:
         """按当前节点顺序返回被选中的点位 ID。"""
@@ -380,13 +587,16 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def _clear_overlay_items(self):
         """清除当前所有点位与标签图元，准备重建。"""
-        for item in self._current_items + self._previous_items + self._label_items + self._selection_link_items + self._rematch_helper_items:
+        for item in self._current_items + self._previous_items + self._label_items + self._selection_link_items + self._rematch_helper_items + self._textbox_items + self._textbox_handle_items:
             self.removeItem(item)
         self._current_items = []
         self._previous_items = []
         self._label_items = []
         self._selection_link_items = []
         self._rematch_helper_items = []
+        self._textbox_items = []
+        self._textbox_items_by_id = {}
+        self._textbox_handle_items = []
         self._point_items_by_id = {}
         self._label_items_by_id = {}
 
@@ -394,6 +604,10 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         """切换当前工具并清空临时草稿。"""
         # if self.active_tool == "调整" and tool_name != "调整" and self._adjustment_active:
         #     self._reset_adjustment_state(reset_controls=True)
+
+        previous_tool = self.active_tool
+        if previous_tool == "文本" and tool_name != "文本":
+            self._exit_textbox_mode()
 
         self.active_tool = tool_name
         self._pending_points = []   # 清空草稿点位
@@ -404,6 +618,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self._reset_adjustment_state(reset_controls=True)
         if tool_name in self._sampling_tools:
             self.sync_sampling_values_from_selection(tool_name)
+        if tool_name == "文本":
+            self._enter_textbox_mode()
         self._render_points_for_active_node()   # 刷新点位显示
         if tool_name == "调整" and self._selected_point_ids:
             self.begin_adjustment()
@@ -421,6 +637,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._selected_point_ids.clear()
         self._clear_selection_rect()
         self._clear_draft()
+        if self.active_tool == "文本":
+            self._enter_textbox_mode()
         self._render_points_for_active_node()
         self.drawingRematchStateChanged.emit()
 
@@ -518,7 +736,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                         current_pos.y(),
                     )
                     line_item.setPen(pen)
-                    line_item.setZValue(180)
+                    line_item.setZValue(150)
                     self.addItem(line_item)
                     self._selection_link_items.append(line_item)
                 previous_point_id = current_point_id
@@ -590,11 +808,16 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
         if int(point_id) in self._selected_point_ids:
             self._refresh_selected_group_links()
+            if len(self._selected_point_ids) == 1:
+                # 单点拖拽时补充“原始->当前位置”预览连线。
+                self._selection_link_items.extend(self._build_preview_line_items([point]))
 
         return self._field_to_scene(x, y)
 
     def _on_performer_point_released(self, point_id: int | None = None):
         """预览拍位下禁止写回真实数据，直接返回；当前节点拍位上则标记节点为手动编辑过并触发后续自动调整。"""
+        # 清理拖拽中附加到 selection_link 的预览连线。
+        self._refresh_selected_group_links()
         if not self._is_current_beat_editable():
             return
         self._mark_node_manual(self.active_node)
@@ -855,7 +1078,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         path.closeSubpath()
         self._adjustment_frame_item.setPath(path)
 
-    def _build_preview_line_items(self, dst_points: list, src_points: list[dict] | None = None, *, z: float = 175) -> list:
+    def _build_preview_line_items(self, dst_points: list, src_points: list[dict] | None = None, *, z: float = 200) -> list:
         """根据目标点位集构建原始->目标的连线图元。"""
         line_items = []
         if not dst_points:
@@ -1300,6 +1523,13 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self._draw_draft_preview()
             return
 
+        # if self.active_tool == "文本" and len(self._textbox_pending_points) == 1:
+        #     self._clear_pending_preview_items()
+        #     self._sync_pending_handle_positions()
+        #     self._draw_pending_reference_preview()
+        #     self._draw_pending_reference_points()
+        #     return
+
         if self.active_tool == "曲线/折线" and self._pending_points:
             self._clear_pending_preview_items()
             self._sync_pending_handle_positions()
@@ -1359,6 +1589,19 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self.addItem(item)
             self._pending_preview_items.append(item)
 
+        if self.active_tool == "文本" and len(self._textbox_pending_points) == 1 and self._textbox_hover_scene_pos is not None:
+            # 绘制文本框预览
+            start_scene = self._field_to_scene(*self._textbox_pending_points[0])
+            preview_rect = QRectF(start_scene, self._textbox_hover_scene_pos).normalized()
+            if preview_rect.width() > 1e-6 and preview_rect.height() > 1e-6:
+                textbox_pen = QPen(QColor(210, 84, 0, 170), 1.3, Qt.PenStyle.DashLine)
+                textbox_item = QGraphicsRectItem(preview_rect)
+                textbox_item.setPen(textbox_pen)
+                textbox_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+                textbox_item.setZValue(890)
+                self.addItem(textbox_item)
+                self._pending_preview_items.append(textbox_item)
+
         # 未确认阶段同样显示按默认“两步间隔”采样的表演者预览点位。
         if self.active_tool == "曲线/折线" and len(self._pending_points) >= 2:
             preview_points = self._generate_performer_points("曲线/折线", self._pending_points)
@@ -1369,6 +1612,22 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 dots = self.render_preview_points(preview_points)
             for d in dots:
                 self._pending_preview_items.append(d)
+
+    def _update_textbox_hover_preview(self, scene_pos: QPointF):
+        """更新文本框第一参考点后的鼠标吸附位置，并重绘预览矩形。"""
+        if self.active_tool != "文本" or len(self._textbox_pending_points) != 1:
+            return
+        x, y = self._scene_to_field(scene_pos)
+        x, y = self._snap_field_point(x, y)
+        snapped_scene_pos = self._field_to_scene(x, y)
+        if self._textbox_hover_scene_pos is not None:
+            same_x = abs(self._textbox_hover_scene_pos.x() - snapped_scene_pos.x()) <= 1e-9
+            same_y = abs(self._textbox_hover_scene_pos.y() - snapped_scene_pos.y()) <= 1e-9
+            if same_x and same_y:
+                return
+        self._textbox_hover_scene_pos = snapped_scene_pos
+        self._clear_pending_preview_items()
+        self._draw_pending_reference_preview()
 
     def _sample_curve_points_with_count(self, points: list[tuple[float, float]], point_count: int) -> list[tuple[float, float]]:
         """基于 Catmull-Rom 样条生成平滑曲线，并按目标点数重新采样。"""
@@ -2378,6 +2637,10 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         for point in current_points:
             self._draw_point_item(point, pre_view=False, draw_label=True)
 
+        self._draw_textbox_items()
+        if self.active_tool == "文本":
+            self._rebuild_textbox_handles()
+
         if self._adjustment_active:
             self._draw_adjustment_overlay()
             self._refresh_adjustment_drag_visuals()
@@ -2574,6 +2837,58 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         """绘图模式下拦截鼠标：左键采样点。"""
         if event.button() == Qt.MouseButton.LeftButton:
             item = self._scene_item_under_cursor(event.scenePos())
+            if self.active_tool == "文本":
+                if not self._is_current_beat_editable():
+                    event.accept()
+                    return
+                item_type = item.data(0) if item is not None and hasattr(item, "data") else None
+                item_id = item.data(1) if item is not None and hasattr(item, "data") else None
+                if isinstance(item, ReferenceHandleItem):
+                    super().mousePressEvent(event)
+                    return
+                if isinstance(item, TextBoxItem) or item_type == "textbox" or item_type == "textbox_proxy":
+                    textbox_id = None
+                    if isinstance(item, TextBoxItem):
+                        textbox_id = int(item.textbox_id)
+                    elif item_id is not None:
+                        textbox_id = int(item_id)
+                    if textbox_id is not None:
+                        self._textbox_pending_points = []
+                        self._set_selected_textbox_id(textbox_id, refresh=False)
+                    super().mousePressEvent(event)
+                    self._render_points_for_active_node()
+                    textbox_item = self._textbox_items_by_id.get(textbox_id) if textbox_id is not None else None
+                    if textbox_item is not None:
+                        textbox_item.focus_editor()
+                    return
+
+                x, y = self._scene_to_field(event.scenePos())
+                x, y = self._snap_field_point(x, y)
+                self._textbox_pending_points.append((x, y))
+                self._set_selected_textbox_id(None)
+                if len(self._textbox_pending_points) >= 2:
+                    p1 = self._textbox_pending_points[0]
+                    p2 = self._textbox_pending_points[1]
+                    textbox = {
+                        "id": int(self._next_textbox_id),
+                        "x1": float(p1[0]),
+                        "y1": float(p1[1]),
+                        "x2": float(p2[0]),
+                        "y2": float(p2[1]),
+                        "text": "",
+                        "font_size": int(self._textbox_font_size),
+                    }
+                    self._next_textbox_id += 1
+                    self._textbox_preview.append(textbox)
+                    self._textbox_pending_points = []
+                    self._set_selected_textbox_id(int(textbox["id"]), refresh=False)
+                    self._render_points_for_active_node()
+                    textbox_item = self._textbox_items_by_id.get(int(textbox["id"]))
+                    if textbox_item is not None:
+                        textbox_item.focus_editor()
+                event.accept()
+                return
+
             if self.active_tool == "调整":
                 if isinstance(item, (ReferenceHandleItem, MovementControlHandleItem)):
                     super().mousePressEvent(event)
@@ -2672,6 +2987,14 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def mouseMoveEvent(self, event):
         """绘图模式下拦截鼠标：左键拖动更新框选区域。"""
+        # 旧版尝试直接在 scene.mouseMoveEvent 中刷新文本框预览；
+        # 当视图未开启 mouse tracking 时，无按键移动不会稳定触发这里。
+        # if self.active_tool == "文本" and len(self._textbox_pending_points) == 1:
+        #     x, y = self._scene_to_field(event.scenePos())
+        #     x, y = self._snap_field_point(x, y)
+        #     self._textbox_hover_scene_pos = self._field_to_scene(x, y)
+        #     self._refresh_reference_overlay_for_active_tool()
+
         if event.buttons() & Qt.MouseButton.LeftButton and self._selection_start_position is not None:
             if self.active_tool in {"框选", "选择"}:
                 self._selection_current_position = QPointF(event.scenePos())
@@ -2696,4 +3019,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 return
 
         super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        super().keyPressEvent(event)
 

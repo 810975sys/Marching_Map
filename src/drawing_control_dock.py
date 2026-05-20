@@ -116,6 +116,22 @@ class DrawingControlDock(QDockWidget):
         adjust_layout.addWidget(rotation_row)
         layout.addWidget(self.adjustWidget)
 
+        self.textBoxWidget = QWidget(content)
+        textbox_layout = QHBoxLayout(self.textBoxWidget)
+        textbox_layout.setContentsMargins(0, 0, 0, 0)
+        textbox_layout.setSpacing(6)
+        self.textBoxFontSizeLabel = QLabel("文本字号", self.textBoxWidget)
+        self.textBoxFontSizeSpin = QSpinBox(self.textBoxWidget)
+        self.textBoxFontSizeSpin.setRange(1, 200)
+        self.textBoxFontSizeSpin.setValue(14)
+        self.deleteTextBoxButton = QPushButton("删除文本框 del", self.textBoxWidget)
+        self.deleteTextBoxButton.setShortcut('Delete')  # 设置快捷键为 Delete 键
+        self.deleteTextBoxButton.setEnabled(False)
+        textbox_layout.addWidget(self.textBoxFontSizeLabel)
+        textbox_layout.addWidget(self.textBoxFontSizeSpin)
+        textbox_layout.addWidget(self.deleteTextBoxButton)
+        layout.addWidget(self.textBoxWidget)
+
         self.confirmButton = QPushButton("确认 Enter", content)   # 确认按钮，完成绘制并清空草稿状态
         self._confirm_shortcut_enter = QShortcut(QKeySequence(Qt.Key.Key_Return), self)  # 绑定快捷键
         self._confirm_shortcut_enter.setContext(Qt.ShortcutContext.ApplicationShortcut) # 设置快捷方式上下文为应用程序级，确保在任何情况下按下 Enter 都能触发确认操作
@@ -241,6 +257,7 @@ class DrawingControlDock(QDockWidget):
         # self.setLineSegmentVisible(False)   # 默认隐藏线段工具参数区域，直到绑定场景并设置工具后根据工具类型显示相应参数
         self.setCurveModeVisible(False)     # 默认隐藏曲线/折线模式选择，直到绑定场景并设置工具后根据工具类型显示
         self.setAdjustmentControlsVisible(False)
+        self.setTextBoxControlsVisible(False)
         self.setDrawingRematchVisible(False)
         
         # 连接信号与槽函数
@@ -278,6 +295,20 @@ class DrawingControlDock(QDockWidget):
     def setDrawingRematchVisible(self, visible: bool):
         """设置绘图重匹配控制区可见性。"""
         self.drawingRematchWidget.setVisible(bool(visible))
+
+    def setTextBoxControlsVisible(self, visible: bool):
+        """设置文本框控制区可见性。"""
+        self.textBoxWidget.setVisible(bool(visible))
+
+    def setDeleteTextBoxEnabled(self, enabled: bool):
+        """设置删除文本框按钮可用状态。"""
+        self.deleteTextBoxButton.setEnabled(bool(enabled))
+
+    def setTextBoxFontSize(self, value: int):
+        """设置文本框字号显示值。"""
+        self.textBoxFontSizeSpin.blockSignals(True)
+        self.textBoxFontSizeSpin.setValue(max(1, int(value)))
+        self.textBoxFontSizeSpin.blockSignals(False)
 
     def setDrawingRematchState(self, *, rematch_enabled: bool, previous_enabled: bool, next_enabled: bool, keep_enabled: bool, confirm_enabled: bool):
         """同步绘图重匹配按钮状态。"""

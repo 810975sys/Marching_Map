@@ -11,6 +11,8 @@ class FieldMove(QGraphicsView):
     def __init__(self, scene, parent=None):
         super().__init__(scene, parent)
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
         # `_dragging` 与 `_last_pos` 用于中键/右键平移手势状态。
         self._dragging = False
         self._last_pos = None
@@ -61,9 +63,12 @@ class FieldMove(QGraphicsView):
         #     super().mouseMoveEvent(event)
         #     return
 
+        scene = self.scene()
+        if scene is not None and hasattr(scene, "_update_textbox_hover_preview"):
+            scene._update_textbox_hover_preview(self.mapToScene(event.position().toPoint()))
+
         pan_buttons = event.buttons() & (Qt.MouseButton.MiddleButton | Qt.MouseButton.RightButton)
         if self._dragging and self._last_pos is not None and pan_buttons:
-            scene = self.scene()
             # if not hasattr(scene, 'field_info'):
             #     return
             s = scene.field_info

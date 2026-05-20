@@ -19,7 +19,8 @@ class TipWindow(QDialog):
         main_layout.setSpacing(12)
 
         self.tip_content = QLabel(("- 鼠标中键/右键可拖动画布；Ctrl+滚轮可进行缩放\n\n"+
-                              "- 在对应拍子处双击可插入方案图\n\n"+
+                              "- 在对应拍子处双击可插入方案图\n"+
+                              "  右键方案图节点可编辑\n\n"+
                               "- “选择”操作按 Shift 反转组内选择；按 Ctrl 可进行单点选择"), self)
         self.tip_content.setWordWrap(True)
         self.tip_content.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)

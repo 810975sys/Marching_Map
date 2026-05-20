@@ -1,6 +1,25 @@
 from PyQt6.QtCore import QPointF, Qt, QRectF
-from PyQt6.QtGui import QBrush, QColor, QPen, QPainter
-from PyQt6.QtWidgets import QGraphicsEllipseItem, QGraphicsRectItem
+from PyQt6.QtGui import QBrush, QColor, QPen, QPainter, QFont, QTextOption
+from PyQt6.QtWidgets import (
+    QGraphicsEllipseItem,
+    QGraphicsItem,
+    QGraphicsObject,
+    QGraphicsProxyWidget,
+    QGraphicsLineItem,
+    QGraphicsRectItem,
+    QGraphicsSimpleTextItem,
+    QFrame,
+    QPlainTextEdit,
+)
+
+# 全局 monkey-patch：在绘制 QGraphicsLineItem 时临时关闭抗锯齿，避免位置不同导致 1px 线宽观感不一致。
+_orig_qgraphicslineitem_paint = QGraphicsLineItem.paint
+def _qgraphicslineitem_paint_no_aa(self, painter, option, widget=None):
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+    _orig_qgraphicslineitem_paint(self, painter, option, widget)
+    painter.restore()
+QGraphicsLineItem.paint = _qgraphicslineitem_paint_no_aa
 
 class ReferenceHandleItem(QGraphicsRectItem):
     """草稿参考点拖拽手柄，用于调整绘制控制点。"""
@@ -187,8 +206,201 @@ class MovementControlHandleItem(QGraphicsEllipseItem):
         super().hoverLeaveEvent(event)
 
 
+class TextBoxEditor(QPlainTextEdit):
+    """嵌入文本框的编辑器。"""
+
+    def __init__(self, owner):
+        super().__init__()
+        self._owner = owner
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.setStyleSheet(
+            "QPlainTextEdit { background: transparent; border: none; color: #000000; padding: 0px; }"
+        )
+
+    def focusInEvent(self, event):
+        if callable(getattr(self._owner, "_request_selection", None)):
+            self._owner._request_selection()
+        super().focusInEvent(event)
+
+    def mousePressEvent(self, event):
+        if callable(getattr(self._owner, "_request_selection", None)):
+            self._owner._request_selection()
+        super().mousePressEvent(event)
+
+    def set_mouse_interactive(self, interactive: bool):
+        """控制编辑器是否接收鼠标事件，并同步鼠标指针样式。"""
+        interactive = bool(interactive)
+        transparent = not interactive
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, transparent)
+        viewport = self.viewport()
+        if viewport is not None:
+            viewport.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, transparent)
+        self.setCursor(Qt.CursorShape.IBeamCursor if interactive else Qt.CursorShape.ArrowCursor)
+
+
+class TextBoxItem(QGraphicsObject):
+    """文本框图元：白底黑框，内部嵌入 QPlainTextEdit 用于输入与显示。"""
+
+    def __init__(self, textbox_id: int, rect: QRectF, text: str = "", font_size: int = 14, *, selection_requested_callback=None, text_changed_callback=None):
+        super().__init__()
+        self.textbox_id = int(textbox_id)
+        self._rect = QRectF(rect).normalized()
+        self._font_size = max(1, int(font_size))
+        self._selected = False
+        self._editable = False
+        self._mouse_interactive = True
+        self._selection_requested_callback = selection_requested_callback
+        self._text_changed_callback = text_changed_callback
+
+        self._editor = TextBoxEditor(self)
+        self._editor.setPlainText(str(text or ""))
+        self._editor.textChanged.connect(self._on_text_changed)
+        self._editor_proxy = QGraphicsProxyWidget(self)
+        self._editor_proxy.setWidget(self._editor)
+        self.setData(0, "textbox")
+        self.setData(1, self.textbox_id)
+        self._editor_proxy.setData(0, "textbox_proxy")
+        self._editor_proxy.setData(1, self.textbox_id)
+
+        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
+        self.setZValue(100)
+        self._apply_font()
+        self._sync_child_geometry()
+        self._apply_editable_state()
+        self._apply_mouse_interactive_state()
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(self._rect)
+
+    def _request_selection(self):
+        if callable(self._selection_requested_callback):
+            self._selection_requested_callback(int(self.textbox_id))
+
+    def _on_text_changed(self):
+        if callable(self._text_changed_callback):
+            self._text_changed_callback(int(self.textbox_id), self.text())
+
+    def _apply_font(self):
+        font = QFont(self._editor.font())
+        font.setPointSize(self._font_size)
+        self._editor.setFont(font)
+        self._editor.document().setDefaultFont(font)
+        self._editor.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+
+    def _apply_editable_state(self):
+        self._editor.setReadOnly(not self._editable)
+        self._editor.setFocusPolicy(Qt.FocusPolicy.StrongFocus if self._editable else Qt.FocusPolicy.NoFocus)
+
+    def _apply_mouse_interactive_state(self):
+        self._editor.set_mouse_interactive(self._mouse_interactive)
+
+    def _sync_child_geometry(self):
+        margin = 4.0
+        inner = QRectF(self._rect)
+        inner.adjust(margin, margin, -margin, -margin)
+        if inner.width() < 1.0:
+            inner.setWidth(1.0)
+        if inner.height() < 1.0:
+            inner.setHeight(1.0)
+        self._editor_proxy.setGeometry(inner)
+
+    def set_text(self, text: str):
+        if self._editor.toPlainText() == str(text or ""):
+            return
+        self._editor.blockSignals(True)
+        self._editor.setPlainText(str(text or ""))
+        self._editor.blockSignals(False)
+
+    def text(self) -> str:
+        return self._editor.toPlainText()
+
+    def set_font_size(self, font_size: int):
+        font_size = max(1, int(font_size))
+        if font_size == self._font_size:
+            return
+        self._font_size = font_size
+        self._apply_font()
+        self._sync_child_geometry()
+
+    def font_size(self) -> int:
+        return int(self._font_size)
+
+    def set_rect(self, rect: QRectF):
+        rect = QRectF(rect).normalized()
+        if rect == self._rect:
+            return
+        self.prepareGeometryChange()
+        self._rect = rect
+        self._sync_child_geometry()
+        self.update()
+
+    def rect(self) -> QRectF:
+        return QRectF(self._rect)
+
+    def set_selected(self, selected: bool):
+        selected = bool(selected)
+        if selected == self._selected:
+            return
+        self._selected = selected
+        self.update()
+
+    def set_mouse_interactive(self, interactive: bool):
+        interactive = bool(interactive)
+        if interactive == self._mouse_interactive:
+            return
+        self._mouse_interactive = interactive
+        self._apply_mouse_interactive_state()
+
+    def set_editable(self, editable: bool):
+        editable = bool(editable)
+        if editable == self._editable:
+            return
+        self._editable = editable
+        self._apply_editable_state()
+        self.update()
+        if editable:
+            self._editor.setFocus(Qt.FocusReason.MouseFocusReason)
+
+    def focus_editor(self):
+        if self._editable:
+            self._editor.setFocus(Qt.FocusReason.MouseFocusReason)
+
+    def paint(self, painter: QPainter, option, widget=None):
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        rect = QRectF(self._rect).normalized()
+
+        # 填充使用无边框模式以避免边缘像素混合
+        fill_pen = QPen(Qt.PenStyle.NoPen)
+        painter.setPen(fill_pen)
+        painter.setBrush(QBrush(QColor("#ffffff")))
+        painter.drawRect(rect)
+
+        # 描边按像素对齐（0.5 偏移），并设置为 cosmetic 避免缩放影响笔宽
+        outline_pen = QPen(QColor("#000000"), 1.0)
+        outline_pen.setCosmetic(True)
+        painter.setPen(outline_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(rect.adjusted(0.5, 0.5, -0.5, -0.5))
+
+        if self._selected:
+            sel_pen = QPen(QColor("#f39c12"), 1.4)
+            sel_pen.setCosmetic(True)
+            painter.setPen(sel_pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(rect.adjusted(0.5, 0.5, -0.5, -0.5))
+
+        painter.restore()
+
+
 class PerformerPointItem(QGraphicsEllipseItem):
     """可拖拽的表演者点位图元（仅在框选工具下生效）。"""
+
     def __init__(self, point_id: int, center_scene_pos: QPointF, moved_callback, released_callback, can_drag_callback, selected: bool, size: float = 10.0):
         self.radius = size / 2.0
         super().__init__(-self.radius, -self.radius, size, size)
@@ -204,11 +416,11 @@ class PerformerPointItem(QGraphicsEllipseItem):
         self.setFlag(QGraphicsEllipseItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
         self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
         self.setAcceptHoverEvents(True)
-        self.setZValue(200) # 确保在点位图层之上
+        self.setZValue(400) # 确保在点位图层之上
         self.setPos(center_scene_pos)   # 设置初始位置
         self._suspend_position_change = False
         self.set_selected_visual(selected)
-        
+
         self.dot_color = QColor("#2aa6ff")
 
     def set_selected_visual(self, selected: bool):

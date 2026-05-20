@@ -7,6 +7,7 @@ class SchemeSceneData:
     def setup_scene_data(self):
         """初始化数据层状态。"""
         self.node_points = {0: []}  # 下标为时间轴节点索引保存点位列表，每个点位包含 (id、x、y、group_id) 等信息
+        self.node_textboxes = {0: []}  # 下标为时间轴节点索引保存文本框列表
         self.node_manual_edited = {0: False}    # 按时间轴节点索引保存是否手动编辑过的状态，自动插值时以此判断是否覆盖
         
         # node 为下标，存储[set(group_ids), ...]，
@@ -21,6 +22,7 @@ class SchemeSceneData:
         self.preview_beat = 0   # 当前预览的拍位，用于非节点拍位的插值显示，默认为0
 
         self._next_point_id = 1 # 点位ID自增计数器，确保每个新点位都有唯一ID
+        self._next_textbox_id = 1 # 文本框ID自增计数器
         # self._next_group_id = 1 # 分组ID自增计数器，确保每个新分组都有唯一ID
         self._pending_points = []   # 当前工具操作中尚未提交的数据点位列表，如绘制中的线段或多边形顶点等
 
@@ -32,6 +34,7 @@ class SchemeSceneData:
 
         if idx == 0:
             self.node_points[0] = []
+            self.node_textboxes[0] = []
             self.node_manual_edited[0] = self.node_manual_edited.get(0, False)
             return
 
@@ -40,6 +43,7 @@ class SchemeSceneData:
             {"id": p["id"], "x": p["x"], "y": p["y"], "group_id": p.get("group_id")}
             for p in prev_points
         ]
+        self.node_textboxes[idx] = []
         self.node_manual_edited[idx] = False
 
     def on_node_added(self, node_index: int):
@@ -61,6 +65,14 @@ class SchemeSceneData:
                 moved_points[idx] = self.node_points[idx]
         self.node_points = moved_points
 
+        moved_textboxes = {}
+        for idx in sorted(self.node_textboxes.keys(), reverse=True):
+            if idx >= inserted_index:
+                moved_textboxes[idx + 1] = self.node_textboxes[idx]
+            else:
+                moved_textboxes[idx] = self.node_textboxes[idx]
+        self.node_textboxes = moved_textboxes
+
         # 重排节点手动编辑状态
         moved_manual = {}
         for idx in sorted(self.node_manual_edited.keys(), reverse=True):
@@ -80,6 +92,8 @@ class SchemeSceneData:
             self.node_points[inserted_index] = self._interpolate_points_between_nodes(left_idx, right_idx, inserted_index)
         else:   # 复制左节点（如果存在）
             self.node_points[inserted_index] = self._copy_points(left_idx)
+
+        self.node_textboxes[inserted_index] = []
 
         # self.node_shapes[inserted_index] = []
         self.node_manual_edited[inserted_index] = False # 手动编辑状态默认为 False。
@@ -102,6 +116,16 @@ class SchemeSceneData:
         if 0 not in new_points:
             new_points[0] = []
         self.node_points = new_points
+
+        new_textboxes = {}
+        for idx in sorted(self.node_textboxes.keys()):
+            if idx < removed_index:
+                new_textboxes[idx] = self.node_textboxes[idx]
+            elif idx > removed_index:
+                new_textboxes[idx - 1] = self.node_textboxes[idx]
+        if 0 not in new_textboxes:
+            new_textboxes[0] = []
+        self.node_textboxes = new_textboxes
 
         # 修改分组信息（如果被删除节点的分组信息与后续节点有重叠，则保留后续节点的分组信息，否则删除）
         # del_group = self.node_to_group[removed_index]
