@@ -24,7 +24,7 @@ class SchemeSceneData:
         self._next_point_id = 1 # 点位ID自增计数器，确保每个新点位都有唯一ID
         self._next_textbox_id = 1 # 文本框ID自增计数器
         # self._next_group_id = 1 # 分组ID自增计数器，确保每个新分组都有唯一ID
-        self._pending_points = []   # 当前工具操作中尚未提交的数据点位列表，如绘制中的线段或多边形顶点等
+        # self._pending_points = []   # 当前工具操作中尚未提交的数据点位列表，如绘制中的线段或多边形顶点等
 
     def ensure_node_exists(self, node_index: int):
         """确保目标节点存在；新节点默认复制前一节点点位。"""
@@ -151,7 +151,7 @@ class SchemeSceneData:
         # 调整当前选中节点索引
         if self.active_node >= removed_index:
             self.active_node = max(0, self.active_node - 1)
-        self._pending_points = []
+        # self._pending_points = []
         self._clear_draft()
         self._render_points_for_active_node()
 

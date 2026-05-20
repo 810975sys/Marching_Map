@@ -88,6 +88,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._draft_preview_items = []      # 当前绘图草稿的预览图元列表
         self._pending_preview_items = []    # 当前未确认阶段的参考线预览图元列表（如曲线/折线工具在输入至少2个点位后的实时预览）
         self._draft_handle_items = []       # 当前绘图草稿的可拖动参考点图元列表（如曲线/折线工具在输入至少2个点位后的可调整参考点）
+        self._pending_points = []   # 当前工具操作中尚未提交的数据点位列表，如绘制中的线段或多边形顶点等
         
         self._adjustment_active = False     # 当前是否处于 “调整” 会话中
         self._adjustment_mode = "比例"      # 调整模式：比例、伸展、倾斜、歪曲
