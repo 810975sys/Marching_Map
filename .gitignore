@@ -5,6 +5,8 @@ __pycache__/
 
 # 忽略常见日志文件
 *.log
+*.jsonl
+*.json
 
 # 忽略指定文件
 初步构想.txt

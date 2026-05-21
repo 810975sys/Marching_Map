@@ -14,7 +14,7 @@ ZOOM_PERCENT_FACTOR = 5 # 缩放百分比与缩放比例的换算因子（% = sc
 ZOOM_PERCENT_MIN = SCALE_MIN * ZOOM_PERCENT_FACTOR
 ZOOM_PERCENT_MAX = SCALE_MAX * ZOOM_PERCENT_FACTOR
 
-def _field_default_dir() -> Path:
+def field_default_dir() -> Path:
     """获取场地配置默认目录。"""
     project_root = Path(__file__).resolve().parent.parent
     directory = project_root / "fields"

@@ -105,6 +105,33 @@ class TimelineWidget(QWidget):
         self.setMinimumHeight(58)
         self._recalculate_width()
 
+    def set_graph_list(self, graph_list: list[int], selected_node: int = 0, current_beat: int | None = None, emit_signals: bool = True):
+        """整体恢复时间轴间隔列表。"""
+        values = [int(interval) for interval in graph_list] if graph_list else [0]
+        if not values or values[0] != 0:
+            values = [0] + [max(1, int(interval)) for interval in values]
+        else:
+            values = [0] + [max(1, int(interval)) for interval in values[1:]]
+
+        self.graph_list = values
+        self.selected_node = max(0, min(int(selected_node), len(self.graph_list) - 1))
+        if current_beat is None:
+            self.current_beat = self.start_beat_of(self.selected_node)
+        else:
+            total = sum(self.graph_list[1:])
+            self.current_beat = max(0, min(int(current_beat), total))
+
+        self._recalculate_width()
+        if emit_signals:
+            self.timelineChanged.emit()
+            self.nodeSelected.emit(self.selected_node)
+            self.currentBeatChanged.emit(self.current_beat)
+        self.update()
+
+    def get_graph_list(self) -> list[int]:
+        """返回当前时间轴间隔列表的副本。"""
+        return list(self.graph_list)
+
     def add_node(self, interval: int = 8):
         """在末尾新增一个节点，默认间隔为8拍。"""
         self.graph_list.append(max(1, int(interval)))

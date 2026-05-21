@@ -1,4 +1,5 @@
 import sys
+import json
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QToolBar,
     QVBoxLayout, QWidget, QFileDialog, 
@@ -16,7 +17,7 @@ from field_info import (
     ZOOM_PERCENT_FACTOR,
     ZOOM_PERCENT_MIN,
     ZOOM_PERCENT_MAX,
-    _field_default_dir, 
+    field_default_dir, 
     saveFieldInfo, 
     loadFieldInfo, 
 )
@@ -28,13 +29,24 @@ from timeline_widget import TimelineWidget, TimelineScrollArea
 from drawing_control_dock import DrawingControlDock
 from mainwindow_notice import MainWindowNotice
 from tip_window import TipWindow
-from field_info import _field_default_dir
+# from field_info import _field_default_dir
+
+
+def scheme_default_dir() -> Path:
+    """获取方案文件默认目录。"""
+    project_root = Path(__file__).resolve().parent.parent
+    directory = project_root / "saves"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
 
 class MainWindow(MainWindowNotice, QMainWindow):
     """主窗口：组织菜单、场景、时间轴与各类控制台。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._scheme_file_path: Path | None = None
+        self._scheme_dirty = False
+        self._scheme_dirty_suppressed = False
         # 工具栏按钮映射：工具名 -> QToolButton
         self.toolButtons = {}   # 保存工具按钮引用，便于根据工具名更新按钮状态
         self.activeToolName = "框选"
@@ -72,12 +84,16 @@ class MainWindow(MainWindowNotice, QMainWindow):
         fileMenu = self.menuBar().addMenu("文件")
         new = fileMenu.addAction("新建方案")
         new.setShortcut("Ctrl+N")
+        new.triggered.connect(self._new_scheme)
         open = fileMenu.addAction("打开")
         open.setShortcut("Ctrl+O")
+        open.triggered.connect(self._open_scheme)
         save = fileMenu.addAction("保存")
         save.setShortcut("Ctrl+S")
+        save.triggered.connect(self._save_scheme)
         saveAs = fileMenu.addAction("另存为")
         saveAs.setShortcut("Ctrl+Shift+S")
+        saveAs.triggered.connect(self._save_scheme_as)
         fileMenu.addSeparator()
         fileMenu.addAction("导出为PDF")
         fileMenu.addSeparator()
@@ -121,10 +137,63 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.tipWindow.show()
         self.tipWindow.raise_()
         self.tipWindow.activateWindow()
+
+    def _set_scheme_dirty(self, dirty: bool = True):
+        """更新当前方案是否存在未保存修改。"""
+        if self._scheme_dirty_suppressed:
+            return
+        self._scheme_dirty = bool(dirty)
+
+    def _mark_scheme_dirty(self, *args):
+        """标记当前方案为未保存。"""
+        self._set_scheme_dirty(True)
+
+    def _prompt_unsaved_changes(self, operation_name: str) -> str | None:
+        """在丢弃未保存修改前询问用户如何处理。"""
+        if not self._scheme_dirty:
+            return "discard"
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(operation_name)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(f"当前方案有未保存修改，是否在{operation_name}前保存？", dialog))
+
+        button_row = QHBoxLayout()
+        save_button = QPushButton("保存", dialog)
+        save_as_button = QPushButton("另存为", dialog)
+        discard_button = QPushButton("不保存", dialog)
+        cancel_button = QPushButton("取消", dialog)
+        save_button.setDefault(True)
+
+        dialog.result_action = None
+        save_button.clicked.connect(lambda: (setattr(dialog, "result_action", "save"), dialog.accept()))
+        save_as_button.clicked.connect(lambda: (setattr(dialog, "result_action", "save_as"), dialog.accept()))
+        discard_button.clicked.connect(lambda: (setattr(dialog, "result_action", "discard"), dialog.accept()))
+        cancel_button.clicked.connect(lambda: (setattr(dialog, "result_action", None), dialog.reject()))
+
+        button_row.addWidget(save_button)
+        button_row.addWidget(save_as_button)
+        button_row.addWidget(discard_button)
+        button_row.addWidget(cancel_button)
+        layout.addLayout(button_row)
+
+        dialog.exec()
+        return getattr(dialog, "result_action", None)
+
+    def _ensure_scheme_can_be_replaced(self, operation_name: str) -> bool:
+        """在打开或新建前处理未保存修改。"""
+        decision = self._prompt_unsaved_changes(operation_name)
+        if decision is None:
+            return False
+        if decision == "save":
+            return self._save_scheme()
+        if decision == "save_as":
+            return self._save_scheme_as()
+        return True
         
     def _save_field_info(self):
         try:
-            default_path = _field_default_dir() / "field_settings.json"
+            default_path = field_default_dir() / "field_settings.json"
             file_path, _ = QFileDialog.getSaveFileName(
                 self,
                 "保存场地设置",
@@ -140,9 +209,149 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self._show_menu_notice(f"保存失败：{e}", failed=True)
             # print(f"Error saving field info: {e}")
 
+    def _build_scheme_payload(self) -> dict:
+        """收集当前方案的已确认数据。"""
+        return {
+            "schema_version": 1,
+            "field_info": self.scene.field_info.to_dict(),
+            "graph_list": list(self.timelineMainWidget.graph_list),
+            "scene": self.scene.export_confirmed_state(),
+        }
+
+    def _apply_scheme_payload(self, payload: dict):
+        """将方案文件内容恢复到当前窗口。"""
+        if not isinstance(payload, dict):
+            raise ValueError("方案文件格式无效")
+
+        self._scheme_dirty_suppressed = True
+        try:
+            graph_list = payload.get("graph_list", [0])
+            if not isinstance(graph_list, list):
+                raise ValueError("方案文件中的 graph_list 格式无效")
+            self.timelineMainWidget.set_graph_list(graph_list, selected_node=0, current_beat=0, emit_signals=False)
+
+            scene_data = payload.get("scene", {})
+            self.scene.load_confirmed_state(scene_data, node_count=len(self.timelineMainWidget.graph_list))
+
+            self._apply_active_tool("框选")
+            self._configure_drawing_control_dock("框选")
+            self.drawingControlDock.hide()
+
+            self.onTimelineNodeSelected(self.timelineMainWidget.selected_node)
+            self.scene.set_preview_beat(self.timelineMainWidget.current_beat)
+
+            field_info_data = payload.get("field_info", {})
+            self.scene.field_info.load_from_dict(field_info_data)
+
+            self._scheme_file_path = None
+        finally:
+            self._scheme_dirty_suppressed = False
+        self._set_scheme_dirty(False)
+
+    def _save_scheme_to_path(self, file_path: str | Path):
+        """将当前方案保存到指定文件。"""
+        target = Path(file_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = self._build_scheme_payload()
+        with open(target, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        self._scheme_file_path = target
+        self._set_scheme_dirty(False)
+        self._show_menu_notice(f"已保存：{target.name}")
+        return True
+
+    def _save_scheme_as(self, checked=False):
+        """另存为当前方案。"""
+        default_path = self._scheme_file_path or (self.scheme_default_dir() / "marching_map_scheme.json")
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "另存为方案",
+            str(default_path),
+            "方案文件 (*.json)",
+        )
+        if not file_path:
+            return False
+        try:
+            self._save_scheme_to_path(file_path)
+            return True
+        except Exception as e:
+            self._show_menu_notice(f"另存为失败：{e}", failed=True)
+            return False
+
+    def _save_scheme(self, checked=False):
+        """保存当前方案；若尚未指定文件则转为另存为。"""
+        if self._scheme_file_path is None:
+            return self._save_scheme_as()
+        try:
+            self._save_scheme_to_path(self._scheme_file_path)
+            return True
+        except Exception as e:
+            self._show_menu_notice(f"保存失败：{e}", failed=True)
+            return False
+
+    def _open_scheme(self, checked=False):
+        """打开方案文件并恢复到当前窗口。"""
+        if not self._ensure_scheme_can_be_replaced("打开方案"):
+            return False
+        default_path = self._scheme_file_path or (self.scheme_default_dir() / "marching_map_scheme.json")
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "打开方案",
+            str(default_path),
+            "方案文件 (*.json)",
+        )
+        if not file_path:
+            return False
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            self._apply_scheme_payload(payload)
+            self._scheme_file_path = Path(file_path)
+            self._show_menu_notice(f"已打开：{Path(file_path).name}")
+            return True
+        except Exception as e:
+            self._show_menu_notice(f"打开失败：{e}", failed=True)
+            return False
+
+    def _new_scheme(self, checked=False):
+        """新建一个空白方案。"""
+        if not self._ensure_scheme_can_be_replaced("新建方案"):
+            return False
+        self._scheme_dirty_suppressed = True
+        try:
+            self._scheme_file_path = None
+            self.scene.load_confirmed_state({})
+            self.timelineMainWidget.set_graph_list([0], selected_node=0, current_beat=0, emit_signals=False)
+            self._apply_active_tool("框选")
+            self._configure_drawing_control_dock("框选")
+            self.drawingControlDock.hide()
+            self.onTimelineNodeSelected(0)
+            self.scene.set_preview_beat(0)
+        finally:
+            self._scheme_dirty_suppressed = False
+        self._set_scheme_dirty(False)
+        self._show_menu_notice("已新建空白方案")
+        return True
+
+    def closeEvent(self, event):
+        """关闭窗口前处理未保存修改。"""
+        decision = self._prompt_unsaved_changes("退出")
+        if decision is None:
+            event.ignore()
+            return
+        if decision == "save":
+            if not self._save_scheme():
+                event.ignore()
+                return
+        elif decision == "save_as":
+            if not self._save_scheme_as():
+                event.ignore()
+                return
+        event.accept()
+
     def _load_field_info(self):
         try:
-            default_path = _field_default_dir() / "field_settings.json"
+            default_path = field_default_dir() / "field_settings.json"
             file_path, _ = QFileDialog.getOpenFileName(
                 self,
                 "导入场地设置",
@@ -326,6 +535,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
     def setupInteractions(self):
         """绑定时间轴、场景和控制台信号。"""
         self.timelineMainWidget.nodeSelected.connect(self.onTimelineNodeSelected)
+        self.timelineMainWidget.timelineChanged.connect(self._mark_scheme_dirty)
         self.timelineMainWidget.currentBeatChanged.connect(self.scene.set_preview_beat)
         self.timelineMainWidget.currentBeatChanged.connect(self.updateDrawToolAvailability)
         self.timelineMainWidget.currentBeatChanged.connect(self.updateConvertToolAvailability)
@@ -337,6 +547,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.scene.selectedPointsChanged.connect(self.onSelectedPointsChanged)
         self.scene.drawingRematchStateChanged.connect(self._sync_drawing_rematch_controls)
         self.scene.textBoxSelectionChanged.connect(self._on_textbox_selection_changed)
+        self.scene.dataChanged.connect(self._mark_scheme_dirty)
+        self.scene.field_info.changed.connect(self._mark_scheme_dirty)
         self.scene.draftStarted.connect(self.onDraftStarted)
         self.scene.draftFinished.connect(self.onDraftFinished)
         # self.scene.lineSegmentPointCountChanged.connect(self.onLineSegmentPointCountChanged)

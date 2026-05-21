@@ -56,6 +56,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
     # 通知主窗口更新“绘制控制台”状态，替代阻塞式弹窗。
     draftStarted = pyqtSignal(str)  # 工具名称
     draftFinished = pyqtSignal()    # 无参数，表示草稿结束（确认或取消）
+    dataChanged = pyqtSignal()      # 已确认的数据发生变化
     selectedPointsChanged = pyqtSignal(int) # 当前选中点位数量
     drawingRematchStateChanged = pyqtSignal()   # 绘图重匹配状态变化时刷新控制台按钮
     textBoxSelectionChanged = pyqtSignal(object)  # 文本框选择变化（当前选中文本框ID，未选中为 None）
@@ -187,6 +188,28 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         """场地配置变化后刷新场景绘制。"""
         self._render_points_for_active_node()
         self.update()
+
+    def load_confirmed_state(self, data: dict, node_count: int | None = None):
+        """恢复已确认的方案图数据，并清理当前编辑中的临时状态。"""
+        self.load_confirmed_state_data(data, node_count=node_count)
+        self._selected_point_ids.clear()
+        self._reset_adjustment_state(reset_controls=True)
+        self._clear_selection_rect()
+        self._draft_tool_name = None
+        self._draft_reference_points = []
+        self._pending_points = []
+        self._clear_draft_items()
+        self._clear_pending_preview_items()
+        self._clear_adjustment_items()
+        self._reset_drawing_rematch_state(active=False)
+        self._textbox_preview = []
+        self._textbox_pending_points = []
+        self._selected_textbox_id = None
+        self._clear_overlay_items()
+
+    def load_confirmed_state_data(self, data: dict, node_count: int | None = None):
+        """仅恢复数据层状态，不重绘场景。"""
+        super().load_confirmed_state(data, node_count=node_count)
 
     def _copy_textboxes_for_node(self, node_index: int) -> list[dict]:
         return [dict(tb) for tb in self.node_textboxes.get(int(node_index), [])]
@@ -374,6 +397,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._textbox_pending_points = []
         self._set_selected_textbox_id(None)
         self._render_points_for_active_node()
+        self.dataChanged.emit()
         return True
 
     def cancel_textbox_preview(self):
@@ -823,6 +847,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             return
         self._mark_node_manual(self.active_node)
         self._recalculate_following_auto_nodes(self.active_node)
+        self.dataChanged.emit()
 
     def _clear_draft(self):
         """清空绘制草稿"""
@@ -963,6 +988,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._mark_node_manual(self.active_node)
         self._recalculate_following_auto_nodes(self.active_node, include_manual_nodes=True)
         self._render_points_for_active_node()
+        self.dataChanged.emit()
 
     def cancel_current_adjustment(self):
         """取消当前调整会话，重置预览点位为初始状态并刷新显示；如果未处于调整会话中则无操作。"""
@@ -2039,6 +2065,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self.draftFinished.emit()
         self._render_points_for_active_node()
         self.drawingRematchStateChanged.emit()
+        self.dataChanged.emit()
         return True
 
     def cancel_current_drawing(self):
@@ -2699,6 +2726,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._mark_node_manual(self.active_node)
         self._recalculate_following_auto_nodes(self.active_node, include_manual_nodes=True)
         self._render_points_for_active_node()
+        self.dataChanged.emit()
 
     def restore_selected_points_to_prev(self):
         """将当前选中的点位恢复到前一节点对应点位的位置。
@@ -2732,6 +2760,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         if changed:
             self._mark_node_manual(self.active_node)
             self._recalculate_following_auto_nodes(self.active_node, include_manual_nodes=True)
+            self.dataChanged.emit()
         else:
             # 若没有实际变更，则认为当前节点未被手动编辑过
             self.node_manual_edited[self.active_node] = False

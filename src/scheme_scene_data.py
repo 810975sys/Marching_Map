@@ -26,6 +26,136 @@ class SchemeSceneData:
         # self._next_group_id = 1 # 分组ID自增计数器，确保每个新分组都有唯一ID
         # self._pending_points = []   # 当前工具操作中尚未提交的数据点位列表，如绘制中的线段或多边形顶点等
 
+    def export_confirmed_state(self) -> dict:
+        """导出已确认的方案图数据，用于保存到方案文件。"""
+        return {
+            "node_points": {
+                str(idx): [dict(point) for point in points]
+                for idx, points in sorted(self.node_points.items())
+            },
+            "node_textboxes": {
+                str(idx): [dict(textbox) for textbox in textboxes]
+                for idx, textboxes in sorted(self.node_textboxes.items())
+            },
+            "node_manual_edited": {
+                str(idx): bool(flag)
+                for idx, flag in sorted(self.node_manual_edited.items())
+            },
+            "node_to_group": [sorted(int(group_id) for group_id in group_ids) for group_ids in self.node_to_group],
+            "group_to_point": [
+                {
+                    **dict(group),
+                    "point_ids": [int(point_id) for point_id in group.get("point_ids", [])],
+                }
+                for group in self.group_to_point
+            ],
+            "_next_point_id": int(self._next_point_id),
+            "_next_textbox_id": int(self._next_textbox_id),
+        }
+
+    def load_confirmed_state(self, data: dict, node_count: int | None = None):
+        """从保存文件恢复已确认的方案图数据。"""
+        if not isinstance(data, dict):
+            raise ValueError("方案文件中的场景数据格式无效")
+
+        self.setup_scene_data()
+
+        node_points_data = data.get("node_points", {})
+        if not isinstance(node_points_data, dict):
+            raise ValueError("方案文件中的 node_points 格式无效")
+        self.node_points = {}
+        for node_key, points in node_points_data.items():
+            node_index = max(0, int(node_key))
+            if not isinstance(points, list):
+                raise ValueError(f"方案文件中的 node_points[{node_key}] 格式无效")
+            self.node_points[node_index] = [dict(point) for point in points if isinstance(point, dict)]
+        self.node_points.setdefault(0, [])
+
+        node_textboxes_data = data.get("node_textboxes", {})
+        if not isinstance(node_textboxes_data, dict):
+            raise ValueError("方案文件中的 node_textboxes 格式无效")
+        self.node_textboxes = {}
+        for node_key, textboxes in node_textboxes_data.items():
+            node_index = max(0, int(node_key))
+            if not isinstance(textboxes, list):
+                raise ValueError(f"方案文件中的 node_textboxes[{node_key}] 格式无效")
+            self.node_textboxes[node_index] = [dict(textbox) for textbox in textboxes if isinstance(textbox, dict)]
+        self.node_textboxes.setdefault(0, [])
+
+        node_manual_data = data.get("node_manual_edited", {})
+        if not isinstance(node_manual_data, dict):
+            raise ValueError("方案文件中的 node_manual_edited 格式无效")
+        self.node_manual_edited = {}
+        for node_key, flag in node_manual_data.items():
+            self.node_manual_edited[max(0, int(node_key))] = bool(flag)
+        self.node_manual_edited.setdefault(0, False)
+
+        node_to_group_data = data.get("node_to_group", [])
+        if not isinstance(node_to_group_data, list):
+            raise ValueError("方案文件中的 node_to_group 格式无效")
+        self.node_to_group = []
+        for group_ids in node_to_group_data:
+            if isinstance(group_ids, (list, tuple, set)):
+                self.node_to_group.append({int(group_id) for group_id in group_ids})
+            else:
+                self.node_to_group.append(set())
+        if not self.node_to_group:
+            self.node_to_group = [set()]
+
+        group_to_point_data = data.get("group_to_point", [])
+        if not isinstance(group_to_point_data, list):
+            raise ValueError("方案文件中的 group_to_point 格式无效")
+        self.group_to_point = []
+        for group in group_to_point_data:
+            if not isinstance(group, dict):
+                continue
+            group_data = dict(group)
+            group_data["point_ids"] = [int(point_id) for point_id in group_data.get("point_ids", [])]
+            self.group_to_point.append(group_data)
+
+        max_point_id = 0
+        for points in self.node_points.values():
+            for point in points:
+                try:
+                    max_point_id = max(max_point_id, int(point.get("id", 0)))
+                except Exception:
+                    continue
+        for group in self.group_to_point:
+            for point_id in group.get("point_ids", []):
+                try:
+                    max_point_id = max(max_point_id, int(point_id))
+                except Exception:
+                    continue
+
+        max_textbox_id = 0
+        for textboxes in self.node_textboxes.values():
+            for textbox in textboxes:
+                try:
+                    max_textbox_id = max(max_textbox_id, int(textbox.get("id", 0)))
+                except Exception:
+                    continue
+
+        saved_next_point_id = int(data.get("_next_point_id", max_point_id + 1))
+        saved_next_textbox_id = int(data.get("_next_textbox_id", max_textbox_id + 1))
+        self._next_point_id = max(1, max_point_id + 1, saved_next_point_id)
+        self._next_textbox_id = max(1, max_textbox_id + 1, saved_next_textbox_id)
+
+        # 确保基础节点结构完整，避免后续渲染时访问缺失索引。
+        expected_node_count = max(1, int(node_count)) if node_count is not None else 0
+        max_node_index = max(
+            max(self.node_points.keys(), default=0),
+            max(self.node_textboxes.keys(), default=0),
+            max(self.node_manual_edited.keys(), default=0),
+            len(self.node_to_group) - 1,
+            expected_node_count - 1,
+        )
+        for idx in range(0, max_node_index + 1):
+            self.node_points.setdefault(idx, [])
+            self.node_textboxes.setdefault(idx, [])
+            self.node_manual_edited.setdefault(idx, False)
+        while len(self.node_to_group) <= max_node_index:
+            self.node_to_group.append(set())
+
     def ensure_node_exists(self, node_index: int):
         """确保目标节点存在；新节点默认复制前一节点点位。"""
         idx = max(0, int(node_index))
