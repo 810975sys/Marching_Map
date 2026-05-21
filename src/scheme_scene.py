@@ -235,10 +235,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         selected_id = int(selected.get("id", -1))
         item = self._textbox_items_by_id.get(selected_id)
         if item is not None:
-            try:
-                return int(item.font_size())
-            except Exception:
-                pass
+            return int(item.font_size())
         return int(selected.get("font_size", self._textbox_font_size))
 
     def _selected_preview_textbox(self) -> dict | None:
@@ -881,10 +878,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self.removeItem(item)
         self._adjustment_handle_items = []
         for item in getattr(self, "_adjustment_preview_line_items", []):
-            try:
-                self.removeItem(item)
-            except Exception:
-                pass
+            self.removeItem(item)
         self._adjustment_preview_line_items = []
 
     def _adjustment_rotation_radians(self) -> float:
@@ -1174,10 +1168,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             return
         # 清理旧的原始->预览 线条
         for item in getattr(self, "_adjustment_preview_line_items", []):
-            try:
-                self.removeItem(item)
-            except Exception:
-                pass
+            self.removeItem(item)
         self._adjustment_preview_line_items = []
 
         for point in self._adjustment_preview_points:
@@ -2832,10 +2823,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             label = QGraphicsSimpleTextItem(str(point["id"]))
             # 字体大小
             font = QFont()
-            try:
-                font.setPointSize(int(self.label_size))
-            except Exception:
-                pass
+            font.setPointSize(int(self.label_size))
             label.setFont(font)
             label.setBrush(QBrush(self.label_color))
             # 计算相对于点位的偏移（角度以 15° 为单位）并使标签中心位于该偏移点
@@ -2943,11 +2931,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 # 点击时先将该点设置为当前预览的候选匹配，若设置成功则立即确认匹配并前进。
                 if self.drawing_match_set_candidate(clicked_point_id):
                     # 自动确认当前候选匹配（等同于用户点击“Keep”按钮），然后阻止事件继续传播。
-                    try:
-                        self.drawing_match_keep()
-                    except Exception:
-                        # 若确认失败，则保持已选候选但仍阻止事件传播
-                        pass
+                    self.drawing_match_keep()
                     event.accept()
                     return
             if rematch_snapshot["active"] and self._is_drawing_tool():

@@ -262,7 +262,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
     def _save_scheme_as(self, checked=False):
         """另存为当前方案。"""
-        default_path = self._scheme_file_path or (self.scheme_default_dir() / "marching_map_scheme.json")
+        default_path = self._scheme_file_path or (scheme_default_dir() / "marching_map_scheme.json")
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "另存为方案",
@@ -293,7 +293,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         """打开方案文件并恢复到当前窗口。"""
         if not self._ensure_scheme_can_be_replaced("打开方案"):
             return False
-        default_path = self._scheme_file_path or (self.scheme_default_dir() / "marching_map_scheme.json")
+        default_path = self._scheme_file_path or (scheme_default_dir() / "marching_map_scheme.json")
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "打开方案",

@@ -323,10 +323,7 @@ class SchemeSceneData:
         timeline = getattr(parent, "timelineMainWidget", None)
         # if timeline is not None and hasattr(timeline, "start_beat_of"):
         if timeline is not None:
-            try:
-                return int(timeline.start_beat_of(int(node_index)))
-            except Exception:
-                pass
+            return int(timeline.start_beat_of(int(node_index)))
         return int(node_index)
 
     def _points_for_node_render(self, node_index: int) -> list[dict]:

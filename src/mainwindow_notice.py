@@ -35,6 +35,8 @@ class MainWindowNotice:
             available,
         )
         self.menuNoticeLabel.setText(elided)
+        # 把完整文本放到 tooltip，方便鼠标悬停查看完整内容
+        self.menuNoticeLabel.setToolTip(text)
 
     def _show_menu_notice(self, text: str, failed: bool = False, timeout_ms: int = 3500):
         """在菜单栏右上角显示非阻塞提示，超时后自动清除。"""
@@ -49,7 +51,8 @@ class MainWindowNotice:
             if current_seq == self._menu_notice_seq:
                 self._menu_notice_raw_text = ""
                 self.menuNoticeLabel.setText("")
-                # self.menuNoticeLabel.setToolTip("")
+                # 同时清除 tooltip
+                self.menuNoticeLabel.setToolTip("")
 
         QTimer.singleShot(timeout_ms, clear_notice_if_latest)
 
