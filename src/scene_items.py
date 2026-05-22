@@ -416,7 +416,7 @@ class PerformerPointItem(QGraphicsEllipseItem):
         self.setFlag(QGraphicsEllipseItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
         self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
         self.setAcceptHoverEvents(True)
-        self.setZValue(400) # 确保在点位图层之上
+        self.setZValue(960) # 确保在点位图层之上
         self.setPos(center_scene_pos)   # 设置初始位置
         self._suspend_position_change = False
         self.set_selected_visual(selected)
