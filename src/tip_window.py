@@ -22,7 +22,7 @@ class TipWindow(QDialog):
                               "- 在对应拍子处双击可插入方案图\n"+
                               "  右键方案图节点可编辑\n\n"+
                               "- “选择”操作按 Shift 反转组内选择；按 Ctrl 可进行单点选择\n\n"+
-                              "- 场地坐标为负即不显示"), self)
+                              "- 场地坐标旋转角度为负则不显示"), self)
         self.tip_content.setWordWrap(True)
         self.tip_content.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         self.tip_content.setFocusPolicy(Qt.FocusPolicy.NoFocus)
