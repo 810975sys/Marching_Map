@@ -668,7 +668,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self.drawingControlDock.setDrawingRematchVisible(False)
             return
 
-        status = self.scene.get_drawing_rematch_status()
+        status = self.scene._drawing_rematch_snapshot()
         visible = bool(status.get("selected_ids"))
         self.drawingControlDock.setDrawingRematchVisible(visible)
         if not visible:
@@ -895,11 +895,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
         if not checked or self.activeToolName != "调整":
             return
         self.scene.set_adjustment_mode(mode_name)
-
-    # def _on_adjustment_rotation_changed(self, angle: float):
-    #     if self.activeToolName != "调整":
-    #         return
-    #     self.scene.set_adjustment_rotation(float(angle))
 
     def _on_control_confirmed(self):
         if self.activeToolName == "调整":

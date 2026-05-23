@@ -159,6 +159,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         # margin = max(width_px, height_px) * 0.5 + 200.0
         self.setSceneRect(initial_field_rect)
         
+        
         # 上一点位的绘制参数（用于预览上一节点的点位）
         self.pre_point_radius = 2.0
         self.pre_point_color = QColor("#444444")  # alpha 值控制透明度（0-255，值越大越不透明）
@@ -168,6 +169,9 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self.label_size = 12    # label 字体大小
         self.label_offset = 15  # label 相对于点位的距离
         self.label_pos = 6     # label 相对于点位的角度 以15°为单位，上限为24（360°），默认12（120° 下侧）
+        
+        #点位修改的参数
+        self.helper_radius = 12
 
         self.export_ratio = 3.0
 
@@ -490,9 +494,9 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             # 注：确认按钮的可用性由界面层决定，此处不再返回 confirm_enabled 字段以避免冗余。
         }
 
-    def get_drawing_rematch_status(self) -> dict:
-        """提供给主窗口的绘图重匹配状态快照。"""
-        return self._drawing_rematch_snapshot()
+    # def get_drawing_rematch_status(self) -> dict:
+    #     """提供给主窗口的绘图重匹配状态快照。"""
+    #     return self._drawing_rematch_snapshot()
 
     def start_drawing_rematch(self):
         """在绘图流程中清空匹配并从第一个预览点位重新分配。"""
@@ -915,7 +919,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         else:
             self._selection_rect_item.setRect(rect)
 
-    def _select_points_in_scene_rect(self, scene_rect: QRectF, tool_name: str):
+    def _select_points_in_scene_rect(self, scene_rect: QRectF, tool_name: str, event):
         """根据给定的场景矩形框选点位，更新选中状态并刷新显示。"""
         if scene_rect.width() <= 1e-6 and scene_rect.height() <= 1e-6:
             return
@@ -938,7 +942,11 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 for group_point_id in group_info.get("point_ids", []):
                     selected_ids.add(int(group_point_id))
 
-        self._selected_point_ids = selected_ids
+        modifiers = event.modifiers()
+        if (modifiers & Qt.KeyboardModifier.ControlModifier) and self.active_tool == "框选":
+            self._selected_point_ids.update(selected_ids)
+        else:
+            self._selected_point_ids = selected_ids
         self._refresh_point_selection_visuals()
 
     def _refresh_point_selection_visuals(self):
@@ -3024,7 +3032,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 rematch_snapshot["active"]
                 and int(point["id"]) in rematch_snapshot["selected_ids"]
             ):
-                helper_radius = 10.5
+                helper_radius = self.helper_radius
                 helper = QGraphicsEllipseItem(
                     pos.x() - helper_radius,
                     pos.y() - helper_radius,
@@ -3039,7 +3047,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 else:
                     helper_pen = QPen(QColor("#7f8c8d"), 1.4)
                 helper.setPen(helper_pen)
-                helper.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+                # 使用透明填充而不是 NoBrush，这样圆内部也会被视为可点击区域
+                helper.setBrush(QBrush(QColor(0, 0, 0, 0)))
                 helper.setZValue(230)
                 helper.setData(0, "drawing_rematch_helper")
                 helper.setData(1, point_id)
@@ -3172,10 +3181,10 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 event.accept()
                 return
 
+            modifiers = event.modifiers()
             if self.active_tool in {"框选", "选择"} and isinstance(item, PerformerPointItem):
                 # 框选时，对选中的单一点位进行拖拽修改位置。
                 selected_ids = set(self._selected_point_ids)
-                modifiers = event.modifiers()
                 if self.active_tool == "选择":
                     if (modifiers & Qt.KeyboardModifier.ShiftModifier):
                         group_point_ids = self._group_point_ids_for_point_id(item.point_id)
@@ -3194,7 +3203,10 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 else:
                     # 框选操作
                     selected_ids = {item.point_id}
-                self._selected_point_ids = selected_ids
+                if (modifiers & Qt.KeyboardModifier.ControlModifier) and self.active_tool == "框选":
+                    self._selected_point_ids.update(selected_ids)
+                else:
+                    self._selected_point_ids = selected_ids
                 self._refresh_point_selection_visuals()
                 self._clear_selection_rect()
                 super().mousePressEvent(event)
@@ -3204,7 +3216,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 # 点击框选工具下的空白区域：进入框选状态，记录起始场景坐标，清空当前选择并刷新视觉效果。
                 self._selection_start_position = QPointF(event.scenePos())
                 self._selection_current_position = QPointF(event.scenePos())
-                self._selected_point_ids.clear()
+                if not ((modifiers & Qt.KeyboardModifier.ControlModifier) and self.active_tool == "框选"):
+                    self._selected_point_ids.clear()
                 self._refresh_point_selection_visuals()
                 self._update_selection_rect_item()
                 event.accept()
@@ -3244,7 +3257,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 self._update_selection_rect_item()
                 # 实时更新被框选的点并刷新视觉反馈
                 scene_rect = QRectF(self._selection_start_position, self._selection_current_position).normalized()
-                self._select_points_in_scene_rect(scene_rect, self.active_tool)
+                self._select_points_in_scene_rect(scene_rect, self.active_tool, event)
                 event.accept()
                 return
 
@@ -3256,7 +3269,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             if self.active_tool in {"框选", "选择"} and self._selection_start_position is not None:
                 self._selection_current_position = QPointF(event.scenePos())
                 scene_rect = QRectF(self._selection_start_position, self._selection_current_position).normalized()
-                self._select_points_in_scene_rect(scene_rect, self.active_tool)
+                self._select_points_in_scene_rect(scene_rect, self.active_tool, event)
                 self._clear_selection_rect()
                 event.accept()
                 return
