@@ -95,7 +95,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
         saveAs.setShortcut("Ctrl+Shift+S")
         saveAs.triggered.connect(self._save_scheme_as)
         fileMenu.addSeparator()
-        fileMenu.addAction("导出为PDF")
+        export_pdf = fileMenu.addAction("导出为PDF")
+        export_pdf.triggered.connect(self._export_pdf)
         fileMenu.addSeparator()
         fileMenu.addAction("设置")  # 设置字号、点位大小、颜色、拖动框等全局设置
 
@@ -311,6 +312,30 @@ class MainWindow(MainWindowNotice, QMainWindow):
             return True
         except Exception as e:
             self._show_menu_notice(f"打开失败：{e}", failed=True)
+            return False
+
+    def _export_pdf(self, checked=False):
+        """将每个方案图节点导出为一页 A4 PDF。"""
+        default_name = "marching_map_export.pdf"
+        default_path = (
+            (self._scheme_file_path.with_suffix(".pdf") if self._scheme_file_path is not None else (scheme_default_dir() / default_name))
+        )
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出为 PDF",
+            str(default_path),
+            "PDF 文件 (*.pdf)",
+        )
+        if not file_path:
+            return False
+
+        try:
+            self.scene.export_pdf(file_path, self.timelineMainWidget.graph_list)
+            self._show_menu_notice(f"已导出：{Path(file_path).name}")
+            return True
+        except Exception as e:
+            self._show_menu_notice(f"导出失败：{e}", failed=True)
+            print(e)
             return False
 
     def _new_scheme(self, checked=False):

@@ -401,7 +401,7 @@ class TextBoxItem(QGraphicsObject):
 class PerformerPointItem(QGraphicsEllipseItem):
     """可拖拽的表演者点位图元（仅在框选工具下生效）。"""
 
-    def __init__(self, point_id: int, center_scene_pos: QPointF, moved_callback, released_callback, can_drag_callback, selected: bool, size: float = 10.0):
+    def __init__(self, point_id: int = 0, center_scene_pos: QPointF = QPointF(), moved_callback = None, released_callback = None, can_drag_callback = None, selected: bool = False, size: float = 10.0):
         self.radius = size / 2.0
         super().__init__(-self.radius, -self.radius, size, size)
         self.point_id = int(point_id)   # 点位ID，用于定位

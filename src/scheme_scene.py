@@ -2,6 +2,7 @@
 绘制方案图
 """
 import math
+from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QApplication,
@@ -13,9 +14,9 @@ from PyQt6.QtWidgets import (
     QGraphicsScene,
     QGraphicsSimpleTextItem,
 )
-from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QPainterPath, QPen, QPolygonF, QFont
-from field_info import FieldInfo
+from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal, QMarginsF
+from PyQt6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPolygonF, QFont, QPdfWriter, QPageSize, QPageLayout
+from field_info import FieldInfo, ZOOM_PERCENT_FACTOR
 from field_renderer import GridRenderer
 from scene_items import PerformerPointItem, ReferenceHandleItem, MovementControlHandleItem, TextBoxItem
 from scheme_scene_data import SchemeSceneData
@@ -167,6 +168,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self.label_size = 12    # label 字体大小
         self.label_offset = 15  # label 相对于点位的距离
         self.label_pos = 6     # label 相对于点位的角度 以15°为单位，上限为24（360°），默认12（120° 下侧）
+
+        self.export_ratio = 3.0
 
     def _reset_adjustment_state(self, reset_controls: bool = True):
         """重置调整会话状态与图元；可选是否同时重置模式与角度。"""
@@ -606,6 +609,232 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self.grid_renderer.draw_background_grid(painter, rect)
         self.grid_renderer.draw_field_lines(painter)
         self.grid_renderer.draw_field_labels(painter)
+
+    def _pdf_export_page_orientation(self) -> QPageLayout.Orientation:
+        """根据场地宽高选择 PDF 页面方向。"""
+        return (
+            QPageLayout.Orientation.Landscape
+            if float(self.field_info.field_width) >= float(self.field_info.field_height)
+            else QPageLayout.Orientation.Portrait
+        )
+
+    # def _pdf_export_font_scale_factor(self, export_scale: float) -> float:
+    #     """把导出字号换算到页面导出坐标系。"""
+    #     base_scale = 22.0
+    #     return max(0.1, float(export_scale) / base_scale)
+
+    def _pdf_export_content_padding(self, export_scale: float) -> tuple[float, float, float]:
+        """计算 PDF 内容区留白（水平、上、下），下侧留白约为上侧的两倍。
+
+        返回 (horizontal_padding, top_padding, bottom_padding)。
+        """
+        font_px = float(self.field_info.label_zoom) * export_scale
+        offset_px = max(float(abs(self.field_info.label_x_offset)) + font_px,
+                        float(abs(self.field_info.label_y_offset)) + font_px)
+
+        # 保持原先对水平留白的保护规则
+        horizontal_padding = max(128.0, offset_px * 5.0)
+
+        # 设定上/下不对称：上侧取较小的基准，下侧约为上侧的两倍并至少保持与旧逻辑相同的下限
+        top_padding = max(64.0, offset_px * 3.0)
+        bottom_padding = max(128.0, top_padding * 2.0)
+
+        return horizontal_padding, top_padding, bottom_padding
+
+    def _pdf_export_layout(self, page_rect: QRectF) -> tuple[float, QPointF]:
+        """计算导出缩放与偏移，给坐标标签预留页面边距。"""
+        field_rect = self.field_info.field_rect
+        field_width = float(field_rect.width())
+        field_height = float(field_rect.height())
+        page_width = float(page_rect.width())
+        page_height = float(page_rect.height())
+
+        # 初步以页面尺寸估算缩放，再根据留白重新计算最终缩放与偏移。
+        export_scale = min(page_width / field_width, page_height / field_height)
+
+        hpad, top_pad, bottom_pad = self._pdf_export_content_padding(export_scale)
+        content_left = float(page_rect.left()) + hpad
+        content_top = float(page_rect.top()) + top_pad
+        content_width = page_width - hpad * 2.0
+        content_height = page_height - top_pad - bottom_pad
+
+        export_scale = min(content_width / field_width, content_height / field_height)
+
+        # 重新基于最终缩放计算留白（以应对 label 尺寸随缩放变化）
+        hpad, top_pad, bottom_pad = self._pdf_export_content_padding(export_scale)
+        content_left = float(page_rect.left()) + hpad
+        content_top = float(page_rect.top()) + top_pad
+        content_width = page_width - hpad * 2.0
+        content_height = page_height - top_pad - bottom_pad
+
+        export_scale = min(content_width / field_width, content_height / field_height)
+
+        offset_x = content_left + (content_width - field_width * export_scale) / 2.0 - float(field_rect.left()) * export_scale
+        offset_y = content_top + (content_height - field_height * export_scale) / 2.0 - float(field_rect.top()) * export_scale
+        return export_scale, QPointF(offset_x, offset_y)
+
+    def _make_pdf_export_field_info(self, export_scale: float, export_offset: QPointF) -> FieldInfo:
+        """复制一份场地配置供 PDF 导出使用。"""
+        export_field_info = FieldInfo(None)
+        export_field_info.load_from_dict(self.field_info.to_dict())
+        # 导出缩放不走 FieldInfo.set_scale，避免被 SCALE_MAX 裁剪。
+        export_field_info.scale = export_scale
+        export_field_info.label_zoom = self.field_info.label_zoom / self.export_ratio
+        export_field_info.set_offset(float(export_offset.x()), float(export_offset.y()))
+        return export_field_info
+
+    def _draw_pdf_export_background(self, painter: QPainter, scene_rect: QRectF, export_scale: float, export_offset: QPointF):
+        """按导出坐标系绘制背景网格、场地线和坐标。"""
+        export_field_info = self._make_pdf_export_field_info(export_scale, export_offset)
+        export_grid_renderer = GridRenderer(export_field_info)
+        field_rect = self.field_info.field_rect
+        field_scene_rect = QRectF(
+            float(field_rect.left()) * export_scale + float(export_offset.x()),
+            float(field_rect.top()) * export_scale + float(export_offset.y()),
+            float(field_rect.width()) * export_scale,
+            float(field_rect.height()) * export_scale,
+        )
+        export_grid_renderer.draw_background_grid(painter, field_scene_rect)
+        export_grid_renderer.draw_field_lines(painter)
+        export_grid_renderer.draw_field_labels(painter)
+
+    def _add_pdf_export_point_items(self, scene: QGraphicsScene, point: dict, export_scale: float, export_offset: QPointF):
+        """向临时导出场景添加一个点位及其标签。"""
+        field_x = float(point.get("x", 0.0))
+        field_y = float(point.get("y", 0.0))
+        pos = QPointF(field_x * export_scale + float(export_offset.x()), field_y * export_scale + float(export_offset.y()))
+        # font_scale = self._pdf_export_font_scale_factor(export_scale)
+        font_scale = export_scale
+        size_scale = font_scale
+
+        # point_item = PerformerPointItem()
+        dot_radius = 5.0 * self.export_ratio
+        dot = QGraphicsEllipseItem(pos.x() - dot_radius, pos.y() - dot_radius, dot_radius * 2.0, dot_radius * 2.0)
+        dot.setPen(QPen(Qt.PenStyle.NoPen))
+        dot.setBrush(QBrush(QColor("#2aa6ff")))
+        dot.setZValue(960)
+        scene.addItem(dot)
+
+        label = QGraphicsSimpleTextItem(str(int(point.get("id", 0))))
+        font = QFont()
+        font.setPointSizeF(float(self.label_size * self.export_ratio))
+        label.setFont(font)
+        label.setBrush(QBrush(self.label_color))
+        angle_deg = (int(self.label_pos) % 24) * 15
+        angle_rad = math.radians(angle_deg)
+        dx = math.cos(angle_rad) * float(self.label_offset) * self.export_ratio
+        dy = math.sin(angle_rad) * float(self.label_offset) * self.export_ratio
+        br = label.boundingRect()
+        label.setPos(pos.x() + dx - br.width() / 2.0, pos.y() + dy - br.height() / 2.0)
+        label.setZValue(965)
+        scene.addItem(label)
+
+    def _add_pdf_export_textbox_items(self, scene: QGraphicsScene, textbox: dict, export_scale: float, export_offset: QPointF):
+        """向临时导出场景添加一个文本框。"""
+        from scene_items import TextBoxItem
+        # font_scale = self._pdf_export_font_scale_factor(export_scale)
+        font_scale = export_scale
+        p1 = QPointF(float(textbox.get("x1", 0.0)) * export_scale + float(export_offset.x()), float(textbox.get("y1", 0.0)) * export_scale + float(export_offset.y()))
+        p2 = QPointF(float(textbox.get("x2", 0.0)) * export_scale + float(export_offset.x()), float(textbox.get("y2", 0.0)) * export_scale + float(export_offset.y()))
+        rect = QRectF(p1, p2).normalized()
+        item = TextBoxItem(
+            textbox_id=int(textbox.get("id", 0)),
+            rect=rect,
+            text=str(textbox.get("text", "")),
+            font_size=max(1, int(round(float(textbox.get("font_size", self._textbox_font_size)) * self.export_ratio))),
+            selection_requested_callback=None,
+            text_changed_callback=None,
+        )
+        item.set_selected(False)
+        item.set_editable(False)
+        item.set_mouse_interactive(False)
+        item.setZValue(100)
+        scene.addItem(item)
+
+    def _build_pdf_export_scene(self, node_index: int, page_cnt: int, export_scale: float, export_offset: QPointF) -> QGraphicsScene:
+        """为单个方案图节点构建临时导出场景。"""
+        export_scene = QGraphicsScene()
+        # node_index = node_index
+        # if node_index > 0:
+        for point in self.node_points.get(node_index, []):
+            pos = QPointF(float(point.get("x", 0.0)) * export_scale + float(export_offset.x()), float(point.get("y", 0.0)) * export_scale + float(export_offset.y()))
+            # pre_dot_radius = 2.0 * self._pdf_export_font_scale_factor(export_scale)
+            pre_dot_radius = self.pre_point_radius * self.export_ratio
+            pre_dot = QGraphicsEllipseItem(pos.x() - pre_dot_radius, pos.y() - pre_dot_radius, pre_dot_radius * 2.0, pre_dot_radius * 2.0)
+            pre_dot.setPen(QPen(Qt.PenStyle.NoPen))
+            pre_dot.setBrush(QBrush(self.pre_point_color))
+            pre_dot.setZValue(950)
+            export_scene.addItem(pre_dot)
+        for point in self.node_points.get(node_index, []):
+            self._add_pdf_export_point_items(export_scene, point, export_scale, export_offset)
+        for textbox in self.node_textboxes.get(node_index, []):
+            self._add_pdf_export_textbox_items(export_scene, textbox, export_scale, export_offset)
+        return export_scene
+
+    def export_pdf(self, file_path: str | Path, cnt_per_page: list[int] | None = None):
+        """将每个方案图节点导出为一页 A4 PDF。"""
+        output_path = Path(file_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        writer = QPdfWriter(str(output_path))
+        writer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+        writer.setPageOrientation(self._pdf_export_page_orientation())
+        writer.setPageMargins(QMarginsF(0, 0, 0, 0))
+        writer.setTitle("Marching Map Export")
+        writer.setCreator("Marching Map Editor")
+        writer.setResolution(300)
+
+        page_rect = QRectF(writer.pageLayout().paintRectPixels(writer.resolution()))
+        if page_rect.isNull() or page_rect.width() <= 0 or page_rect.height() <= 0:
+            page_rect = QRectF(writer.pageLayout().fullRectPixels(writer.resolution()))
+
+        # indexes = list(range(len(self.node_points))) if node_indexes is None else [max(0, int(idx)) for idx in node_indexes]
+        # if not indexes:
+        #     indexes = [0]
+
+        painter = QPainter(writer)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+            export_scale, export_offset = self._pdf_export_layout(page_rect)
+            for node_index, page_cnt in enumerate(cnt_per_page):
+                if node_index > 0:
+                    writer.newPage()
+                export_scene = self._build_pdf_export_scene(node_index, page_cnt, export_scale, export_offset)
+                export_scene.setSceneRect(page_rect)
+
+                painter.save()
+                self._draw_pdf_export_background(painter, page_rect, export_scale, export_offset)
+                export_scene.render(painter, page_rect, page_rect, Qt.AspectRatioMode.IgnoreAspectRatio)
+                painter.restore()
+
+                # 在下侧留白区域绘制页脚文本，左对齐、上对齐，并紧贴内容区下边缘显示
+                field_rect = self.field_info.field_rect
+                page_height = float(page_rect.height())
+                padding = min(self._pdf_export_content_padding(export_scale))
+                content_bottom = float(page_rect.bottom())
+                content_top = float(page_rect.top())
+                content_height = page_height - padding
+                footer_rect = QRectF(
+                    250,
+                    export_offset.y() * 2, 
+                    field_rect.width() * export_scale,
+                    padding,
+                )
+
+                font = QFont()
+                font.setPointSizeF(12)
+                painter.setFont(font)
+                painter.setPen(QPen(QColor("#000000")))
+
+                if node_index == 0:
+                    footer_text = f'set：#{node_index+1}'
+                else:
+                    footer_text = f'set：#{node_index+1}   节拍：{page_cnt}'
+                painter.drawText(footer_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, footer_text)
+
+        finally:
+            painter.end()
 
     def _clear_overlay_items(self):
         """清除当前所有点位与标签图元，准备重建。"""
