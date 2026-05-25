@@ -262,6 +262,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
     def _set_selected_textbox_id(self, textbox_id: int | None, *, refresh: bool = True):
         self._selected_textbox_id = int(textbox_id) if textbox_id is not None else None
         self._emit_textbox_selection_changed()
+        self._sync_textbox_item_states()
         if refresh and self.active_tool == "文本":
             self._render_points_for_active_node()
 
@@ -311,6 +312,23 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self._textbox_items_by_id[tb_id] = item
             item.set_selected(tb_id == self._selected_textbox_id)
             item.set_editable(self.active_tool == "文本" and self._is_current_beat_editable() and tb_id == self._selected_textbox_id)
+
+    def _sync_textbox_item_states(self):
+        if not self._textbox_items:
+            return
+
+        is_text_mode = self.active_tool == "文本"
+        is_editable = is_text_mode and self._is_current_beat_editable()
+        selected_id = self._selected_textbox_id
+        for item in self._textbox_items:
+            tb_id = int(item.textbox_id)
+            item.set_selected(tb_id == selected_id)
+            item.set_editable(is_editable and tb_id == selected_id)
+
+        if is_text_mode:
+            self._clear_textbox_handles()
+            if is_editable and selected_id is not None:
+                self._rebuild_textbox_handles()
 
     def _rebuild_textbox_handles(self):
         self._clear_textbox_handles()
@@ -3112,7 +3130,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                         self._textbox_pending_points = []
                         self._set_selected_textbox_id(textbox_id, refresh=False)
                     super().mousePressEvent(event)
-                    self._render_points_for_active_node()
                     textbox_item = self._textbox_items_by_id.get(textbox_id) if textbox_id is not None else None
                     if textbox_item is not None:
                         textbox_item.focus_editor()
