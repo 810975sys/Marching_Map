@@ -132,6 +132,17 @@ class DrawingControlDock(QDockWidget):
         textbox_layout.addWidget(self.deleteTextBoxButton)
         layout.addWidget(self.textBoxWidget)
 
+        self.groupWidget = QWidget(content)
+        group_layout = QVBoxLayout(self.groupWidget)
+        group_layout.setContentsMargins(0, 0, 0, 0)
+        group_layout.setSpacing(6)
+        self.group_split_button = QPushButton("重新分组", self.groupWidget)
+        self.group_set_next_button = QPushButton("下一组", self.groupWidget)
+        group_layout.addWidget(self.group_split_button)
+        group_layout.addWidget(self.group_set_next_button)
+        # 将分组面板加入主布局，初始可见性由主窗口控制
+        layout.addWidget(self.groupWidget)
+
         self.confirmButton = QPushButton("确认 Enter", content)   # 确认按钮，完成绘制并清空草稿状态
         self._confirm_shortcut_enter = QShortcut(QKeySequence(Qt.Key.Key_Return), self)  # 绑定快捷键
         self._confirm_shortcut_enter.setContext(Qt.ShortcutContext.ApplicationShortcut) # 设置快捷方式上下文为应用程序级，确保在任何情况下按下 Enter 都能触发确认操作
@@ -303,6 +314,10 @@ class DrawingControlDock(QDockWidget):
     def setDeleteTextBoxEnabled(self, enabled: bool):
         """设置删除文本框按钮可用状态。"""
         self.deleteTextBoxButton.setEnabled(bool(enabled))
+        
+    def setGroupSettingVisible(self, visible: bool):
+        """设置分组设置控制区可见性。"""
+        self.groupWidget.setVisible(bool(visible))
 
     def setTextBoxFontSize(self, value: int):
         """设置文本框字号显示值。"""

@@ -59,6 +59,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         # }
         self._drawing_tools = {"点", "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形"}
         self._text_tools = {"文本"}
+        self._group_tools = {"分组"}
         self._select_tools = {"选择", "框选"}
         self._transform_tools = {"调整", "跟随", "路径", "间隔行进"}
         self._p0_forbidden_transform_tools = {"跟随", "路径", "间隔行进"}
@@ -401,10 +402,11 @@ class MainWindow(MainWindowNotice, QMainWindow):
         rows = 2  # 每组工具的行数
         # 工具分组及布局（每组：按钮文本列表，行数，列数）
         tool_groups = [
-            ['选择', '框选'],  # 选择工具
-            ['点', '线段', '弧', '曲线/折线', '填充四边形', '圆', '多边形'],  # 绘制工具
-            ['调整', '跟随', '路径', '间隔行进'],  # 变换工具
-            ['标签', '文本', '箭头']  # 标注工具
+            ['选择', '框选'],   # 选择工具
+            ['点', '线段', '弧', '曲线/折线', '填充四边形', '圆', '多边形'],    # 绘制工具
+            ['调整', '分组'],   # 调整工具
+            ['跟随', '路径', '间隔行进'],   # 变换工具
+            ['标签', '文本', '箭头']    # 标注工具
         ]
         
         # 创建按钮组并设为互斥模式，确保工具按钮单选
@@ -470,6 +472,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             '曲线/折线': "确定曲线/折线的经过点；拖动空心矩形可对单点进行修正。",
             '文本': "确定对角点绘制文本框",
             '调整': "拖动角点与中心点调整所选点位",
+            '分组': "对点位分组进行连接、分割", 
         }
         self.drawingControlDock.statusLabel.setText(tool_text.get(tool_name, ""))
 
@@ -606,6 +609,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.drawingControlDock.setAdjustmentControlsVisible(tool_name == "调整")
         self.drawingControlDock.setDrawingRematchVisible(False)
         self.drawingControlDock.setTextBoxControlsVisible(tool_name == "文本")
+        self.drawingControlDock.setGroupSettingVisible(tool_name == "分组")
         if tool_name == "调整":
             # self.drawingControlDock.setOperationLabels("确认调整 Enter", "取消调整 Esc")
             self.drawingControlDock.setSamplingToolVisible(None, False)
@@ -625,6 +629,15 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self.drawingControlDock.cancelButton.setEnabled(True)
             self.drawingControlDock.setTextBoxFontSize(int(getattr(self.scene, "_textbox_font_size", 14)))
             self.drawingControlDock.setDeleteTextBoxEnabled(False)
+            return
+
+        if tool_name == "分组":
+            self.drawingControlDock.setSamplingToolVisible(None, False)
+            self.drawingControlDock.setCurveModeVisible(False)
+            self.drawingControlDock.setDraftActive(False)
+            self.scene.start_temp_group_edit_from_selection()   # 初始化临时分组
+            self.drawingControlDock.confirmButton.setEnabled(True)
+            self.drawingControlDock.cancelButton.setEnabled(True)
             return
 
         # self.drawingControlDock.setOperationLabels("确认绘制 Enter", "取消绘制 Esc")
@@ -766,6 +779,18 @@ class MainWindow(MainWindowNotice, QMainWindow):
             if btn is not None:
                 btn.setEnabled(beat_at_node and has_selection and not (is_p0 and name in self._p0_forbidden_transform_tools))
 
+    def updateGroupToolAvailability(self, beat: int, selected_count: int):
+        """根据当前节点和选中点位数量，控制分组工具可用性并在必要时回退工具。"""
+        can_group = int(selected_count) >= 2
+        beat_at_node = self.timelineMainWidget.node_index_at_beat(beat) is not None
+        for name in self._group_tools:
+            btn = self.toolButtons.get(name)
+            if btn is not None:
+                btn.setEnabled(beat_at_node and can_group)
+        # 如果当前处于分组工具但不满足分组条件，回退到框选
+        if self.activeToolName in self._group_tools and not can_group:
+            self._set_active_tool("框选")
+
     def updateContextToolAvailability(self, beat: int, selected_count: int):
         """根据当前节点和选中点位数量，控制绘制与变换工具可用性。"""
         is_p0 = int(beat) == 0
@@ -773,6 +798,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
         self.updateDrawToolAvailability(beat, has_selection)
         self.updateConvertToolAvailability(beat, has_selection)
+        self.updateGroupToolAvailability(beat, selected_count)
 
         # 自动切换工具：如果当前工具不可用，且没有选中点位，则切换到框选；如果在P0且当前工具在P0禁止列表中，也切换到框选。
         if not (is_p0 or has_selection) and (self.activeToolName in self._drawing_tools | self._transform_tools):
@@ -879,6 +905,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.drawingControlDock.setSamplingToolVisible(None, False)
         self.drawingControlDock.setCurveModeVisible(False)
         self.drawingControlDock.setTextBoxControlsVisible(False)
+        self.drawingControlDock.setGroupSettingVisible(False)
         self.drawingControlDock.confirmButton.clicked.connect(self._on_control_confirmed)
         self.drawingControlDock.cancelButton.clicked.connect(self._on_control_cancelled)
         self.drawingControlDock.deleteTextBoxButton.clicked.connect(self._on_delete_textbox_requested)
@@ -890,6 +917,9 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.drawingControlDock.rotationAngleSpin.valueChanged.connect(self.scene.set_adjustment_rotation)
         for mode_name, button in self.drawingControlDock.adjustModeButtons.items():
             button.toggled.connect(lambda checked=False, mode=mode_name: self._on_adjustment_mode_toggled(mode, checked))
+        # 分组按钮连接
+        self.drawingControlDock.group_split_button.clicked.connect(self.scene.clear_temp_groups)
+        self.drawingControlDock.group_set_next_button.clicked.connect(self.scene.set_next_temp_group)
 
     def _on_adjustment_mode_toggled(self, mode_name: str, checked: bool):
         if not checked or self.activeToolName != "调整":
@@ -902,11 +932,31 @@ class MainWindow(MainWindowNotice, QMainWindow):
         elif self.activeToolName == "文本":
             if self.scene.confirm_textbox_preview() is False:
                 return
+        elif self.activeToolName == "分组":
+            # 将临时分组写回并退出分组模式
+            self.scene.confirm_temp_groups()
         else:
             if self.scene.confirm_current_drawing() is False:
                 self._sync_drawing_rematch_controls()
                 return
         self.onToolButtonClicked("框选")  # 草稿完成后自动切回选择工具
+
+    def _on_control_cancelled(self):
+        if self.activeToolName == "调整":
+            self.scene.cancel_current_adjustment()
+            self.drawingControlDock.setAdjustmentMode(self.scene._adjustment_mode)
+            self.drawingControlDock.setAdjustmentRotation(self.scene._adjustment_rotation)
+            return
+        if self.activeToolName == "文本":
+            self.scene.cancel_textbox_preview()
+            self.drawingControlDock.setDeleteTextBoxEnabled(False)
+            return
+        if self.activeToolName == "分组":
+            # 取消分组编辑：清除临时分组预览，但保留绘制控制台的内容与可见性
+            self.scene.clear_temp_groups()
+            self.onToolButtonClicked("框选")
+            return
+        self.scene.cancel_current_drawing()
 
     def _on_drawing_rematch_requested(self):
         if self.scene.start_drawing_rematch():
@@ -923,18 +973,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
     def _on_drawing_match_keep_requested(self):
         if self.scene.drawing_match_keep():
             self._sync_drawing_rematch_controls()
-
-    def _on_control_cancelled(self):
-        if self.activeToolName == "调整":
-            self.scene.cancel_current_adjustment()
-            self.drawingControlDock.setAdjustmentMode(self.scene._adjustment_mode)
-            self.drawingControlDock.setAdjustmentRotation(self.scene._adjustment_rotation)
-            return
-        if self.activeToolName == "文本":
-            self.scene.cancel_textbox_preview()
-            self.drawingControlDock.setDeleteTextBoxEnabled(False)
-            return
-        self.scene.cancel_current_drawing()
 
     def _on_delete_textbox_requested(self):
         if self.activeToolName != "文本":
@@ -1072,6 +1110,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.drawingControlDock.confirmButton.setEnabled(False)
         self.drawingControlDock.cancelButton.setEnabled(False)
         self._sync_drawing_rematch_controls()
+        # 隐藏分组面板（非分组工具时）
+        self.drawingControlDock.setGroupSettingVisible(False)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

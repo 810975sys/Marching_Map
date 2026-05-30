@@ -138,6 +138,14 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._selection_start_position = None      # 框选工具的起始场景坐标，记录鼠标按下时的位置，用于计算选区矩形；仅在框选工具激活时有效，切换工具时会被清除。
         self._selection_current_position = None    # 框选工具的当前场景坐标，记录鼠标拖动时的位置，用于计算选区矩形；仅在框选工具激活时有效，切换工具时会被清除。
         self._selection_link_items = []     # 选中点位之间的连线图元，仅连接每个组内被选中的点。
+        # 临时分组编辑状态（由 DrawingControlDock 驱动）
+        self._temp_group_to_point: list[list[int]] = [[]]  # 临时分组点位列表
+        # self._temp_2_saving: list[list[int]] = []   # 修改分组涉及的原组值，写回时需要修改 node_to_group
+        self._temp_group_original_snapshot = None  # 原始 group_to_point/node_to_group 快照
+        self._temp_group_current_index = 0
+        self._temp_group_mark_head: bool = True  # True=默认在 tail 之后插入（用户偏好标记）
+        self._temp_group_line_items = []  # 临时分组连线图元
+        self._temp_group_helper_items = []  # 临时分组用的 helper 圆圈图元
         self._rematch_helper_items = []     # 绘图重匹配时的原点位辅助选择圈图元
         self._point_items_by_id = {}    # 当前显示的点位图元字典，key为点位ID，value为对应的 PerformerPointItem 图元；用于快速定位与更新特定点位的图元。
         self._label_items_by_id = {}    # 当前显示的标签图元字典，key为点位ID，value为对应的 QGraphicsSimpleTextItem 图元；用于快速定位与更新特定点位的标签图元。
@@ -881,6 +889,16 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         previous_tool = self.active_tool
         if previous_tool == "文本" and tool_name != "文本":
             self._exit_textbox_mode()
+        if previous_tool == "分组" and tool_name != "分组":
+            self.clear_temp_groups()
+            
+        if tool_name in {"选择", "框选"}:
+            self._selected_point_ids.clear()
+    
+        if self._selected_point_ids:
+            self.sync_sampling_values_from_selection(previous_tool)
+        else:
+            self.reset_sampling_defaults(previous_tool)
 
         self.active_tool = tool_name
         self._pending_points = []   # 清空草稿点位
@@ -982,6 +1000,459 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         for item in self._selection_link_items:
             self.removeItem(item)
         self._selection_link_items = []
+        
+    def _draw_temp_group_links(self, groups: list[list[int]]):
+        """在当前场景中临时绘制指定点位之间的连线（不修改 _selection_link_items）。"""
+        self._temp_group_line_items = []
+        pen = QPen(QColor("#f39c12"), 2, Qt.PenStyle.SolidLine)
+        pen.setCosmetic(True)
+
+        for idx, group in enumerate(groups):
+            if len(group) < 2:
+                continue
+            if idx == self._temp_group_current_index:
+                pen.setColor(QColor("#00cc00"))
+                pen.setWidth(3)
+            else:
+                pen.setColor(QColor("#f39c12"))
+                pen.setWidth(2)
+            previous_point_id = group[0]
+            for current_point_id in group[1:]:
+                previous_item = self._point_items_by_id.get(previous_point_id)
+                current_item = self._point_items_by_id.get(current_point_id)
+                if previous_item is not None and current_item is not None:
+                    previous_pos = previous_item.scenePos()
+                current_pos = current_item.scenePos()
+                line_item = QGraphicsLineItem(
+                    previous_pos.x(),
+                    previous_pos.y(),
+                    current_pos.x(),
+                    current_pos.y(),
+                )
+                line_item.setPen(pen)
+                line_item.setZValue(150)
+                self.addItem(line_item)
+                self._temp_group_line_items.append(line_item)
+                previous_point_id = current_point_id
+
+    def _clear_temp_group_items(self):
+        """清除临时分组绘制的线与 helper 圆。"""
+        for it in getattr(self, "_temp_group_line_items", []):
+            self.removeItem(it)
+        self._temp_group_line_items = []
+        for it in getattr(self, "_temp_group_helper_items", []):
+            self.removeItem(it)
+        self._temp_group_helper_items = []
+
+    def _update_temp_group_visuals(self):
+        """绘制临时分组的连线与首尾 helper（仅首尾响应鼠标事件）。"""
+        if self.active_tool != "分组":
+            self._clear_temp_group_items()
+            return
+        # 先移除之前临时项目
+        self._clear_temp_group_items()
+        groups = self._temp_group_to_point
+        grouped_point_ids = {int(pid) for group in groups for pid in group}
+        # 绘制连线（使用已有函数）——只有在有临时组时绘制连线
+        if groups:
+            self._draw_temp_group_links(groups)
+
+        # 为每组的首尾点添加 helper 圆（可点击区域），仅针对当前选中的点
+        for idx, group in enumerate(groups):
+            if not group:
+                continue
+            first_id = int(group[0])
+            last_id = int(group[-1]) if len(group) > 1 else first_id
+            for pid in (first_id, last_id):
+                item = self._point_items_by_id.get(int(pid))
+                if item is None:
+                    continue
+                pos = item.scenePos()
+                helper_radius = getattr(self, "helper_radius", 12)
+                helper = QGraphicsEllipseItem(
+                    pos.x() - helper_radius,
+                    pos.y() - helper_radius,
+                    helper_radius * 2,
+                    helper_radius * 2,
+                )
+                helper.setPen(QPen(QColor("#000000"), 1.4))
+                # 填充颜色：如果是当前临时组且与插入标记匹配，则填红
+                is_current_group = (idx == self._temp_group_current_index)
+                mark_head = self._temp_group_mark_head
+                fill_red = False
+                if is_current_group and group:
+                    if mark_head and int(pid) == int(group[-1]):
+                        fill_red = True
+                    elif (not mark_head) and int(pid) == int(group[0]):
+                        fill_red = True
+                if fill_red:
+                    helper.setBrush(QBrush(QColor("#ff4d4d")))
+                else:
+                    helper.setBrush(QBrush(QColor(0, 0, 0, 0)))
+                helper.setZValue(240)
+                helper.setData(0, "temp_group_helper")
+                helper.setData(1, int(pid))
+                # 兼容符号标记，供外部或导出检查使用
+                helper.setData(2, "#sym:helper")
+                self.addItem(helper)
+                self._temp_group_helper_items.append(helper)
+
+        # 为所有当前未归入任何组的点也添加 helper（标记为 #sym:helper）
+        existing_helper_pids = {int(it.data(1)) for it in getattr(self, "_temp_group_helper_items", []) if it.data(1) is not None}
+        for point in self.node_points.get(self.active_node, []):
+            pid = int(point.get("id", 0))
+            if pid in grouped_point_ids:
+                continue
+            if pid in existing_helper_pids:
+                continue
+            if pid not in self._selected_point_ids:
+                continue
+            item = self._point_items_by_id.get(pid)
+            if item is None:
+                continue
+            pos = item.scenePos()
+            helper_radius = getattr(self, "helper_radius", 12)
+            helper = QGraphicsEllipseItem(
+                pos.x() - helper_radius,
+                pos.y() - helper_radius,
+                helper_radius * 2,
+                helper_radius * 2,
+            )
+            helper.setPen(QPen(QColor("#000000"), 1.4))
+            helper.setBrush(QBrush(QColor(0, 0, 0, 0)))
+            helper.setZValue(240)
+            helper.setData(0, "temp_group_helper")
+            helper.setData(1, pid)
+            helper.setData(2, "#sym:helper")
+            self.addItem(helper)
+            self._temp_group_helper_items.append(helper)
+            
+        self._render_points_for_active_node()
+
+    def start_temp_group_edit_from_selection(self):
+        """基于当前选中点初始化临时分组：仅包含选中点本身，不扩张到原组其余点。"""
+        selected = set(getattr(self, "_selected_point_ids", set()))
+        if not selected:
+            return
+        # 保存原始快照
+        self._temp_group_original_snapshot = (list(self.group_to_point), [set(s) for s in self.node_to_group])
+        selected_in_scene_order = [int(point.get("id", -1)) for point in self.node_points.get(self.active_node, []) if int(point.get("id", -1)) in selected]
+        temp_groups: list[list[int]] = []
+        grouped_selected_ids: set[int] = set()
+        for group in self.group_to_point:
+            group_selected = [int(point_id) for point_id in group.get("point_ids", []) if int(point_id) in selected]
+            if group_selected:
+                temp_groups.append(group_selected)
+                grouped_selected_ids.update(group_selected)
+        ungrouped_selected = [point_id for point_id in selected_in_scene_order if point_id not in grouped_selected_ids]
+        if ungrouped_selected:
+            temp_groups.append(ungrouped_selected)
+        if not temp_groups:
+            temp_groups = [selected_in_scene_order or sorted(int(x) for x in selected)]
+        self._temp_group_to_point = temp_groups
+        self._temp_group_current_index = 0
+        # 重置首/尾标记为默认（tail 之后）
+        self._temp_group_mark_head = True
+        self._update_temp_group_visuals()
+    
+    def clear_temp_groups(self):
+        """清空临时分组（由 dock 的重新分组按钮触发）。"""
+        self._temp_group_to_point = [[]]
+        self._temp_group_current_index = 0
+        self._temp_group_original_snapshot = None
+        self._temp_group_mark_head = True
+        self._clear_selection_rect()
+        self._clear_temp_group_items()
+        self._render_points_for_active_node()
+        QTimer.singleShot(0, self._update_temp_group_visuals)
+
+    def set_next_temp_group(self):
+        """
+        切换到下一临时组；若末尾则追加空组并切换到该组。
+        逻辑：
+            - 如果未分组的点个数 < 2，则在已有组中循环切换（不新增）。
+            - 否则（未分组点数 >= 2）：
+                - 若当前索引指向最后一组且该组非空，则新增空组并切换过去，同时重置标记。
+                - 否则在已有组中循环切换。
+        """
+        # 获取当前未分组的点个数
+        grouped = {int(pid) for group in self._temp_group_to_point for pid in group}
+        unassigned_count = sum(1 for pid in self._selected_point_ids if pid not in grouped)
+
+        # 当未分组点数不足2时，仅循环切换已有组
+        if unassigned_count < 2:
+            # 循环到下一组（至少存在一个组，否则需要提前初始化）
+            self._temp_group_current_index = (self._temp_group_current_index + 1) % len(self._temp_group_to_point)
+        else:
+            # 未分组点数 >= 2
+            total_groups = len(self._temp_group_to_point)
+            current_group = self._temp_group_to_point[self._temp_group_current_index]
+
+            # 判断是否为最后一组且当前组非空
+            if self._temp_group_current_index == total_groups - 1 and current_group:
+                # 新增一个空组
+                self._temp_group_to_point.append([])
+                # 重置标记为“tail 之后”的状态
+                self._temp_group_mark_head = True
+                # 切换到新组
+                self._temp_group_current_index += 1
+            else:
+                # 循环切换到下一组
+                self._temp_group_current_index = (self._temp_group_current_index + 1) % total_groups
+        
+        self._update_temp_group_visuals()
+
+    def add_point_ids_to_current_temp_group(self, 
+                                            src_group: list[int], # 需合并的点位 id 列表
+                                            clicked_point_id: int = None): # 点击的点位 id
+        """将给定点位（或组内点位）加入当前临时组。
+
+        插入依据 `self._temp_group_mark_head`（默认视为 True）：
+        - True 表示在 tail 之后（append），
+        - False 表示在 head 之前（prepend）
+        """
+        # 确保存在当前组
+        # if self._temp_group_current_index is None:
+        #     self._temp_group_to_point.append([])
+        #     self._temp_group_current_index = len(self._temp_group_to_point) - 1
+
+        dst_idx = self._temp_group_current_index
+        dst_group = self._temp_group_to_point[dst_idx]
+        dst_mark = self._temp_group_mark_head # True：tail后插入；False：head前插入
+        origin_src_group = src_group
+        
+        if clicked_point_id == src_group[0]:
+            src_mark = False    # 点击了 src 的首节点
+        elif clicked_point_id == src_group[-1]:
+            src_mark = True     # 点击了 src 的尾节点
+        
+        if dst_mark == src_mark:
+            src_group = list(reversed(src_group))
+            
+        if dst_mark:
+            self._temp_group_to_point[dst_idx].extend(src_group)
+        else:
+            self._temp_group_to_point[dst_idx] = src_group + dst_group
+
+        src_idx = None
+        for index, group in enumerate(self._temp_group_to_point):
+            if group == origin_src_group:
+                src_idx = index
+                break
+        if src_idx is not None and src_idx != dst_idx:
+            self._temp_group_to_point.pop(src_idx)
+            if src_idx < dst_idx:
+                self._temp_group_current_index = dst_idx - 1 if len(src_group) > 1 else dst_idx
+
+        self._update_temp_group_visuals()
+        
+    def confirm_temp_groups(self):
+        """将临时分组写回到真实的 group_to_point 和 node_to_group 中。
+        
+        更新范围：从 self.active_node 开始，一直向后直到（但不包括）第一个手动编辑节点。
+        """
+        if not getattr(self, "_temp_group_to_point", None):
+            return
+
+        # ========== 1. 过滤临时分组 ==========
+        filtered_temp_groups = []
+        assigned_point_ids = set()
+        for group in self._temp_group_to_point:
+            normalized_group = []
+            seen_in_group = set()
+            for point_id in group:
+                point_id = int(point_id)
+                if point_id in seen_in_group or point_id in assigned_point_ids:
+                    continue
+                seen_in_group.add(point_id)
+                normalized_group.append(point_id)
+            if len(normalized_group) >= 2:
+                filtered_temp_groups.append(normalized_group)
+                assigned_point_ids.update(normalized_group)
+
+        if not filtered_temp_groups:
+            self.clear_temp_groups()
+            self._render_points_for_active_node()
+            return
+
+        # ========== 2. 复用或新建分组（group_to_point） ==========
+        existing_group_map = {
+            tuple(int(pid) for pid in group.get("point_ids", [])): gid
+            for gid, group in enumerate(self.group_to_point)
+        }
+        temp_group_to_group_id = {}
+        for temp_group in filtered_temp_groups:
+            key = tuple(temp_group)
+            gid = existing_group_map.get(key)
+            if gid is None:
+                gid = len(self.group_to_point)
+                self.group_to_point.append({
+                    "point_ids": list(key),
+                    "leader": True,
+                })
+                existing_group_map[key] = gid
+            temp_group_to_group_id[key] = gid
+
+        # ========== 3. 点 -> 新组ID 映射 ==========
+        point_to_new_group = {}
+        for temp_group in filtered_temp_groups:
+            gid = temp_group_to_group_id[tuple(temp_group)]
+            for pid in temp_group:
+                point_to_new_group[int(pid)] = gid
+
+        # ========== 4. 全局组数据迁移：保证每个点只在一个组中 ==========
+        # 添加到新组
+        for pid, new_gid in point_to_new_group.items():
+            new_point_list = self.group_to_point[new_gid].get("point_ids", [])
+            if pid not in new_point_list:
+                new_point_list.append(pid)
+
+        # ========== 5. 确定需要更新的节点范围 ==========
+        # 确保 node_to_group 长度足够
+        max_node_index = max(max(self.node_points.keys(), default=0), len(self.node_to_group) - 1)
+        while len(self.node_to_group) <= max_node_index:
+            self.node_to_group.append(set())
+
+        start_node = int(self.active_node)
+
+        # 寻找第一个手动编辑节点（从 start_node+1 开始查找）
+        first_manual_node = None
+        for idx in range(start_node + 1, max_node_index + 1):
+            if self.node_manual_edited.get(idx, False):
+                first_manual_node = idx
+                break
+
+        # 更新范围：从 start_node 到 end_node（不包含 end_node）
+        if first_manual_node is not None:
+            end_node = first_manual_node   # 不更新该手动节点
+        else:
+            end_node = max_node_index + 1  # 更新到最后一个节点
+
+        # 防御：如果 start_node 已经等于或超过 end_node，不更新
+        # if start_node >= end_node:
+        #     self.clear_temp_groups()
+        #     self._render_points_for_active_node()
+        #     return
+
+        # ========== 6. 执行节点数据更新（拆分旧组，而非合并） ==========
+        for node_idx in range(start_node, end_node):
+
+            node_points = self.node_points.get(node_idx, [])
+            # 记录更新前的 group_id
+            old_gid_by_pid = {}
+            for point in node_points:
+                pid = int(point.get("id", -1))
+                old_gid = point.get("group_id")
+                if old_gid is not None:
+                    old_gid_by_pid[pid] = int(old_gid)
+
+            # 第一步：应用临时分组的新组ID
+            for pid, new_gid in point_to_new_group.items():
+                for point in node_points:
+                    if int(point.get("id", -1)) == pid:
+                        point["group_id"] = new_gid
+                        break
+
+            # 第二步：收集所有受影响的旧组（即那些包含至少一个被临时分组修改的点的旧组）
+            affected_old_groups = set()
+            for pid in point_to_new_group:
+                if pid in old_gid_by_pid:
+                    affected_old_groups.add(old_gid_by_pid[pid])
+
+            # 第三步：对于每个受影响的旧组，处理剩余的点
+            # 记录需要新建的组（剩余点组成）: (剩余点列表) -> 新组ID
+            new_remnant_group_map = {}  # tuple(sorted(remnant_pids)) -> new_gid
+
+            for old_gid in affected_old_groups:
+                # 收集该节点中所有原来属于这个旧组的点
+                pids_in_old_group = [pid for pid, gid in old_gid_by_pid.items() if gid == old_gid]
+                if not pids_in_old_group:
+                    continue
+
+                # 按照当前的 group_id 分组（更新后的）
+                current_groups = {}  # gid -> list[pid]
+                for pid in pids_in_old_group:
+                    # 找到该点当前的 group_id
+                    cur_gid = None
+                    for point in node_points:
+                        if int(point.get("id", -1)) == pid:
+                            cur_gid = point.get("group_id")
+                            if cur_gid is not None:
+                                cur_gid = int(cur_gid)
+                            break
+                    if cur_gid is None:
+                        cur_gid = None
+                    current_groups.setdefault(cur_gid, []).append(pid)
+
+                # 对于当前 group_id 等于 old_gid 的分组（即未被修改的剩余点）
+                if old_gid in current_groups:
+                    remnant_pids = current_groups[old_gid]
+                    if len(remnant_pids) >= 2:
+                        # 需要新建一个组
+                        remnant_key = tuple(sorted(remnant_pids))
+                        if remnant_key in new_remnant_group_map:
+                            new_gid = new_remnant_group_map[remnant_key]
+                        else:
+                            # 检查全局是否已存在相同的点集
+                            existing = None
+                            for gid, group in enumerate(self.group_to_point):
+                                if tuple(sorted(group.get("point_ids", []))) == remnant_key:
+                                    existing = gid
+                                    break
+                            if existing is not None:
+                                new_gid = existing
+                            else:
+                                new_gid = len(self.group_to_point)
+                                self.group_to_point.append({
+                                    "point_ids": list(remnant_key),
+                                    "leader": True,
+                                })
+                            new_remnant_group_map[remnant_key] = new_gid
+                        # 将剩余点的 group_id 更新为新组ID
+                        for pid in remnant_pids:
+                            for point in node_points:
+                                if int(point.get("id", -1)) == pid:
+                                    point["group_id"] = new_gid
+                                    break
+                    else:
+                        # 剩余点数 < 2，无法成组，将它们的 group_id 设为 None
+                        for pid in remnant_pids:
+                            for point in node_points:
+                                if int(point.get("id", -1)) == pid:
+                                    point["group_id"] = None
+                                    break
+                # 对于其他分组（即已经变成临时分组ID的），它们已经在新组中了，无需额外操作
+
+                # 注意：原来的 old_gid 不会被添加到 node_to_group 中（相当于被删除）
+
+            # 第四步：重新构建 node_to_group[node_idx]（基于更新后的 group_id）
+            group_ids_in_node = set()
+            point_seen_in_node = set()
+            for point in node_points:
+                pid = int(point.get("id", -1))
+                if pid in point_seen_in_node:
+                    continue
+                point_seen_in_node.add(pid)
+                gid = point.get("group_id")
+                if gid is None:
+                    continue
+                gid = int(gid)
+                if 0 <= gid < len(self.group_to_point):
+                    group_ids_in_node.add(gid)
+
+            self.node_to_group[node_idx] = group_ids_in_node
+
+            # 第五步：同步更新全局 group_to_point（将新创建的剩余点组中的点加入，避免重复）
+            for remnant_key, new_gid in new_remnant_group_map.items():
+                current_list = self.group_to_point[new_gid].get("point_ids", [])
+                for pid in remnant_key:
+                    if pid not in current_list:
+                        current_list.append(pid)
+                        
+        # ========== 7. 清理临时状态并刷新界面 ==========
+        self.clear_temp_groups()
+        self.dataChanged.emit()
+        self._render_points_for_active_node()
 
     def _refresh_selected_group_links(self):
         """根据当前选中点位重建组内连线，只连接每组中被选中的点。"""
@@ -992,8 +1463,13 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         # 连接同一组内被选中的点位，使用不透明线条。
         pen = QPen(QColor("#f39c12"), 2, Qt.PenStyle.SolidLine)
         pen.setCosmetic(True)
+        
+        node_groups = self.node_to_group[self.active_node]
+        if not node_groups:
+            return
 
-        for group_info in self.group_to_point:
+        for group_idx in node_groups:
+            group_info = self.group_to_point[group_idx]
             point_ids = [int(point_id) for point_id in group_info.get("point_ids", [])]
             selected_in_group = [point_id for point_id in point_ids if point_id in self._selected_point_ids]
             if len(selected_in_group) < 2:
@@ -1042,6 +1518,13 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         group_info = self.group_to_point[group_id]
         return [int(group_point_id) for group_point_id in group_info.get("point_ids", [])]
 
+    def _temp_group_point_ids_for_point_id(self, point_id: int) -> list[int]:
+        """获取指定点位在当前临时分组中的全部点位 ID；若不在临时组中则返回空列表。"""
+        for group in getattr(self, "_temp_group_to_point", []) or []:
+            if point_id in group:
+                return group
+        return []
+
     def _can_drag_performer_point(self) -> bool:
         """
         查看功能允许在任意拍位浏览
@@ -1083,7 +1566,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             br = label.boundingRect()
             label.setPos(pos.x() + dx - br.width() / 2.0, pos.y() + dy - br.height() / 2.0)
 
-        if int(point_id) in self._selected_point_ids:
+        if point_id in self._selected_point_ids:
             self._refresh_selected_group_links()
             if len(self._selected_point_ids) == 1:
                 # 单点拖拽时补充“原始->当前位置”预览连线。
@@ -1360,15 +1843,15 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         if not dst_points:
             return line_items
 
-        prev_points = self.node_points.get(self.active_node - 1, [])
-        source_points = prev_points if prev_points else (src_points or [])
-        if not source_points:
-            return line_items
+        # prev_points = self.node_points.get(self.active_node - 1, [])
+        # source_points = prev_points if prev_points else (src_points or [])
+        # if not source_points:
+        #     return line_items
 
         if isinstance(dst_points[0], dict):
             src_map = {
                 int(point.get("id", -1)): (float(point.get("x", 0.0)), float(point.get("y", 0.0)))
-                for point in source_points
+                for point in src_points
             }
             for point in dst_points:
                 point_id = int(point.get("id", -1))
@@ -1392,9 +1875,9 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 line_items.append(line_item)
             return line_items
 
-        match_count = min(len(source_points), len(dst_points))
+        match_count = min(len(src_points), len(dst_points))
         for i in range(match_count):
-            src = source_points[i]
+            src = src_points[i]
             dst = dst_points[i]
             sx, sy = float(src.get("x", 0.0)), float(src.get("y", 0.0))
             dx = float(dst[0])
@@ -2279,6 +2762,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                         idx = id_to_index[sid]
                         current_points[idx]["x"] = float(dx)
                         current_points[idx]["y"] = float(dy)
+            
+            self.sync_sampling_values_from_selection(tool_name)
         else:
             new_point_ids = []
             group_id = len(self.group_to_point)
@@ -2300,6 +2785,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                     "point_ids": new_point_ids, # 组内点位 ID 列表
                     "leader": True,  # leader 点位为正向第一个
                 })
+            self.reset_sampling_defaults(tool_name)
 
         self._pending_points = []
         self._draft_reference_points = []
@@ -2926,6 +3412,9 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self._clear_draft_items()
             self._draw_pending_reference_preview()
             self._draw_pending_reference_points()
+        # 若存在临时分组信息，则绘制其连线与首尾 helper
+        if getattr(self, "_temp_group_to_point", None):
+            QTimer.singleShot(0, self._update_temp_group_visuals)
 
 
     def delete_selected_points(self):
@@ -3067,7 +3556,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 helper.setPen(helper_pen)
                 # 使用透明填充而不是 NoBrush，这样圆内部也会被视为可点击区域
                 helper.setBrush(QBrush(QColor(0, 0, 0, 0)))
-                helper.setZValue(230)
+                helper.setZValue(900)
                 helper.setData(0, "drawing_rematch_helper")
                 helper.setData(1, point_id)
                 self.addItem(helper)
@@ -3177,7 +3666,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             clicked_point_id = None
             if isinstance(item, PerformerPointItem):
                 clicked_point_id = int(item.point_id)
-            elif item is not None and item.data(0) == "drawing_rematch_helper":
+            elif item is not None and item.data(0) in ("drawing_rematch_helper", "temp_group_helper"):
                 helper_point_id = item.data(1)
                 if helper_point_id is not None:
                     clicked_point_id = int(helper_point_id)
@@ -3192,6 +3681,31 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             if rematch_snapshot["active"] and self._is_drawing_tool():
                 event.accept()
                 return
+
+            # 分组工具交互：单击或框选用于向当前临时分组添加点
+            if self.active_tool == "分组":
+                # 若点击了点或 helper，则把该点所属组或点本身加入当前临时组
+                if clicked_point_id is not None:
+                    cur_grp = self._temp_group_to_point[self._temp_group_current_index]
+                    if clicked_point_id in cur_grp:
+                        # 若点击的点位在当前临时组内，则切换首/尾插入标记
+                        self._temp_group_mark_head = not self._temp_group_mark_head
+                    else:
+                        # 否则进行组合并
+                        temp_group_point_ids = self._temp_group_point_ids_for_point_id(clicked_point_id)
+                        if temp_group_point_ids:
+                            self.add_point_ids_to_current_temp_group(temp_group_point_ids, clicked_point_id)
+                        else:
+                            self.add_point_ids_to_current_temp_group([clicked_point_id], clicked_point_id)
+                        event.accept()
+                    self._render_points_for_active_node()
+                    return
+                # 点击空白处：进入框选以批量添加到临时组（记录起点）
+                # self._selection_start_position = QPointF(event.scenePos())
+                # self._selection_current_position = QPointF(event.scenePos())
+                # self._update_selection_rect_item()
+                # event.accept()
+                # return
 
             # 非单点草稿态：禁止新增参考点点击，仅保留手柄拖拽。
             if self._is_drawing_tool() and self._draft_tool_name and self._draft_tool_name != "点":
