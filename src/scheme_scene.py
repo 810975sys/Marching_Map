@@ -1837,7 +1837,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         path.closeSubpath()
         self._adjustment_frame_item.setPath(path)
 
-    def _build_preview_line_items(self, dst_points: list, src_points: list[dict] | None = None, *, z: float = 200) -> list:
+    def _build_preview_line_items(self, dst_points: list, src_points: list[dict] = [], *, z: float = 200) -> list:
         """根据目标点位集构建原始->目标的连线图元。"""
         line_items = []
         if not dst_points:

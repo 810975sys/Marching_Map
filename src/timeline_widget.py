@@ -7,7 +7,7 @@
 """
 
 from PyQt6.QtCore import QPoint, QRect, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen
+from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QKeySequence, QShortcut
 from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QPushButton, QSpinBox, QVBoxLayout, QWidget, QScrollArea
 
 class TimelineScrollArea(QScrollArea):
@@ -103,7 +103,18 @@ class TimelineWidget(QWidget):
         self.current_beat = 0
 
         self.setMinimumHeight(58)
+        # 使控件可接收键盘事件，便于实现快捷键
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._recalculate_width()
+        # 注册 '+' 和 '=' 快捷键为新增节点（对话/子控件也能响应）
+        self.quick_add_node = QShortcut(QKeySequence('+'), self)
+        # 全局快捷键：在应用范围内均可触发
+        self.quick_add_node.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.quick_add_node.activated.connect(lambda: self.add_node(8))
+
+        self.quick_add_node2 = QShortcut(QKeySequence('='), self)
+        self.quick_add_node2.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.quick_add_node2.activated.connect(lambda: self.add_node(8))
 
     def set_graph_list(self, graph_list: list[int], selected_node: int = 0, current_beat: int | None = None, emit_signals: bool = True):
         """整体恢复时间轴间隔列表。"""
@@ -398,7 +409,7 @@ class TimelineWidget(QWidget):
                 return
 
             # 点击标尺区域：把当前拍位定位到最近的整拍。
-            if self._ruler_rect.adjusted(-2, -2, 2, 2).contains(event.pos()):
+            if self._ruler_rect.adjusted(-2, self._top_row_y - self._ruler_rect.top(), 2, 2).contains(event.pos()):
                 self.current_beat = self._x_to_beat(event.pos().x())
                 self.currentBeatChanged.emit(self.current_beat)
                 self.update()
@@ -409,7 +420,7 @@ class TimelineWidget(QWidget):
     def mouseDoubleClickEvent(self, event):
         """双击中层非节点拍位时，在该拍位插入新方案图。"""
         if event.button() == Qt.MouseButton.LeftButton:
-            if self._ruler_rect.adjusted(-2, -2, 2, 2).contains(event.pos()):
+            if self._ruler_rect.adjusted(-2, self._top_row_y - self._ruler_rect.top(), 2, 2).contains(event.pos()):
                 beat = self._x_to_beat(event.pos().x())
                 if self.insert_node_at_beat(beat):
                     event.accept()
