@@ -6,8 +6,8 @@ class SchemeSceneData:
     """保存每张方案图的点位数据、分组信息、节点编辑状态等核心数据，并提供相关操作方法。"""
     def setup_scene_data(self):
         """初始化数据层状态。"""
-        self.node_points = {0: []}  # 下标为时间轴节点索引保存点位列表，每个点位包含 (id、x、y、group_id) 等信息
-        self.node_textboxes = {0: []}  # 下标为时间轴节点索引保存文本框列表
+        self.node_points = {0: []}  # 下标为时间轴节点索引, 保存点位列表，每个点位包含 (id、x、y、group_id) 等信息
+        self.node_textboxes = {0: []}  # 下标为时间轴节点索引, 保存文本框列表
         self.node_manual_edited = {0: False}    # 按时间轴节点索引保存是否手动编辑过的状态，自动插值时以此判断是否覆盖
         
         # node 为下标，存储[set(group_ids), ...]，
@@ -23,8 +23,87 @@ class SchemeSceneData:
 
         self._next_point_id = 1 # 点位ID自增计数器，确保每个新点位都有唯一ID
         self._next_textbox_id = 1 # 文本框ID自增计数器
-        # self._next_group_id = 1 # 分组ID自增计数器，确保每个新分组都有唯一ID
-        # self._pending_points = []   # 当前工具操作中尚未提交的数据点位列表，如绘制中的线段或多边形顶点等
+        
+        # node_paths: 每个节点下按参考点ID保存路径定义，路径定义包含 path（路径点列表）和 members（成员点位与路径偏移量的映射）。
+        # 格式: { node_index: # 节点索引
+        # [{"path": [(x,y), ...], # 路径点列表
+        # "anchor_id": int, # 锚点ID，用于计算路径偏移量的参考点
+        # "members": [point_ids] # 成员点位ID列表
+        # }], ...] }
+        self.node_paths = {}
+
+    def _find_point_in_node(self, node_index: int, point_id: int):
+        """在指定节点中按点位ID查找点位字典。"""
+        for point in self.node_points.get(int(node_index), []):
+            if int(point.get("id", -1)) == int(point_id):
+                return point
+        return None
+
+    def _normalize_node_path_entry(self, ref_entry: dict) -> dict | None:
+        """把 node_paths 记录整理成内部使用的列表结构。"""
+        if not isinstance(ref_entry, dict):
+            return None
+
+        anchor_value = ref_entry.get("anchor_id")
+        try:
+            anchor_id = int(anchor_value)
+        except Exception:
+            return None
+
+        path_raw = ref_entry.get("path", [])
+        path = []
+        if isinstance(path_raw, list):
+            for item in path_raw:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    try:
+                        path.append((float(item[0]), float(item[1])))
+                    except Exception:
+                        continue
+
+        members_raw = ref_entry.get("members", [])
+        members = []
+        if isinstance(members_raw, (list, tuple, set)):
+            for pid in members_raw:
+                try:
+                    members.append(int(pid))
+                except Exception:
+                    continue
+
+        seen = set()
+        members = [pid for pid in members if not (pid in seen or seen.add(pid))]
+
+        return {"anchor_id": anchor_id, "path": path, "members": members}
+
+    def _upsert_node_path_entry(self, node_index: int, anchor_id: int, path: list[tuple[float, float]], members: list[int]):
+        """在指定节点中新增或更新一条路径定义。"""
+        idx = max(0, int(node_index))
+        entry = {
+            "anchor_id": int(anchor_id),
+            "path": [(float(x), float(y)) for x, y in path],
+            "members": [int(point_id) for point_id in members],
+        }
+
+        node_paths = self.node_paths.setdefault(idx, [])
+        for entry_index, existed in enumerate(node_paths):
+            if int(existed.get("anchor_id", -1)) == int(anchor_id):
+                node_paths[entry_index] = entry
+                break
+        else:
+            node_paths.append(entry)
+
+    def _node_path_member_offset(self, node_index: int, ref_entry: dict, point_id: int) -> tuple[float, float]:
+        """按当前节点里的锚点和成员点位现算偏移。"""
+        anchor_id = ref_entry.get("anchor_id")
+        if anchor_id is None:
+            return 0.0, 0.0
+        anchor_point = self._find_point_in_node(node_index, int(anchor_id))
+        member_point = self._find_point_in_node(node_index, int(point_id))
+        if anchor_point is None or member_point is None:
+            return 0.0, 0.0
+        return (
+            float(member_point.get("x", 0.0)) - float(anchor_point.get("x", 0.0)),
+            float(member_point.get("y", 0.0)) - float(anchor_point.get("y", 0.0)),
+        )
 
     def export_confirmed_state(self) -> dict:
         """导出已确认的方案图数据，用于保存到方案文件。"""
@@ -49,6 +128,19 @@ class SchemeSceneData:
                 }
                 for group in self.group_to_point
             ],
+            "node_paths": {
+                str(node): [
+                    {
+                        "anchor_id": int(ref_entry.get("anchor_id", -1)),
+                        "path": [[float(x), float(y)] for x, y in ref_entry.get("path", [])],
+                        "members": [int(point_id) for point_id in ref_entry.get("members", [])],
+                    }
+                    for ref_entry in refs
+                    if isinstance(ref_entry, dict)
+                ]
+                for node, refs in sorted(self.node_paths.items())
+                if refs
+            },
             "_next_point_id": int(self._next_point_id),
             "_next_textbox_id": int(self._next_textbox_id),
         }
@@ -102,6 +194,26 @@ class SchemeSceneData:
         if not self.node_to_group:
             self.node_to_group = [set()]
 
+        # load node_paths
+        node_paths_data = data.get("node_paths", {})
+        self.node_paths = {}
+        if isinstance(node_paths_data, dict):
+            for node_key, refs in node_paths_data.items():
+                try:
+                    node_index = max(0, int(node_key))
+                except Exception:
+                    continue
+
+                entries = []
+                if not isinstance(refs, list):
+                    continue
+                for ref_entry in refs:
+                    normalized = self._normalize_node_path_entry(ref_entry)
+                    if normalized is not None:
+                        entries.append(normalized)
+                if entries:
+                    self.node_paths[node_index] = entries
+
         group_to_point_data = data.get("group_to_point", [])
         if not isinstance(group_to_point_data, list):
             raise ValueError("方案文件中的 group_to_point 格式无效")
@@ -147,12 +259,14 @@ class SchemeSceneData:
             max(self.node_textboxes.keys(), default=0),
             max(self.node_manual_edited.keys(), default=0),
             len(self.node_to_group) - 1,
+            max(self.node_paths.keys(), default=0),
             expected_node_count - 1,
         )
         for idx in range(0, max_node_index + 1):
             self.node_points.setdefault(idx, [])
             self.node_textboxes.setdefault(idx, [])
             self.node_manual_edited.setdefault(idx, False)
+            self.node_paths.setdefault(idx, [])
         while len(self.node_to_group) <= max_node_index:
             self.node_to_group.append(set())
 
@@ -175,6 +289,7 @@ class SchemeSceneData:
         ]
         self.node_textboxes[idx] = []
         self.node_manual_edited[idx] = False
+        self.node_paths.setdefault(idx, [])
 
     def on_node_added(self, node_index: int):
         """在时间轴末尾添加新节点后，确保节点数据结构完整并切换到新节点。"""
@@ -264,6 +379,14 @@ class SchemeSceneData:
         #     if del_group is None:
         #         break
         self.node_to_group.pop(removed_index)
+
+        new_paths = {}
+        for idx in sorted(self.node_paths.keys()):
+            if idx < removed_index:
+                new_paths[idx] = self.node_paths[idx]
+            elif idx > removed_index:
+                new_paths[idx - 1] = self.node_paths[idx]
+        self.node_paths = new_paths
         # if del_group:
         #     self.group_to_point = [group for group in self.group_to_point if group[0] not in del_group]
 
@@ -335,6 +458,56 @@ class SchemeSceneData:
             return adjustment_preview_points
         return self.node_points.get(int(node_index), [])
 
+    def _sample_position_along_path(self, path: list[tuple[float, float]], progress: float) -> tuple[float, float] | None:
+        """按路径累计长度采样位置。"""
+        if not path:
+            return None
+
+        if len(path) == 1:
+            return float(path[0][0]), float(path[0][1])
+
+        import math
+
+        segments = []
+        total_length = 0.0
+        for idx in range(len(path) - 1):
+            ax, ay = path[idx]
+            bx, by = path[idx + 1]
+            segment_length = math.hypot(bx - ax, by - ay)
+            segments.append((segment_length, (ax, ay), (bx, by)))
+            total_length += segment_length
+
+        if total_length <= 1e-9:
+            return float(path[0][0]), float(path[0][1])
+
+        target_length = max(0.0, min(1.0, float(progress))) * total_length
+        accumulated = 0.0
+        for segment_length, start_point, end_point in segments:
+            if accumulated + segment_length >= target_length:
+                if segment_length <= 1e-9:
+                    return float(start_point[0]), float(start_point[1])
+                local_progress = (target_length - accumulated) / segment_length
+                x = start_point[0] + (end_point[0] - start_point[0]) * local_progress
+                y = start_point[1] + (end_point[1] - start_point[1]) * local_progress
+                return float(x), float(y)
+            accumulated += segment_length
+
+        return float(path[-1][0]), float(path[-1][1])
+
+    def _sample_point_from_node_path(self, node_index: int, point_id: int, progress: float) -> tuple[float, float] | None:
+        """若点位在节点路径中，按路径进度采样其位置。"""
+        node_paths = self.node_paths.get(int(node_index), [])
+        for ref_entry in node_paths:
+            members = ref_entry.get("members", [])
+            if int(point_id) not in {int(pid) for pid in members}:
+                continue
+            sampled = self._sample_position_along_path(ref_entry.get("path", []), progress)
+            if sampled is None:
+                return None
+            offset = self._node_path_member_offset(node_index, ref_entry, int(point_id))
+            return float(sampled[0]) + float(offset[0]), float(sampled[1]) + float(offset[1])
+        return None
+
     def _interpolate_points_between_nodes(self, start_node: int, end_node: int, target_node: int) -> list[dict]:
         """按节点起始拍对齐，计算 target_node 的插值点位。"""
         # start_points = self.node_points.get(start_node, [])
@@ -358,11 +531,18 @@ class SchemeSceneData:
             sp = start_map.get(point_id)
             ep = end_map.get(point_id)
             if sp is not None and ep is not None:
-                point = {
-                    "id": point_id,
-                    "x": float(sp["x"]) + (float(ep["x"]) - float(sp["x"])) * t,
-                    "y": float(sp["y"]) + (float(ep["y"]) - float(sp["y"])) * t,
-                }
+                # sampled = self._sample_point_from_node_path(start_node, point_id, t)
+                # if sampled is None:
+                sampled = self._sample_point_from_node_path(end_node, point_id, t)
+                if sampled is not None:
+                    px, py = sampled
+                    point = {"id": point_id, "x": float(px), "y": float(py)}
+                else:
+                    point = {
+                        "id": point_id,
+                        "x": float(sp["x"]) + (float(ep["x"]) - float(sp["x"])) * t,
+                        "y": float(sp["y"]) + (float(ep["y"]) - float(sp["y"])) * t,
+                    }
                 group_id = ep.get("group_id", sp.get("group_id"))
                 if group_id is not None:
                     point["group_id"] = group_id
@@ -373,7 +553,14 @@ class SchemeSceneData:
                     point["group_id"] = sp.get("group_id")
                 points.append(point)
             elif ep is not None:
-                point = {"id": point_id, "x": float(ep["x"]), "y": float(ep["y"])}
+                sampled = self._sample_point_from_node_path(end_node, point_id, t)
+                # if sampled is None:
+                # sampled = self._sample_point_from_node_path(start_node, point_id, 1.0)
+                if sampled is not None:
+                    px, py = sampled
+                    point = {"id": point_id, "x": float(px), "y": float(py)}
+                else:
+                    point = {"id": point_id, "x": float(ep["x"]), "y": float(ep["y"]) }
                 if ep.get("group_id") is not None:
                     point["group_id"] = ep.get("group_id")
                 points.append(point)
@@ -402,22 +589,43 @@ class SchemeSceneData:
             sp = start_map.get(point_id)
             ep = end_map.get(point_id)
             if sp is not None and ep is not None:
-                point = {
-                    "id": point_id,
-                    "x": float(sp["x"]) + (float(ep["x"]) - float(sp["x"])) * t,
-                    "y": float(sp["y"]) + (float(ep["y"]) - float(sp["y"])) * t,
-                }
+                sampled = self._sample_point_from_node_path(end_node, point_id, t)
+                # if sampled is None:
+                #     sampled = self._sample_point_from_node_path(end_node, point_id, t)
+                if sampled is not None:
+                    px, py = sampled
+                    point = {"id": point_id, "x": float(px), "y": float(py)}
+                else:
+                    point = {
+                        "id": point_id,
+                        "x": float(sp["x"]) + (float(ep["x"]) - float(sp["x"])) * t,
+                        "y": float(sp["y"]) + (float(ep["y"]) - float(sp["y"])) * t,
+                    }
                 group_id = ep.get("group_id", sp.get("group_id"))
                 if group_id is not None:
                     point["group_id"] = group_id
                 points.append(point)
             elif sp is not None:
-                point = {"id": point_id, "x": float(sp["x"]), "y": float(sp["y"])}
+                sampled = self._sample_point_from_node_path(end_node, point_id, 0.0)
+                # if sampled is None:
+                #     sampled = self._sample_point_from_node_path(end_node, point_id, 0.0)
+                if sampled is not None:
+                    px, py = sampled
+                    point = {"id": point_id, "x": float(px), "y": float(py)}
+                else:
+                    point = {"id": point_id, "x": float(sp["x"]), "y": float(sp["y"]) }
                 if sp.get("group_id") is not None:
                     point["group_id"] = sp.get("group_id")
                 points.append(point)
             elif ep is not None:
-                point = {"id": point_id, "x": float(ep["x"]), "y": float(ep["y"])}
+                sampled = self._sample_point_from_node_path(end_node, point_id, 1.0)
+                if sampled is None:
+                    sampled = self._sample_point_from_node_path(start_node, point_id, 1.0)
+                if sampled is not None:
+                    px, py = sampled
+                    point = {"id": point_id, "x": float(px), "y": float(py)}
+                else:
+                    point = {"id": point_id, "x": float(ep["x"]), "y": float(ep["y"]) }
                 if ep.get("group_id") is not None:
                     point["group_id"] = ep.get("group_id")
                 points.append(point)

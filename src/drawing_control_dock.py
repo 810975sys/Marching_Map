@@ -45,7 +45,8 @@ class DrawingControlDock(QDockWidget):
         self._scene = None  # 场景引用
         self._syncing_line_segment_controls = False # 内部状态：是否正在同步线段工具控制状态，避免信号循环
         self._sampling_tool_name = "线段"   # 当前采样工具名称
-        self._sampling_supported_tools = {"线段", "弧", "曲线/折线", "圆", "多边形", "填充四边形"}  # 支持显示采样设置的工具集合
+        # 支持显示采样设置的工具集合。新增 "路径" 但该工具仅显示曲线模式选择，不显示点位个数与间距控件。
+        self._sampling_supported_tools = {"线段", "弧", "曲线/折线", "圆", "多边形", "填充四边形", "路径"}
 
         self.statusLabel = QLabel("", content)  # 当前绘制状态提示
         layout.addWidget(self.statusLabel)
@@ -362,11 +363,15 @@ class DrawingControlDock(QDockWidget):
     def setSamplingTool(self, tool_name: str):
         """设置当前采样工具名称，并根据工具类型调整参数显示内容"""
         self._sampling_tool_name = tool_name
-        
+        # 曲线/折线与路径需显示曲线模式选择
+        self.curve_row.setVisible(tool_name in {"曲线/折线", "路径", '跟随'})
+
+        # 多边形显示多边形行，其余常规采样工具显示点位/间隔行
         self._polygon_row.setVisible(tool_name == "多边形")
-        self._p01_row.setVisible(True)
+        # 对于路径工具不显示点位个数与间距设置
+        self._p01_row.setVisible(tool_name != "路径")
         
-        # 填充四边形时显示修改
+        # 填充四边形时显示第二方向设置
         is_fill_quad = tool_name == "填充四边形"
         self._p02_row.setVisible(is_fill_quad)
         if is_fill_quad:
@@ -503,6 +508,25 @@ class DrawingControlDock(QDockWidget):
         if self._scene is None:
             return
         if tool_name is None:
+            return
+        # 特殊处理：对于路径工具仅显示曲线模式选择，不查询点位/间距设置
+        if tool_name == "路径":
+            # 隐藏采样数值控件并启用/禁用与曲线相关的可见性
+            self._syncing_line_segment_controls = True
+            self.linePointCountSpin.setValue(1)
+            self.lineSpacingSpin.setValue(2.0)
+            self.lineShiftSpacingSpin.setValue(2.0)
+            self.lineShiftPointCountSpin.setValue(1)
+            # 按无效/默认状态禁用数值输入
+            self.linePointCountSpin.setEnabled(False)
+            self.lineSpacingSpin.setEnabled(False)
+            self.lineShiftPointCountSpin.setEnabled(False)
+            self.lineShiftSpacingSpin.setEnabled(False)
+            # 自动按钮均隐藏/取消
+            self.linePointCountAutoButton.setChecked(False)
+            self.lineSpacingAutoButton.setChecked(False)
+            self.lineShiftSpacingAutoButton.setChecked(False)
+            self.lineShiftPointCountAutoButton.setChecked(False)
             return
 
         point_limit, spacing = self._scene.sampling_settings(tool_name)

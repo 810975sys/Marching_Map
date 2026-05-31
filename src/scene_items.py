@@ -404,7 +404,7 @@ class PerformerPointItem(QGraphicsEllipseItem):
     def __init__(self, point_id: int = 0, center_scene_pos: QPointF = QPointF(), moved_callback = None, released_callback = None, can_drag_callback = None, selected: bool = False, size: float = 10.0):
         self.radius = size / 2.0
         super().__init__(-self.radius, -self.radius, size, size)
-        self.point_id = int(point_id)   # 点位ID，用于定位
+        self.point_id = point_id   # 点位ID，用于定位
         self._moved_callback = moved_callback   # 移动回调，返回调整后的场景坐标以实现吸附等功能。
         self._released_callback = released_callback # 释放回调，参数为点位ID，用于通知数据层更新点位坐标。
         self._can_drag_callback = can_drag_callback # 是否可拖动回调，返回布尔值，控制是否允许拖动（如锁定状态下不可拖动）

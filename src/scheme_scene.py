@@ -2358,7 +2358,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 self.addItem(textbox_item)
                 self._pending_preview_items.append(textbox_item)
 
-        # 未确认阶段同样显示按默认“两步间隔”采样的表演者预览点位。
+        # 未确认阶段同样显示参考线与预览点位。
         if self.active_tool == "曲线/折线" and len(self._pending_points) >= 2:
             preview_points = self._generate_performer_points("曲线/折线", self._pending_points)
             rematch_snapshot = self._drawing_rematch_snapshot()
@@ -2368,6 +2368,53 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 dots = self.render_preview_points(preview_points)
             for d in dots:
                 self._pending_preview_items.append(d)
+
+        # 路径工具：显示路径线（可选择折线或平滑曲线），并绘制路径点用于预览；路径不依赖点位个数/间距设置
+        if self.active_tool == "路径" and len(self._pending_points) >= 2:
+            pts = list(self._pending_points)
+            if getattr(self, '_curve_mode', 'polyline') == 'curve':
+                pts_path = _build_dense_curve_points(pts, float(self.field_info.grid_step))
+            else:
+                pts_path = pts
+            if pts_path:
+                pen = QPen(QColor(210, 84, 0, 170), 1.3, Qt.PenStyle.DashLine)
+                path = QPainterPath()
+                path.moveTo(self._field_to_scene(*pts_path[0]))
+                for x, y in pts_path[1:]:
+                    path.lineTo(self._field_to_scene(x, y))
+                path_item = QGraphicsPathItem(path)
+                path_item.setPen(pen)
+                path_item.setZValue(890)
+                self.addItem(path_item)
+                self._pending_preview_items.append(path_item)
+                # 绘制路径点的预览小圆点
+                dots = self.render_preview_points(pts_path)
+                for d in dots:
+                    self._pending_preview_items.append(d)
+                # 如果存在选中点，则为选中点生成按锚点到路径最后一点的整体平移预览（不写回数据）
+
+                selected_ids = self._ordered_selected_point_ids_for_drawing()
+                if selected_ids:
+                    # 获取原始选中点的位置（field 坐标）
+                    src_points = [self._find_point_by_id(int(pid)) for pid in selected_ids]
+                    if src_points and src_points[0] is not None:
+                        base_x = float(src_points[0].get("x", 0.0))
+                        base_y = float(src_points[0].get("y", 0.0))
+                        last_px, last_py = pts_path[-1]
+                        tx = float(last_px) - float(base_x)
+                        ty = float(last_py) - float(base_y)
+                        preview_points = []
+                        for p in src_points:
+                            if p is None:
+                                preview_points.append((0.0, 0.0))
+                            else:
+                                ox = float(p.get("x", 0.0))
+                                oy = float(p.get("y", 0.0))
+                                preview_points.append((ox + tx, oy + ty))
+                        # 使用与 render_preview_points 相同的渲染风格绘制选中点的平移预览
+                        moved_dots = self.render_preview_points(preview_points, pen_color="#2980b9", brush_color=(41, 128, 185, 120), z=895)
+                        for d in moved_dots:
+                            self._pending_preview_items.append(d)
 
     def _update_textbox_hover_preview(self, scene_pos: QPointF):
         """更新文本框第一参考点后的鼠标吸附位置，并重绘预览矩形。"""
@@ -2424,6 +2471,13 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
     def _generate_performer_points(self, tool_name: str, refs: list[tuple[float, float]]) -> list[tuple[float, float]]:
         """根据当前草稿工具和参考点生成最终的执行点位列表（field 坐标）。"""
         spacing = max(1e-9, float(self.field_info.grid_step) * 2.0)
+        # 支持路径绘制工具——返回原始参考点或按曲线模式平滑后的点（不使用间距/点数设置）
+        if tool_name == "路径":
+            is_curve = getattr(self, '_curve_mode', 'polyline') == 'curve'
+            if is_curve:
+                dense = _build_dense_curve_points(refs, float(self.field_info.grid_step))
+                return dense if dense else []
+            return list(refs)
         if tool_name == "点" and refs:
             # return _dedupe_points(refs)
             return refs
@@ -2522,7 +2576,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             items.append(item)
         
         # 若存在已选点集，按索引匹配原点位->新点位并绘制连线以保持连贯性
-        if getattr(self, "_selected_point_ids", None):
+        if self._selected_point_ids and self.active_tool not in {"路径", '跟随'}:
             current_points = self.node_points.get(self.active_node, [])
             src_ordered = [p for p in current_points if int(p.get("id", -1)) in self._selected_point_ids]
             items.extend(self._build_preview_line_items(list(preview_points), src_ordered, z=z - 10))
@@ -2731,7 +2785,67 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         current_points = self.node_points.setdefault(self.active_node, [])  # 当前节点的点位列表
 
         # 如果有选中点，则按索引匹配移动已存在的点；多余的生成点不新增
-        if getattr(self, "_selected_point_ids", None):
+        if self._selected_point_ids:
+            if tool_name == "路径":
+                # 路径模式：以第一个选中点为锚，按路径最后一点生成预览点位并写回 node_points。
+                selected_ids = self._ordered_selected_point_ids_for_drawing()
+                if selected_ids and generated:
+                    path_points = list(generated)
+                    anchor_id = int(selected_ids[0])
+                    anchor_point = self._find_point_by_id(anchor_id)
+                    if anchor_point is not None and path_points:
+                        base_x = float(anchor_point.get("x", 0.0))
+                        base_y = float(anchor_point.get("y", 0.0))
+                        # 以第一个选中点为锚，整体平移到路径的最后一点位置
+                        last_px, last_py = path_points[-1]
+                        tx = float(last_px) - float(base_x)
+                        ty = float(last_py) - float(base_y)
+                        point_by_id = {int(point.get("id", -1)): point for point in current_points}
+                        preview_points = []
+                        selected_points = []
+                        for pid in selected_ids:
+                            point = point_by_id.get(int(pid))
+                            if point is None:
+                                continue
+                            selected_points.append(point)
+                            # 为每个选中点创建对应的预览点位，并写回 node_points
+                            new_x = float(point.get("x", 0.0)) + tx
+                            new_y = float(point.get("y", 0.0)) + ty
+                            preview_points.append({
+                                "id": int(pid),
+                                "x": float(new_x),
+                                "y": float(new_y),
+                                "group_id": point.get("group_id"),
+                            })
+                        for preview in preview_points:
+                            pid = int(preview.get("id", -1))
+                            point = point_by_id.get(pid)
+                            if point is None:
+                                continue
+                            point["x"] = float(preview["x"])
+                            point["y"] = float(preview["y"])
+                        # 记录路径信息：只保存锚点ID、路径点和成员点ID，成员偏移在插值时根据当前节点现算。
+                        self._upsert_node_path_entry(
+                            self.active_node,
+                            anchor_id,
+                            [(float(px), float(py)) for px, py in path_points],
+                            [int(p.get("id", -1)) for p in selected_points],
+                        )
+                        self.sync_sampling_values_from_selection(tool_name)
+                        self.reset_sampling_defaults(tool_name)
+                        self._pending_points = []
+                        self._draft_reference_points = []
+                        self._reset_drawing_rematch_state(active=False)
+                        self._mark_node_manual(self.active_node)
+                        self._recalculate_following_auto_nodes(self.active_node, include_manual_nodes=True)
+                        self._clear_draft()
+                        if not had_draft:
+                            self.draftFinished.emit()
+                        self._render_points_for_active_node()
+                        self.drawingRematchStateChanged.emit()
+                        self.dataChanged.emit()
+                        return True
+                    
             rematch_snapshot = self._drawing_rematch_snapshot()
             id_to_index = {int(p.get("id", -1)): idx for idx, p in enumerate(current_points)}
             if rematch_snapshot["active"]:
@@ -3247,6 +3361,46 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self.addItem(reference_item)
             self._draft_preview_items.append(reference_item)
 
+        if self._draft_tool_name == "路径" and len(self._draft_reference_points) >= 2:
+            refs = list(self._draft_reference_points)
+            if getattr(self, '_curve_mode', 'polyline') == 'curve':
+                refs_path = _build_dense_curve_points(refs, float(self.field_info.grid_step))
+            else:
+                refs_path = refs
+            if refs_path:
+                pen = QPen(QColor(210, 84, 0, 170), 1.3, Qt.PenStyle.DashLine)
+                path = QPainterPath()
+                path.moveTo(self._field_to_scene(*refs_path[0]))
+                for x, y in refs_path[1:]:
+                    path.lineTo(self._field_to_scene(x, y))
+                path_item = QGraphicsPathItem(path)
+                path_item.setPen(pen)
+                path_item.setZValue(890)
+                self.addItem(path_item)
+                self._draft_preview_items.append(path_item)
+                dots = self.render_preview_points(refs_path)
+                for dot in dots:
+                    self._draft_preview_items.append(dot)
+
+                selected_ids = self._ordered_selected_point_ids_for_drawing()
+                if selected_ids:
+                    src_points = [self._find_point_by_id(int(pid)) for pid in selected_ids]
+                    if src_points and src_points[0] is not None:
+                        base_x = float(src_points[0].get("x", 0.0))
+                        base_y = float(src_points[0].get("y", 0.0))
+                        last_px, last_py = refs_path[-1]
+                        tx = float(last_px) - float(base_x)
+                        ty = float(last_py) - float(base_y)
+                        preview_points = []
+                        for point in src_points:
+                            if point is None:
+                                continue
+                            preview_points.append((float(point.get("x", 0.0)) + tx, float(point.get("y", 0.0)) + ty))
+                        moved_dots = self.render_preview_points(preview_points, pen_color="#2980b9", brush_color=(41, 128, 185, 120), z=895)
+                        for dot in moved_dots:
+                            self._draft_preview_items.append(dot)
+            return
+
         preview_points = self._generate_performer_points(self._draft_tool_name, self._draft_reference_points)
         if preview_points:
             rematch_snapshot = self._drawing_rematch_snapshot()
@@ -3279,10 +3433,20 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             return
         self._updating_draft_handles = True
         for index, (x, y) in enumerate(self._pending_points):
+            if self.active_tool == "路径" and index == 0:
+                # 路径的第一个参考点是固定锚点，不允许拖动。
+                fixed = QGraphicsEllipseItem(-4.0, -4.0, 8.0, 8.0)
+                fixed.setPen(QPen(QColor("#d35400"), 1.2))
+                fixed.setBrush(QBrush(QColor(211, 84, 0, 80)))
+                fixed.setPos(self._field_to_scene(x, y))
+                fixed.setZValue(1000)
+                self.addItem(fixed)
+                self._draft_handle_items.append(fixed)
+                continue
             handle = ReferenceHandleItem(
-                index = index,
-                center_scene_pos = self._field_to_scene(x, y),
-                moved_callback = self._on_pending_reference_handle_moved,
+                index=index,
+                center_scene_pos=self._field_to_scene(x, y),
+                moved_callback=self._on_pending_reference_handle_moved,
             )
             self.addItem(handle)
             self._draft_handle_items.append(handle)
@@ -3302,6 +3466,9 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         """
         if self._updating_draft_handles:
             return scene_pos
+        if self.active_tool == "路径" and index == 0:
+            # 路径首点固定，不允许拖动。
+            return self._field_to_scene(*self._pending_points[0]) if self._pending_points else scene_pos
         if index < 0 or index >= len(self._pending_points):
             return scene_pos
         x, y = self._scene_to_field(scene_pos)
@@ -3318,7 +3485,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def _handle_draw_tool(self, tool_name: str, field_point: tuple[float, float]):
         # 非单点工具进入草稿态后，仅允许拖拽现有参考点，不再响应新增点击。
-        if tool_name != "点" and self._draft_tool_name and self._draft_reference_points:
+        if tool_name not in {"点", "路径"} and self._draft_tool_name and self._draft_reference_points:
             return
 
         if tool_name == "点":
@@ -3330,6 +3497,27 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 _append_unique_reference_point(self._draft_reference_points, field_point)
             self.drawingRematchStateChanged.emit()
             self._draw_draft_overlay()
+            return
+
+        if tool_name == "路径":
+            # 路径工具：第一个参考点固定为锚点，后续点击仅记录轨迹点。
+            if not self._pending_points:
+                anchor_id = next(iter(self._ordered_selected_point_ids_for_drawing()), None)
+                if anchor_id is not None:
+                    anchor_point = self._find_point_by_id(int(anchor_id))
+                    if anchor_point is not None:
+                        self._pending_points.append((float(anchor_point["x"]), float(anchor_point["y"])))
+            _append_unique_reference_point(self._pending_points, field_point)
+            if len(self._pending_points) >= 2:
+                self._draft_tool_name = "路径"
+                self._draft_reference_points = list(self._pending_points)
+                self.draftStarted.emit("路径")
+                self._draw_draft_overlay()
+            else:
+                self._draft_tool_name = None
+                self._draft_reference_points = []
+                self.draftFinished.emit()
+            self.drawingRematchStateChanged.emit()
             return
 
         _append_unique_reference_point(self._pending_points, field_point)
@@ -3360,7 +3548,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self.drawingRematchStateChanged.emit()
 
     def _is_drawing_tool(self) -> bool:
-        return self.active_tool in {"点", "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形"}
+        return self.active_tool in {"点", "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形", "路径"}
 
     def _render_points_for_active_node(self):
         """重绘当前节点与前一节点的点位叠加效果。"""
@@ -3708,7 +3896,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 # return
 
             # 非单点草稿态：禁止新增参考点点击，仅保留手柄拖拽。
-            if self._is_drawing_tool() and self._draft_tool_name and self._draft_tool_name != "点":
+            # 对于“路径”工具允许在草稿态继续添加参考点（轨迹追加）。
+            if self._is_drawing_tool() and self._draft_tool_name and self._draft_tool_name not in {"点", "路径"}:
                 event.accept()
                 return
 

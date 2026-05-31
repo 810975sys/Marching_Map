@@ -51,13 +51,13 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.toolButtons = {}   # 保存工具按钮引用，便于根据工具名更新按钮状态
         self.activeToolName = "框选"
         # self.pendingToolName = None
-        self._sampling_tools = {"线段", "弧", "曲线/折线", "圆", "多边形", "填充四边形"}    # 需要在绘制控制台显示采样设置的工具
+        self._sampling_tools = {"线段", "弧", "曲线/折线", "圆", "多边形", "填充四边形", "路径"}    # 需要在绘制控制台显示采样设置的工具（"路径" 为特例，仅显示曲线模式）
         # self._dialog_required_tools = {
         #     "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形",
         #     "调整", "跟随", "路径", "间隔行进",
         #     "标签", "文本", "箭头",
         # }
-        self._drawing_tools = {"点", "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形"}
+        self._drawing_tools = {"点", "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形", "路径"}
         self._text_tools = {"文本"}
         self._group_tools = {"分组"}
         self._select_tools = {"选择", "框选"}
@@ -642,7 +642,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
         # self.drawingControlDock.setOperationLabels("确认绘制 Enter", "取消绘制 Esc")
         self.drawingControlDock.setSamplingToolVisible(tool_name if tool_name in self._sampling_tools else None, tool_name in self._sampling_tools)
-        self.drawingControlDock.setCurveModeVisible(tool_name == "曲线/折线")
+        self.drawingControlDock.setCurveModeVisible(tool_name in {"曲线/折线", "路径", "跟随"})
         self.drawingControlDock.setDraftActive(tool_name == "点")
         if tool_name in self._sampling_tools:
             self.drawingControlDock.sync_sampling_settings(tool_name)
@@ -682,7 +682,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             return
 
         status = self.scene._drawing_rematch_snapshot()
-        visible = bool(status.get("selected_ids"))
+        visible = bool(status.get("selected_ids")) and self.activeToolName not in {"路径", "跟随"}
         self.drawingControlDock.setDrawingRematchVisible(visible)
         if not visible:
             return
@@ -1067,7 +1067,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         """场景进入草稿态时，启用确认/取消按钮。"""
         self.drawingControlDock.setDraftActive(True)
         self.drawingControlDock.setSamplingToolVisible(tool_name if tool_name in self._sampling_tools else None, tool_name in self._sampling_tools)
-        self.drawingControlDock.setCurveModeVisible(tool_name == "曲线/折线")
+        self.drawingControlDock.setCurveModeVisible(tool_name in {"曲线/折线", "路径", "跟随"})
         if tool_name in self._sampling_tools:
             self.drawingControlDock.setSamplingTool(tool_name)
             self.drawingControlDock.sync_sampling_settings(tool_name)
