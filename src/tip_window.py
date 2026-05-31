@@ -18,13 +18,11 @@ class TipWindow(QDialog):
         main_layout.setContentsMargins(16, 16, 16, 16)
         main_layout.setSpacing(12)
 
-        self.tip_content = QLabel(("- 鼠标中键/右键可拖动画布；Ctrl+滚轮可进行缩放\n\n"+
-                              "- 快捷键'+'可新增方案图节点\n"+
-                              "  在对应拍子处双击可插入方案图\n"+
-                              "  右键方案图节点可编辑\n\n"+
-                              "- “选择”功能按 Shift 反转组内选择；按 Ctrl 可进行单点选择\n"+
-                              "  “框选”功能按 Ctrl 可保持选择点位\n\n"+
-                              "- 场地坐标旋转角度为负则不显示"), self)
+        self.tip_content = QLabel(("- 画布：鼠标中键/右键拖动；Ctrl+滚轮缩放\n\n"+
+                              "- 方案图节点：右键编辑；快捷键'+'新增；双击插入；Ctrl+滚轮缩放\n\n"+
+                              "- “选择”功能：按 Shift 反转组内选择；按 Ctrl 可进行单点选择\n"+
+                              "  “框选”功能：按 Ctrl 可保持选择点位\n\n"+
+                              "- 场地坐标：旋转角度为负则不显示"), self)
         self.tip_content.setWordWrap(True)
         self.tip_content.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         self.tip_content.setFocusPolicy(Qt.FocusPolicy.NoFocus)
