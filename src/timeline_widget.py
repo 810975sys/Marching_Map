@@ -410,7 +410,14 @@ class TimelineWidget(QWidget):
 
             # 点击标尺区域：把当前拍位定位到最近的整拍。
             if self._ruler_rect.adjusted(-2, self._top_row_y - self._ruler_rect.top(), 2, 2).contains(event.pos()):
-                self.current_beat = self._x_to_beat(event.pos().x())
+                beat = self._x_to_beat(event.pos().x())
+                node_index = self.node_index_at_beat(beat)
+                if node_index is not None:
+                    self.selected_node = node_index
+                    self.current_beat = self.start_beat_of(node_index)
+                    self.nodeSelected.emit(node_index)
+                else:
+                    self.current_beat = beat
                 self.currentBeatChanged.emit(self.current_beat)
                 self.update()
                 event.accept()

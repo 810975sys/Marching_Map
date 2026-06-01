@@ -6,9 +6,9 @@ class SchemeSceneData:
     """保存每张方案图的点位数据、分组信息、节点编辑状态等核心数据，并提供相关操作方法。"""
     def setup_scene_data(self):
         """初始化数据层状态。"""
-        self.node_points = {0: []}  # 下标为时间轴节点索引, 保存点位列表，每个点位包含 (id、x、y、group_id) 等信息
-        self.node_textboxes = {0: []}  # 下标为时间轴节点索引, 保存文本框列表
-        self.node_manual_edited = {0: False}    # 按时间轴节点索引保存是否手动编辑过的状态，自动插值时以此判断是否覆盖
+        self.node_points = [[]]  # 下标为时间轴节点索引, 保存点位列表，每个点位包含 (id、x、y、group_id) 等信息
+        self.node_textboxes = {}  # 下标为时间轴节点索引, 保存文本框列表
+        self.node_manual_edited = [False]    # 按时间轴节点索引保存是否手动编辑过的状态，自动插值时以此判断是否覆盖
         
         # node 为下标，存储[set(group_ids), ...]，
         self.node_to_group = [set()]  # 点位分组信息，每个分组包含 node（分组所属的节点）、point_ids（组内点位 ID 列表）、leader_id（leader 点位 ID） 等信息
@@ -34,7 +34,7 @@ class SchemeSceneData:
 
     def _find_point_in_node(self, node_index: int, point_id: int):
         """在指定节点中按点位ID查找点位字典。"""
-        for point in self.node_points.get(int(node_index), []):
+        for point in self.node_points[node_index]:
             if int(point.get("id", -1)) == int(point_id):
                 return point
         return None
@@ -44,11 +44,7 @@ class SchemeSceneData:
         if not isinstance(ref_entry, dict):
             return None
 
-        anchor_value = ref_entry.get("anchor_id")
-        try:
-            anchor_id = int(anchor_value)
-        except Exception:
-            return None
+        anchor_id = ref_entry.get("anchor_id")
 
         path_raw = ref_entry.get("path", [])
         path = []
@@ -108,18 +104,16 @@ class SchemeSceneData:
     def export_confirmed_state(self) -> dict:
         """导出已确认的方案图数据，用于保存到方案文件。"""
         return {
-            "node_points": {
-                str(idx): [dict(point) for point in points]
-                for idx, points in sorted(self.node_points.items())
-            },
+            "node_points": self.node_points,
+            # {
+            #     str(idx): [dict(point) for point in points]
+            #     for idx, points in sorted(self.node_points.items())
+            # },
             "node_textboxes": {
                 str(idx): [dict(textbox) for textbox in textboxes]
                 for idx, textboxes in sorted(self.node_textboxes.items())
             },
-            "node_manual_edited": {
-                str(idx): bool(flag)
-                for idx, flag in sorted(self.node_manual_edited.items())
-            },
+            "node_manual_edited": [bool(flag) for flag in self.node_manual_edited],
             "node_to_group": [sorted(int(group_id) for group_id in group_ids) for group_ids in self.node_to_group],
             "group_to_point": [
                 {
@@ -152,16 +146,17 @@ class SchemeSceneData:
 
         self.setup_scene_data()
 
-        node_points_data = data.get("node_points", {})
-        if not isinstance(node_points_data, dict):
-            raise ValueError("方案文件中的 node_points 格式无效")
-        self.node_points = {}
-        for node_key, points in node_points_data.items():
-            node_index = max(0, int(node_key))
-            if not isinstance(points, list):
-                raise ValueError(f"方案文件中的 node_points[{node_key}] 格式无效")
-            self.node_points[node_index] = [dict(point) for point in points if isinstance(point, dict)]
-        self.node_points.setdefault(0, [])
+        self.node_points = data.get("node_points", [[]])
+        # if not isinstance(node_points_data, dict):
+        #     raise ValueError("方案文件中的 node_points 格式无效")
+        # self.node_points = {}
+        # for node_index, points in enumerate(node_points_data):
+        #     # node_index = max(0, int(node_key))
+        #     if not isinstance(points, list):
+        #         raise ValueError(f"方案文件中的 node_points[{node_key}] 格式无效")
+        #     self.node_points
+        #     self.node_points[node_index] = [dict(point) for point in points if isinstance(point, dict)]
+        # self.node_points.setdefault(0, [])
 
         node_textboxes_data = data.get("node_textboxes", {})
         if not isinstance(node_textboxes_data, dict):
@@ -174,13 +169,12 @@ class SchemeSceneData:
             self.node_textboxes[node_index] = [dict(textbox) for textbox in textboxes if isinstance(textbox, dict)]
         self.node_textboxes.setdefault(0, [])
 
-        node_manual_data = data.get("node_manual_edited", {})
-        if not isinstance(node_manual_data, dict):
+        node_manual_data = data.get("node_manual_edited", [])
+        if not isinstance(node_manual_data, list):
             raise ValueError("方案文件中的 node_manual_edited 格式无效")
-        self.node_manual_edited = {}
-        for node_key, flag in node_manual_data.items():
-            self.node_manual_edited[max(0, int(node_key))] = bool(flag)
-        self.node_manual_edited.setdefault(0, False)
+        self.node_manual_edited = [bool(flag) for flag in node_manual_data]
+        if not self.node_manual_edited:
+            self.node_manual_edited = [False]
 
         node_to_group_data = data.get("node_to_group", [])
         if not isinstance(node_to_group_data, list):
@@ -226,7 +220,7 @@ class SchemeSceneData:
             self.group_to_point.append(group_data)
 
         max_point_id = 0
-        for points in self.node_points.values():
+        for points in self.node_points:
             for point in points:
                 try:
                     max_point_id = max(max_point_id, int(point.get("id", 0)))
@@ -255,17 +249,16 @@ class SchemeSceneData:
         # 确保基础节点结构完整，避免后续渲染时访问缺失索引。
         expected_node_count = max(1, int(node_count)) if node_count is not None else 0
         max_node_index = max(
-            max(self.node_points.keys(), default=0),
+            len(self.node_points),
             max(self.node_textboxes.keys(), default=0),
-            max(self.node_manual_edited.keys(), default=0),
+            len(self.node_manual_edited) - 1,
             len(self.node_to_group) - 1,
             max(self.node_paths.keys(), default=0),
             expected_node_count - 1,
         )
         for idx in range(0, max_node_index + 1):
-            self.node_points.setdefault(idx, [])
+            self.node_points.append([]) if idx >= len(self.node_points) else None
             self.node_textboxes.setdefault(idx, [])
-            self.node_manual_edited.setdefault(idx, False)
             self.node_paths.setdefault(idx, [])
         while len(self.node_to_group) <= max_node_index:
             self.node_to_group.append(set())
@@ -273,22 +266,21 @@ class SchemeSceneData:
     def ensure_node_exists(self, node_index: int):
         """确保目标节点存在；新节点默认复制前一节点点位。"""
         idx = max(0, int(node_index))
-        if idx in self.node_points:
+        if idx < len(self.node_points):
             return
 
         if idx == 0:
             self.node_points[0] = []
-            self.node_textboxes[0] = []
-            self.node_manual_edited[0] = self.node_manual_edited.get(0, False)
             return
 
-        prev_points = self.node_points.get(idx - 1, [])
-        self.node_points[idx] = [
+        # self.node_points.append([])
+        self.node_manual_edited.append(False)
+        
+        prev_points = self.node_points[idx - 1] if idx - 1 < len(self.node_points) else []
+        self.node_points.append([
             {"id": p["id"], "x": p["x"], "y": p["y"], "group_id": p.get("group_id")}
             for p in prev_points
-        ]
-        self.node_textboxes[idx] = []
-        self.node_manual_edited[idx] = False
+        ])
         self.node_paths.setdefault(idx, [])
 
     def on_node_added(self, node_index: int):
@@ -297,18 +289,98 @@ class SchemeSceneData:
         self.node_to_group.append(self.node_to_group[-1])
         self._render_points_for_active_node()
 
+    def _split_node_path_entry_at_midpoint(self, path_info: dict) -> tuple[dict, dict]:
+        """把单条路径定义按路径长度中点拆成左右两段。"""
+        if path_info is None:
+            empty_entry = {"anchor_id": None, "path": [], "members": []}
+            return empty_entry, empty_entry.copy()
+
+        path = path_info['path']
+        if len(path) < 2:
+            left_path = list(path)
+            right_path = list(path)
+        else:
+            import math
+
+            segment_lengths = []
+            cumulative_lengths = [0.0]
+            total_length = 0.0
+            for idx in range(len(path) - 1):
+                ax, ay = path[idx]
+                bx, by = path[idx + 1]
+                segment_length = math.hypot(bx - ax, by - ay)
+                segment_lengths.append(segment_length)
+                total_length += segment_length
+                cumulative_lengths.append(total_length)
+
+            if total_length <= 1e-9:
+                mid_idx = len(path) // 2
+                left_path = path[: mid_idx + 1]
+                right_path = path[mid_idx:]
+            else:
+                mid_length = total_length / 2.0
+                closest_idx = min(range(len(cumulative_lengths)), key=lambda idx: abs(cumulative_lengths[idx] - mid_length))
+                if abs(cumulative_lengths[closest_idx] - mid_length) <= 1e-6:
+                    split_idx = closest_idx
+                    left_path = path[: split_idx + 1]
+                    right_path = path[split_idx:]
+                else:
+                    split_point = None
+                    split_idx = 0
+                    running = 0.0
+                    for idx, segment_length in enumerate(segment_lengths):
+                        next_running = running + segment_length
+                        if next_running >= mid_length:
+                            split_idx = idx
+                            if segment_length <= 1e-9:
+                                split_point = (float(path[idx][0]), float(path[idx][1]))
+                            else:
+                                local_progress = (mid_length - running) / segment_length
+                                ax, ay = path[idx]
+                                bx, by = path[idx + 1]
+                                split_point = (
+                                    float(ax) + (float(bx) - float(ax)) * local_progress,
+                                    float(ay) + (float(by) - float(ay)) * local_progress,
+                                )
+                            break
+                        running = next_running
+
+                    if split_point is None:
+                        split_point = (float(path[-1][0]), float(path[-1][1]))
+                        split_idx = len(path) - 1
+
+                    left_path = path[: split_idx + 1] + [split_point]
+                    right_path = [split_point] + path[split_idx + 1 :]
+
+        if not path:
+            left_path = []
+            right_path = []
+
+        left_entry = {
+            "anchor_id": path_info.get("anchor_id"),
+            "path": left_path,
+            "members": list(path_info.get("members", [])),
+        }
+        right_entry = {
+            "anchor_id": path_info.get("anchor_id"),
+            "path": right_path,
+            "members": list(path_info.get("members", [])),
+        }
+        return left_entry, right_entry
+
     def on_node_inserted(self, node_index: int):
         """在中间拍位插入节点后，按新时间轴索引重排并初始化新节点点位。"""
         inserted_index = int(node_index)
 
         # 重排节点索引：从后往前遍历，遇到索引 >= inserted_index 的节点都往后挪一位。
-        moved_points = {}
-        for idx in sorted(self.node_points.keys(), reverse=True):
-            if idx >= inserted_index:
-                moved_points[idx + 1] = self.node_points[idx]
-            else:
-                moved_points[idx] = self.node_points[idx]
-        self.node_points = moved_points
+        # self.node_points.insert(inserted_index, self.node_points[inserted_index - 1] if inserted_index - 1 >= 0 else [])
+        # moved_points = {}
+        # for idx in reversed(range(len(self.node_points))):
+        #     if idx >= inserted_index:
+        #         moved_points[idx + 1] = self.node_points[idx]
+        #     else:
+        #         moved_points[idx] = self.node_points[idx]
+        # self.node_points = moved_points
 
         moved_textboxes = {}
         for idx in sorted(self.node_textboxes.keys(), reverse=True):
@@ -318,14 +390,9 @@ class SchemeSceneData:
                 moved_textboxes[idx] = self.node_textboxes[idx]
         self.node_textboxes = moved_textboxes
 
+
         # 重排节点手动编辑状态
-        moved_manual = {}
-        for idx in sorted(self.node_manual_edited.keys(), reverse=True):
-            if idx >= inserted_index:
-                moved_manual[idx + 1] = self.node_manual_edited[idx]
-            else:
-                moved_manual[idx] = self.node_manual_edited[idx]
-        self.node_manual_edited = moved_manual
+        self.node_manual_edited.insert(inserted_index, False)
         
         # 添加新节点的分组信息
         self.node_to_group.insert(inserted_index, self.node_to_group[inserted_index - 1] if inserted_index - 1 >= 0 else set())
@@ -333,12 +400,33 @@ class SchemeSceneData:
         # 新节点点位初始化
         left_idx = inserted_index - 1
         right_idx = inserted_index + 1
-        if left_idx in self.node_points and right_idx in self.node_points:  # 如果左右节点都存在则插值
-            self.node_points[inserted_index] = self._interpolate_points_between_nodes(left_idx, right_idx, inserted_index)
+        self.node_paths[right_idx] = self.node_paths[inserted_index]
+        
+        if left_idx < len(self.node_points) and right_idx <= len(self.node_points):  # 如果左右节点都存在则插值
+            # 插值新节点点位
+            self.node_points.insert(inserted_index, [])
+            self.node_points[inserted_index] = self._interpolate_points_at_beat(left_idx, right_idx, self._node_start_beat(inserted_index))
+            
+            # 更新路径设置
+            # moved_paths = {}
+            # for idx in sorted(self.node_paths.keys(), reverse=True):
+            #     if idx >= inserted_index:
+            #         moved_paths[idx + 1] = self.node_paths[idx]
+            #     else:
+            #         moved_paths[idx] = self.node_paths[idx]
+            # right_paths = list(moved_paths.get(right_idx, []))
+            left_paths = []
+            split_right_paths = []
+            for path_info in self.node_paths[right_idx]:
+                left_entry, right_entry = self._split_node_path_entry_at_midpoint(path_info)
+                left_paths.append(left_entry)
+                split_right_paths.append(right_entry)
+            self.node_paths[inserted_index] = left_paths
+            self.node_paths[right_idx] = split_right_paths
+            # moved_paths[right_idx] = split_right_paths
+            # self.node_paths = moved_paths
         else:   # 复制左节点（如果存在）
-            self.node_points[inserted_index] = self._copy_points(left_idx)
-
-        self.node_textboxes[inserted_index] = []
+            self.node_points.insert(inserted_index, self._copy_points(left_idx))
 
         # self.node_shapes[inserted_index] = []
         self.node_manual_edited[inserted_index] = False # 手动编辑状态默认为 False。
@@ -352,15 +440,16 @@ class SchemeSceneData:
             return
 
         # 重排节点索引
-        new_points = {}
-        for idx in sorted(self.node_points.keys()):
-            if idx < removed_index:
-                new_points[idx] = self.node_points[idx]
-            elif idx > removed_index:
-                new_points[idx - 1] = self.node_points[idx]
-        if 0 not in new_points:
-            new_points[0] = []
-        self.node_points = new_points
+        # new_points = {}
+        # for idx in range(len(self.node_points)):
+        #     if idx < removed_index:
+        #         new_points[idx] = self.node_points[idx]
+        #     elif idx > removed_index:
+        #         new_points[idx - 1] = self.node_points[idx]
+        # if 0 not in new_points:
+        #     new_points[0] = []
+        # self.node_points = new_points
+        self.node_points.pop(removed_index)
 
         new_textboxes = {}
         for idx in sorted(self.node_textboxes.keys()):
@@ -380,26 +469,27 @@ class SchemeSceneData:
         #         break
         self.node_to_group.pop(removed_index)
 
+        # 直接舍弃被删除节点的路径数据
         new_paths = {}
         for idx in sorted(self.node_paths.keys()):
+            # 重置索引
             if idx < removed_index:
                 new_paths[idx] = self.node_paths[idx]
-            elif idx > removed_index:
+            elif idx > removed_index + 1:
                 new_paths[idx - 1] = self.node_paths[idx]
+        # for path_info, new_path_info in zip(self.node_paths[removed_index], new_paths[removed_index]):
+        #     # 修复路径
+        #     src_pos = path_info['path'][0]
+        #     new_path_info['path'].insert(0, src_pos)
         self.node_paths = new_paths
         # if del_group:
         #     self.group_to_point = [group for group in self.group_to_point if group[0] not in del_group]
 
         # 重排节点手动编辑状态
-        new_manual = {}
-        for idx in sorted(self.node_manual_edited.keys()):
-            if idx < removed_index:
-                new_manual[idx] = self.node_manual_edited[idx]
-            elif idx > removed_index:
-                new_manual[idx - 1] = self.node_manual_edited[idx]
-        if 0 not in new_manual:
-            new_manual[0] = False
-        self.node_manual_edited = new_manual
+        if removed_index < len(self.node_manual_edited):
+            self.node_manual_edited.pop(removed_index)
+        if not self.node_manual_edited:
+            self.node_manual_edited = [False]
 
         # 调整当前选中节点索引
         if self.active_node >= removed_index:
@@ -438,7 +528,8 @@ class SchemeSceneData:
 
     def _mark_node_manual(self, node_index: int):
         """标记节点为手动编辑过，用于后续自动插值时判断是否覆盖。"""
-        self.node_manual_edited[max(0, int(node_index))] = True
+        idx = max(0, int(node_index))
+        self.node_manual_edited[idx] = True
 
     def _node_start_beat(self, node_index: int) -> int:
         """返回节点起始拍位，默认为节点索引对应的整数拍。"""
@@ -454,9 +545,9 @@ class SchemeSceneData:
         adjustment_active = bool(getattr(self, "_adjustment_active", False))
         adjustment_preview_points = getattr(self, "_adjustment_preview_points", [])
         active_node = int(getattr(self, "active_node", -1))
-        if adjustment_active and int(node_index) == active_node and adjustment_preview_points:
+        if adjustment_active and node_index == active_node and adjustment_preview_points:
             return adjustment_preview_points
-        return self.node_points.get(int(node_index), [])
+        return self.node_points[node_index]
 
     def _sample_position_along_path(self, path: list[tuple[float, float]], progress: float) -> tuple[float, float] | None:
         """按路径累计长度采样位置。"""
@@ -508,64 +599,6 @@ class SchemeSceneData:
             return float(sampled[0]) + float(offset[0]), float(sampled[1]) + float(offset[1])
         return None
 
-    def _interpolate_points_between_nodes(self, start_node: int, end_node: int, target_node: int) -> list[dict]:
-        """按节点起始拍对齐，计算 target_node 的插值点位。"""
-        # start_points = self.node_points.get(start_node, [])
-        # end_points = self.node_points.get(end_node, [])
-        start_points = self._points_for_node_render(start_node)
-        end_points = self._points_for_node_render(end_node)
-        start_map = {int(p["id"]): p for p in start_points}
-        end_map = {int(p["id"]): p for p in end_points}
-
-        start_beat = self._node_start_beat(start_node)
-        end_beat = self._node_start_beat(end_node)
-        target_beat = self._node_start_beat(target_node)
-        denom = end_beat - start_beat
-        if abs(denom) <= 1e-9:
-            t = 0.0
-        else:
-            t = max(0.0, min(1.0, (target_beat - start_beat) / denom))
-
-        points = []
-        for point_id in sorted(set(start_map.keys()) | set(end_map.keys())):
-            sp = start_map.get(point_id)
-            ep = end_map.get(point_id)
-            if sp is not None and ep is not None:
-                # sampled = self._sample_point_from_node_path(start_node, point_id, t)
-                # if sampled is None:
-                sampled = self._sample_point_from_node_path(end_node, point_id, t)
-                if sampled is not None:
-                    px, py = sampled
-                    point = {"id": point_id, "x": float(px), "y": float(py)}
-                else:
-                    point = {
-                        "id": point_id,
-                        "x": float(sp["x"]) + (float(ep["x"]) - float(sp["x"])) * t,
-                        "y": float(sp["y"]) + (float(ep["y"]) - float(sp["y"])) * t,
-                    }
-                group_id = ep.get("group_id", sp.get("group_id"))
-                if group_id is not None:
-                    point["group_id"] = group_id
-                points.append(point)
-            elif sp is not None:
-                point = {"id": point_id, "x": float(sp["x"]), "y": float(sp["y"])}
-                if sp.get("group_id") is not None:
-                    point["group_id"] = sp.get("group_id")
-                points.append(point)
-            elif ep is not None:
-                sampled = self._sample_point_from_node_path(end_node, point_id, t)
-                # if sampled is None:
-                # sampled = self._sample_point_from_node_path(start_node, point_id, 1.0)
-                if sampled is not None:
-                    px, py = sampled
-                    point = {"id": point_id, "x": float(px), "y": float(py)}
-                else:
-                    point = {"id": point_id, "x": float(ep["x"]), "y": float(ep["y"]) }
-                if ep.get("group_id") is not None:
-                    point["group_id"] = ep.get("group_id")
-                points.append(point)
-        return points
-
     def _interpolate_points_at_beat(self, start_node: int, end_node: int, target_beat: int) -> list[dict]:
         """按任意拍位进行插值，用于非节点拍位预览。"""
         # start_points = self.node_points.get(start_node, [])
@@ -590,8 +623,6 @@ class SchemeSceneData:
             ep = end_map.get(point_id)
             if sp is not None and ep is not None:
                 sampled = self._sample_point_from_node_path(end_node, point_id, t)
-                # if sampled is None:
-                #     sampled = self._sample_point_from_node_path(end_node, point_id, t)
                 if sampled is not None:
                     px, py = sampled
                     point = {"id": point_id, "x": float(px), "y": float(py)}
@@ -606,21 +637,12 @@ class SchemeSceneData:
                     point["group_id"] = group_id
                 points.append(point)
             elif sp is not None:
-                sampled = self._sample_point_from_node_path(end_node, point_id, 0.0)
-                # if sampled is None:
-                #     sampled = self._sample_point_from_node_path(end_node, point_id, 0.0)
-                if sampled is not None:
-                    px, py = sampled
-                    point = {"id": point_id, "x": float(px), "y": float(py)}
-                else:
-                    point = {"id": point_id, "x": float(sp["x"]), "y": float(sp["y"]) }
+                point = {"id": point_id, "x": float(sp["x"]), "y": float(sp["y"]) }
                 if sp.get("group_id") is not None:
                     point["group_id"] = sp.get("group_id")
                 points.append(point)
             elif ep is not None:
-                sampled = self._sample_point_from_node_path(end_node, point_id, 1.0)
-                if sampled is None:
-                    sampled = self._sample_point_from_node_path(start_node, point_id, 1.0)
+                sampled = self._sample_point_from_node_path(end_node, point_id, t)
                 if sampled is not None:
                     px, py = sampled
                     point = {"id": point_id, "x": float(px), "y": float(py)}
@@ -634,7 +656,7 @@ class SchemeSceneData:
     def _node_index_at_beat(self, beat: int) -> int | None:
         """若 beat 与某节点起始拍重合，返回节点索引。"""
         target = int(beat)
-        max_node = max(self.node_points.keys(), default=0)
+        max_node = len(self.node_points) - 1
         for idx in range(0, max_node + 1):
             if self._node_start_beat(idx) == target:
                 return idx
@@ -643,7 +665,7 @@ class SchemeSceneData:
     def _segment_for_beat(self, beat: int) -> tuple[int, int] | None:
         """返回 beat 所在区间 [left_node, right_node]。"""
         target = int(beat)
-        max_node = max(self.node_points.keys(), default=0)
+        max_node = len(self.node_points) - 1
         if max_node <= 0:
             return None
 
@@ -666,7 +688,7 @@ class SchemeSceneData:
     def _copy_points(self, source_node: int) -> list[dict]:
         """复制 source_node 的点位数据，用于新节点初始化。"""
         copied = []
-        for p in self.node_points.get(source_node, []):
+        for p in self.node_points[source_node]:
             point = {"id": p["id"], "x": p["x"], "y": p["y"]}
             if p.get("group_id") is not None:
                 point["group_id"] = p.get("group_id")
@@ -675,7 +697,7 @@ class SchemeSceneData:
 
     def _recalculate_following_auto_nodes(self, changed_node: int, include_manual_nodes: bool = False):
         """在 changed_node 发生修改后，自动调整后续节点的点位；如果 include_manual_nodes 为 True 则连同手动编辑过的节点一起调整。"""
-        max_node = max(self.node_points.keys(), default=0)
+        max_node = len(self.node_points) - 1
         changed_node = int(changed_node)
         if changed_node >= max_node:
             return
@@ -684,21 +706,21 @@ class SchemeSceneData:
         while segment_start < max_node:
             next_manual = None
             for idx in range(segment_start + 1, max_node + 1):
-                if self.node_manual_edited.get(idx, False):
+                if self.node_manual_edited[idx]:
                     next_manual = idx
                     break
 
             if next_manual is None:
                 for idx in range(segment_start + 1, max_node + 1):
-                    if include_manual_nodes or not self.node_manual_edited.get(idx, False):
+                    if include_manual_nodes or not self.node_manual_edited[idx]:
                         self.node_points[idx] = self._copy_points(segment_start)
                 break
 
             for idx in range(segment_start + 1, next_manual):
-                if include_manual_nodes or not self.node_manual_edited.get(idx, False):
-                    self.node_points[idx] = self._interpolate_points_between_nodes(segment_start, next_manual, idx)
+                if include_manual_nodes or not self.node_manual_edited[idx]:
+                    self.node_points[idx] = self._interpolate_points_at_beat(segment_start, next_manual, self._node_start_beat(idx))
 
-            if include_manual_nodes and self.node_manual_edited.get(next_manual, False):
-                self.node_points[next_manual] = self._interpolate_points_between_nodes(segment_start, next_manual, next_manual)
+            if include_manual_nodes and self.node_manual_edited[next_manual]:
+                self.node_points[next_manual] = self._interpolate_points_at_beat(segment_start, next_manual, self._node_start_beat(next_manual))
 
             segment_start = next_manual

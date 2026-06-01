@@ -444,7 +444,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             return []
         return [
             int(point.get("id", -1))
-            for point in self.node_points.get(self.active_node, [])
+            for point in self.node_points[self.active_node]
             if int(point.get("id", -1)) in self._selected_point_ids
         ]
 
@@ -786,7 +786,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         export_scene = QGraphicsScene()
         # node_index = node_index
         # if node_index > 0:
-        for point in self.node_points.get(node_index, []):
+        for point in self.node_points[node_index]:
             pos = QPointF(float(point.get("x", 0.0)) * export_scale + float(export_offset.x()), float(point.get("y", 0.0)) * export_scale + float(export_offset.y()))
             # pre_dot_radius = 2.0 * self._pdf_export_font_scale_factor(export_scale)
             pre_dot_radius = self.pre_point_radius * self.export_ratio
@@ -795,7 +795,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             pre_dot.setBrush(QBrush(self.pre_point_color))
             pre_dot.setZValue(950)
             export_scene.addItem(pre_dot)
-        for point in self.node_points.get(node_index, []):
+        for point in self.node_points[node_index]:
             self._add_pdf_export_point_items(export_scene, point, export_scale, export_offset)
         for textbox in self.node_textboxes.get(node_index, []):
             self._add_pdf_export_textbox_items(export_scene, textbox, export_scale, export_offset)
@@ -961,7 +961,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             return
         selected_ids = set()
         select_groups = set()
-        for point in self.node_points.get(self.active_node, []):
+        for point in self.node_points[self.active_node]:
             point_id = int(point['id'])
             if point_id in selected_ids:
                 continue
@@ -1099,7 +1099,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
         # 为所有当前未归入任何组的点也添加 helper（标记为 #sym:helper）
         existing_helper_pids = {int(it.data(1)) for it in getattr(self, "_temp_group_helper_items", []) if it.data(1) is not None}
-        for point in self.node_points.get(self.active_node, []):
+        for point in self.node_points[self.active_node]:
             pid = int(point.get("id", 0))
             if pid in grouped_point_ids:
                 continue
@@ -1136,7 +1136,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             return
         # 保存原始快照
         self._temp_group_original_snapshot = (list(self.group_to_point), [set(s) for s in self.node_to_group])
-        selected_in_scene_order = [int(point.get("id", -1)) for point in self.node_points.get(self.active_node, []) if int(point.get("id", -1)) in selected]
+        selected_in_scene_order = [int(point.get("id", -1)) for point in self.node_points[self.active_node] if int(point.get("id", -1)) in selected]
         temp_groups: list[list[int]] = []
         grouped_selected_ids: set[int] = set()
         for group in self.group_to_point:
@@ -1309,7 +1309,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
         # ========== 5. 确定需要更新的节点范围 ==========
         # 确保 node_to_group 长度足够
-        max_node_index = max(max(self.node_points.keys(), default=0), len(self.node_to_group) - 1)
+        max_node_index = max(len(self.node_points) - 1, len(self.node_to_group) - 1)
         while len(self.node_to_group) <= max_node_index:
             self.node_to_group.append(set())
 
@@ -1318,7 +1318,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         # 寻找第一个手动编辑节点（从 start_node+1 开始查找）
         first_manual_node = None
         for idx in range(start_node + 1, max_node_index + 1):
-            if self.node_manual_edited.get(idx, False):
+            if self.node_manual_edited[idx]:
                 first_manual_node = idx
                 break
 
@@ -1337,7 +1337,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         # ========== 6. 执行节点数据更新（拆分旧组，而非合并） ==========
         for node_idx in range(start_node, end_node):
 
-            node_points = self.node_points.get(node_idx, [])
+            node_points = self.node_points[node_idx]
             # 记录更新前的 group_id
             old_gid_by_pid = {}
             for point in node_points:
@@ -1496,7 +1496,16 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def _find_point_by_id(self, point_id: int) -> dict | None:
         """根据点位ID查找当前节点中的点位数据字典"""
-        for point in self.node_points.get(self.active_node, []):
+        for point in self.node_points[self.active_node]:
+            if int(point.get("id", -1)) == int(point_id):
+                return point
+        return None
+    
+    def _find_previous_point_by_id(self, point_id: int) -> dict | None:
+        """根据点位ID查找前一个节点中的点位数据字典"""
+        if self.active_node <= 0:
+            return None
+        for point in self.node_points[self.active_node - 1]:
             if int(point.get("id", -1)) == int(point_id):
                 return point
         return None
@@ -1546,7 +1555,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         x, y = self._scene_to_field(scene_pos)
         x, y = self._snap_field_point(x, y)
 
-        for other in self.node_points.get(self.active_node, []):
+        for other in self.node_points[self.active_node]:
             if int(other.get("id", -1)) == int(point_id):
                 continue
             if abs(other["x"] - x) < 1e-9 and abs(other["y"] - y) < 1e-9:
@@ -1635,7 +1644,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
         source_points = [
             {"id": int(point["id"]), "x": float(point["x"]), "y": float(point["y"]), **({"group_id": point.get("group_id")} if point.get("group_id") is not None else {})}
-            for point in self.node_points.get(self.active_node, [])
+            for point in self.node_points[self.active_node]
         ]
         self._adjustment_source_points = source_points
 
@@ -1695,7 +1704,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         if not self._adjustment_preview_points:
             self._adjustment_preview_points = self._build_adjustment_preview_points()
 
-        current_points = self.node_points.setdefault(self.active_node, [])
+        current_points = self.node_points[self.active_node]
         # 若存在选中点集合，则按索引匹配仅移动匹配到的原点位；否则保持旧逻辑全部替换
         if self._selected_point_ids:
             src_ordered = [p for p in self._adjustment_source_points if int(p.get("id", -1)) in self._selected_point_ids]
@@ -1842,11 +1851,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         line_items = []
         if not dst_points:
             return line_items
-
-        # prev_points = self.node_points.get(self.active_node - 1, [])
-        # source_points = prev_points if prev_points else (src_points or [])
-        # if not source_points:
-        #     return line_items
 
         if isinstance(dst_points[0], dict):
             src_map = {
@@ -2396,7 +2400,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 selected_ids = self._ordered_selected_point_ids_for_drawing()
                 if selected_ids:
                     # 获取原始选中点的位置（field 坐标）
-                    src_points = [self._find_point_by_id(int(pid)) for pid in selected_ids]
+                    src_points = [self._find_previous_point_by_id(int(pid)) for pid in selected_ids]
                     if src_points and src_points[0] is not None:
                         base_x = float(src_points[0].get("x", 0.0))
                         base_y = float(src_points[0].get("y", 0.0))
@@ -2577,7 +2581,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         
         # 若存在已选点集，按索引匹配原点位->新点位并绘制连线以保持连贯性
         if self._selected_point_ids and self.active_tool not in {"路径", '跟随'}:
-            current_points = self.node_points.get(self.active_node, [])
+            current_points = self.node_points[self.active_node]
             src_ordered = [p for p in current_points if int(p.get("id", -1)) in self._selected_point_ids]
             items.extend(self._build_preview_line_items(list(preview_points), src_ordered, z=z - 10))
         
@@ -2608,7 +2612,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
         point_map = {
             int(point.get("id", -1)): point
-            for point in self.node_points.get(self.active_node, [])
+            for point in self.node_points[self.active_node]
         }
         dst_ordered = []
         for point_id, preview_index in sorted(snapshot.get("point_to_preview", {}).items(), key=lambda item: int(item[1])):
@@ -2782,7 +2786,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             return False
         
         generated = self._generate_performer_points(tool_name, refs)    # 生成最终点位列表（field 坐标）
-        current_points = self.node_points.setdefault(self.active_node, [])  # 当前节点的点位列表
+        current_points = self.node_points[self.active_node]  # 当前节点的点位列表
 
         # 如果有选中点，则按索引匹配移动已存在的点；多余的生成点不新增
         if self._selected_point_ids:
@@ -2792,7 +2796,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 if selected_ids and generated:
                     path_points = list(generated)
                     anchor_id = int(selected_ids[0])
-                    anchor_point = self._find_point_by_id(anchor_id)
+                    anchor_point = self._find_previous_point_by_id(anchor_id)
                     if anchor_point is not None and path_points:
                         base_x = float(anchor_point.get("x", 0.0))
                         base_y = float(anchor_point.get("y", 0.0))
@@ -3383,22 +3387,21 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                     self._draft_preview_items.append(dot)
 
                 selected_ids = self._ordered_selected_point_ids_for_drawing()
-                if selected_ids:
-                    src_points = [self._find_point_by_id(int(pid)) for pid in selected_ids]
-                    if src_points and src_points[0] is not None:
-                        base_x = float(src_points[0].get("x", 0.0))
-                        base_y = float(src_points[0].get("y", 0.0))
-                        last_px, last_py = refs_path[-1]
-                        tx = float(last_px) - float(base_x)
-                        ty = float(last_py) - float(base_y)
-                        preview_points = []
-                        for point in src_points:
-                            if point is None:
-                                continue
-                            preview_points.append((float(point.get("x", 0.0)) + tx, float(point.get("y", 0.0)) + ty))
-                        moved_dots = self.render_preview_points(preview_points, pen_color="#2980b9", brush_color=(41, 128, 185, 120), z=895)
-                        for dot in moved_dots:
-                            self._draft_preview_items.append(dot)
+                src_points = [self._find_previous_point_by_id(int(pid)) for pid in selected_ids]
+                if src_points and src_points[0] is not None:
+                    base_x = float(src_points[0].get("x", 0.0))
+                    base_y = float(src_points[0].get("y", 0.0))
+                    last_px, last_py = refs_path[-1]
+                    tx = float(last_px) - float(base_x)
+                    ty = float(last_py) - float(base_y)
+                    preview_points = []
+                    for point in src_points:
+                        if point is None:
+                            continue
+                        preview_points.append((float(point.get("x", 0.0)) + tx, float(point.get("y", 0.0)) + ty))
+                    moved_dots = self.render_preview_points(preview_points, pen_color="#2980b9", brush_color=(41, 128, 185, 120), z=895)
+                    for dot in moved_dots:
+                        self._draft_preview_items.append(dot)
             return
 
         preview_points = self._generate_performer_points(self._draft_tool_name, self._draft_reference_points)
@@ -3504,7 +3507,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             if not self._pending_points:
                 anchor_id = next(iter(self._ordered_selected_point_ids_for_drawing()), None)
                 if anchor_id is not None:
-                    anchor_point = self._find_point_by_id(int(anchor_id))
+                    anchor_point = self._find_previous_point_by_id(int(anchor_id))
                     if anchor_point is not None:
                         self._pending_points.append((float(anchor_point["x"]), float(anchor_point["y"])))
             _append_unique_reference_point(self._pending_points, field_point)
@@ -3561,7 +3564,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             # 拍位正好在某节点起始拍，直接显示该节点。
             preview_node = node_at_beat
             if preview_node > 0:
-                prev_points = self.node_points.get(preview_node - 1, [])
+                prev_points = self.node_points[preview_node - 1]
                 for point in prev_points:
                     self._draw_point_item(point, pre_view=True, draw_label=False)
             current_points = self._points_for_node_render(preview_node)
@@ -3571,13 +3574,13 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             if segment is not None:
                 # 在拍位位于两节点之间时显示插值预览，且仅显示左节点的点位为 pre_view。
                 left, right = segment
-                prev_points = self.node_points.get(left, [])
+                prev_points = self.node_points[left]
                 for point in prev_points:
                     self._draw_point_item(point, pre_view=True, draw_label=False)
                 current_points = self._interpolate_points_at_beat(left, right, self.preview_beat)
             else:
                 if self.active_node > 0:
-                    prev_points = self.node_points.get(self.active_node - 1, [])
+                    prev_points = self.node_points[self.active_node - 1]
                     for point in prev_points:
                         self._draw_point_item(point, pre_view=True, draw_label=False)
                 current_points = self._points_for_node_render(self.active_node)
@@ -3612,15 +3615,15 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             return
 
         # 收集所有剩余点位 ID（跨所有节点），按旧 ID 升序排序以确定新 ID 分配顺序
-        remaining_ids = sorted({int(p["id"]) for pts in self.node_points.values() for p in pts if int(p["id"]) not in to_delete})
+        remaining_ids = sorted({int(p["id"]) for pts in self.node_points for p in pts if int(p["id"]) not in to_delete})
 
         # 生成 old->new 映射
         id_map = {old: new for new, old in enumerate(remaining_ids, start=1)}
 
         # 重新构建每个节点的点位列表，移除被删点并重写 ID
-        for node_idx in list(self.node_points.keys()):
+        for node_idx in range(len(self.node_points)):
             new_points = []
-            for p in self.node_points.get(node_idx, []):
+            for p in self.node_points[node_idx]:
                 old_id = int(p.get("id", -1))
                 if old_id in to_delete:
                     continue
@@ -3665,11 +3668,11 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             return
 
         prev_points = {int(p.get("id", -1)): (float(p.get("x", 0.0)), float(p.get("y", 0.0)))
-                       for p in self.node_points.get(self.active_node - 1, [])}
+                       for p in self.node_points[self.active_node - 1]}
         if not prev_points:
             return
 
-        current_points = self.node_points.get(self.active_node, [])
+        current_points = self.node_points[self.active_node]
         changed = False
         for p in current_points:
             pid = int(p.get("id", -1))
@@ -3772,7 +3775,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def _position_occupied(self, x: float, y: float) -> bool:
         """判断当前图是否已有同位置点位。"""
-        for point in self.node_points.get(self.active_node, []):
+        for point in self.node_points[self.active_node]:
             if abs(point["x"] - x) < 1e-9 and abs(point["y"] - y) < 1e-9:
                 return True
         return False
