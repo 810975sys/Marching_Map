@@ -13,3 +13,5 @@ __pycache__/
 初步构想.txt
 阶段性工作日志.txt
 fields/
+saves/
+test.py
