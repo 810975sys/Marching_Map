@@ -206,7 +206,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def load_confirmed_state(self, data: dict, node_count: int | None = None):
         """恢复已确认的方案图数据，并清理当前编辑中的临时状态。"""
-        self.load_confirmed_state_data(data, node_count=node_count)
+        super().load_confirmed_state(data, node_count=node_count)
+        # self.load_confirmed_state_data(data, node_count=node_count)
         self._selected_point_ids.clear()
         self._reset_adjustment_state(reset_controls=True)
         self._clear_selection_rect()
@@ -222,9 +223,9 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._selected_textbox_id = None
         self._clear_overlay_items()
 
-    def load_confirmed_state_data(self, data: dict, node_count: int | None = None):
-        """仅恢复数据层状态，不重绘场景。"""
-        super().load_confirmed_state(data, node_count=node_count)
+    # def load_confirmed_state_data(self, data: dict, node_count: int | None = None):
+    #     """仅恢复数据层状态，不重绘场景。"""
+    #     super().load_confirmed_state(data, node_count=node_count)
 
     def _copy_textboxes_for_node(self, node_index: int) -> list[dict]:
         return [dict(tb) for tb in self.node_textboxes.get(int(node_index), [])]
@@ -801,7 +802,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self._add_pdf_export_textbox_items(export_scene, textbox, export_scale, export_offset)
         return export_scene
 
-    def export_pdf(self, file_path: str | Path, cnt_per_page: list[int] | None = None):
+    def export_conductor_pdf(self, file_path: str | Path, cnt_per_page: list[int] | None = None):
         """将每个方案图节点导出为一页 A4 PDF。"""
         output_path = Path(file_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -823,48 +824,135 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         #     indexes = [0]
 
         painter = QPainter(writer)
-        try:
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-            export_scale, export_offset = self._pdf_export_layout(page_rect)
-            for node_index, page_cnt in enumerate(cnt_per_page):
-                if node_index > 0:
-                    writer.newPage()
-                export_scene = self._build_pdf_export_scene(node_index, page_cnt, export_scale, export_offset)
-                export_scene.setSceneRect(page_rect)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        export_scale, export_offset = self._pdf_export_layout(page_rect)
+        for node_index, page_cnt in enumerate(cnt_per_page):
+            if node_index > 0:
+                writer.newPage()
+            export_scene = self._build_pdf_export_scene(node_index, page_cnt, export_scale, export_offset)
+            export_scene.setSceneRect(page_rect)
 
-                painter.save()
-                self._draw_pdf_export_background(painter, page_rect, export_scale, export_offset)
-                export_scene.render(painter, page_rect, page_rect, Qt.AspectRatioMode.IgnoreAspectRatio)
-                painter.restore()
+            painter.save()
+            self._draw_pdf_export_background(painter, page_rect, export_scale, export_offset)
+            export_scene.render(painter, page_rect, page_rect, Qt.AspectRatioMode.IgnoreAspectRatio)
+            painter.restore()
 
-                # 在下侧留白区域绘制页脚文本，左对齐、上对齐，并紧贴内容区下边缘显示
-                field_rect = self.field_info.field_rect
-                page_height = float(page_rect.height())
-                padding = min(self._pdf_export_content_padding(export_scale))
-                content_bottom = float(page_rect.bottom())
-                content_top = float(page_rect.top())
-                content_height = page_height - padding
-                footer_rect = QRectF(
-                    250,
-                    export_offset.y() * 2, 
-                    field_rect.width() * export_scale,
-                    padding,
-                )
+            # 在下侧留白区域绘制页脚文本，左对齐、上对齐，并紧贴内容区下边缘显示
+            field_rect = self.field_info.field_rect
+            page_height = float(page_rect.height())
+            padding = min(self._pdf_export_content_padding(export_scale))
+            content_bottom = float(page_rect.bottom())
+            content_top = float(page_rect.top())
+            content_height = page_height - padding
+            footer_rect = QRectF(
+                250,
+                export_offset.y() * 2, 
+                field_rect.width() * export_scale,
+                padding,
+            )
 
-                font = QFont()
-                font.setPointSizeF(12)
-                painter.setFont(font)
-                painter.setPen(QPen(QColor("#000000")))
+            font = QFont()
+            font.setPointSizeF(12)
+            painter.setFont(font)
+            painter.setPen(QPen(QColor("#000000")))
 
-                if node_index == 0:
-                    footer_text = f'set：#{node_index+1}'
-                else:
-                    footer_text = f'set：#{node_index+1}   节拍：{page_cnt}'
-                painter.drawText(footer_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, footer_text)
+            if node_index == 0:
+                footer_text = f'set：#{node_index+1}'
+            else:
+                footer_text = f'set：#{node_index+1}   节拍：{page_cnt}'
+            painter.drawText(footer_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, footer_text)
+            painter.drawText(footer_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop, '指挥视角')
 
-        finally:
-            painter.end()
+        painter.end()
+
+    def export_performer_pdf(self, file_path: str | Path, cnt_per_page: list[int] | None = None):
+        """将每个方案图节点导出为一页 A4 PDF（表演视角），仅将构建导出场景时的 x,y 坐标取负。"""
+        output_path = Path(file_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        writer = QPdfWriter(str(output_path))
+        writer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+        writer.setPageOrientation(self._pdf_export_page_orientation())
+        writer.setPageMargins(QMarginsF(0, 0, 0, 0))
+        writer.setTitle("Marching Map Export")
+        writer.setCreator("Marching Map Editor")
+        writer.setResolution(300)
+
+        page_rect = QRectF(writer.pageLayout().paintRectPixels(writer.resolution()))
+        if page_rect.isNull() or page_rect.width() <= 0 or page_rect.height() <= 0:
+            page_rect = QRectF(writer.pageLayout().fullRectPixels(writer.resolution()))
+
+        painter = QPainter(writer)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        export_scale, export_offset = self._pdf_export_layout(page_rect)
+        for node_index, page_cnt in enumerate(cnt_per_page):
+            if node_index > 0:
+                writer.newPage()
+
+            # 使用 _build_pdf_export_scene 的逻辑，但在使用点/文本框坐标时将 x,y 取负。
+            export_scene = QGraphicsScene()
+            for point in self.node_points[node_index]:
+                px = -float(point.get("x", 0.0))
+                py = -float(point.get("y", 0.0))
+                pos = QPointF(px * export_scale + float(export_offset.x()), py * export_scale + float(export_offset.y()))
+                pre_dot_radius = self.pre_point_radius * self.export_ratio
+                pre_dot = QGraphicsEllipseItem(pos.x() - pre_dot_radius, pos.y() - pre_dot_radius, pre_dot_radius * 2.0, pre_dot_radius * 2.0)
+                pre_dot.setPen(QPen(Qt.PenStyle.NoPen))
+                pre_dot.setBrush(QBrush(self.pre_point_color))
+                pre_dot.setZValue(950)
+                export_scene.addItem(pre_dot)
+
+            # 为复用原有的添加函数，传入坐标取负的临时字典
+            for point in self.node_points[node_index]:
+                tmp = dict(point)
+                tmp["x"] = -float(point.get("x", 0.0))
+                tmp["y"] = -float(point.get("y", 0.0))
+                self._add_pdf_export_point_items(export_scene, tmp, export_scale, export_offset)
+
+            for textbox in self.node_textboxes.get(node_index, []):
+                tmp_tb = dict(textbox)
+                tmp_tb["x1"] = -float(textbox.get("x1", 0.0))
+                tmp_tb["y1"] = -float(textbox.get("y1", 0.0))
+                tmp_tb["x2"] = -float(textbox.get("x2", 0.0))
+                tmp_tb["y2"] = -float(textbox.get("y2", 0.0))
+                self._add_pdf_export_textbox_items(export_scene, tmp_tb, export_scale, export_offset)
+
+            export_scene.setSceneRect(page_rect)
+
+            painter.save()
+            self._draw_pdf_export_background(painter, page_rect, export_scale, export_offset)
+            export_scene.render(painter, page_rect, page_rect, Qt.AspectRatioMode.IgnoreAspectRatio)
+            painter.restore()
+
+            # 页脚文本（右侧写表演视角）
+            field_rect = self.field_info.field_rect
+            page_height = float(page_rect.height())
+            padding = min(self._pdf_export_content_padding(export_scale))
+            content_bottom = float(page_rect.bottom())
+            content_top = float(page_rect.top())
+            content_height = page_height - padding
+            footer_rect = QRectF(
+                250,
+                export_offset.y() * 2, 
+                field_rect.width() * export_scale,
+                padding,
+            )
+
+            font = QFont()
+            font.setPointSizeF(12)
+            painter.setFont(font)
+            painter.setPen(QPen(QColor("#000000")))
+
+            if node_index == 0:
+                footer_text = f'set：#{node_index+1}'
+            else:
+                footer_text = f'set：#{node_index+1}   节拍：{page_cnt}'
+            painter.drawText(footer_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, footer_text)
+            painter.drawText(footer_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop, '表演者视角')
+
+        painter.end()
 
     def _clear_overlay_items(self):
         """清除当前所有点位与标签图元，准备重建。"""
@@ -2757,6 +2845,9 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         x, y = self._snap_field_point(x, y)
         snapped_scene_pos = self._field_to_scene(x, y)
         self._draft_reference_points[index] = (x, y)
+        if self._draft_tool_name == "路径" and index < len(self._pending_points):
+            # 路径工具后续新增参考点依赖 _pending_points，需同步更新避免回退到旧坐标。
+            self._pending_points[index] = (x, y)
         # if self._draft_tool_name == "线段":
         #     self._sync_line_segment_auto_values_from_draft()
         if self._draft_tool_name in self._sampling_tools:
@@ -2790,6 +2881,19 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
         # 如果有选中点，则按索引匹配移动已存在的点；多余的生成点不新增
         if self._selected_point_ids:
+            if self.active_node in self.node_paths:
+                # 清空 path 内的选中点位
+                paths = self.node_paths[self.active_node]
+                new_paths = []
+                for path_info in paths:
+                    members = path_info['members']
+                    new_member = [id for id in members if id not in self._selected_point_ids]
+                    if new_member:
+                        path_info['members'] = new_member
+                        new_paths.append(path_info)
+                if new_paths:
+                    self.node_paths[self.active_node] = new_paths
+                
             if tool_name == "路径":
                 # 路径模式：以第一个选中点为锚，按路径最后一点生成预览点位并写回 node_points。
                 selected_ids = self._ordered_selected_point_ids_for_drawing()
@@ -2805,6 +2909,10 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                         tx = float(last_px) - float(base_x)
                         ty = float(last_py) - float(base_y)
                         point_by_id = {int(point.get("id", -1)): point for point in current_points}
+                        previous_point_by_id = {
+                            int(pid): self._find_previous_point_by_id(int(pid))
+                            for pid in selected_ids
+                        }
                         preview_points = []
                         selected_points = []
                         for pid in selected_ids:
@@ -2812,9 +2920,11 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                             if point is None:
                                 continue
                             selected_points.append(point)
-                            # 为每个选中点创建对应的预览点位，并写回 node_points
-                            new_x = float(point.get("x", 0.0)) + tx
-                            new_y = float(point.get("y", 0.0)) + ty
+                            # 选中点当前位置优先基于上一拍位计算，保持与锚点逻辑一致。
+                            previous_point = previous_point_by_id.get(int(pid))
+                            source_point = previous_point if previous_point is not None else point
+                            new_x = float(source_point.get("x", 0.0)) + tx
+                            new_y = float(source_point.get("y", 0.0)) + ty
                             preview_points.append({
                                 "id": int(pid),
                                 "x": float(new_x),
@@ -2831,6 +2941,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                         # 记录路径信息：只保存锚点ID、路径点和成员点ID，成员偏移在插值时根据当前节点现算。
                         self._upsert_node_path_entry(
                             self.active_node,
+                            'forward',
                             anchor_id,
                             [(float(px), float(py)) for px, py in path_points],
                             [int(p.get("id", -1)) for p in selected_points],

@@ -194,22 +194,22 @@ class MainWindow(MainWindowNotice, QMainWindow):
         return True
         
     def _save_field_info(self):
-        try:
-            default_path = field_default_dir() / "field_settings.json"
-            file_path, _ = QFileDialog.getSaveFileName(
-                self,
-                "保存场地设置",
-                str(default_path),
-                "JSON 文件 (*.json)",
-            )
-            if not file_path:
-                return
+        # try:
+        default_path = field_default_dir() / "field_settings.json"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "保存场地设置",
+            str(default_path),
+            "JSON 文件 (*.json)",
+        )
+        if not file_path:
+            return
 
-            saveFieldInfo(self.scene.field_info, file_path)
-            self._show_menu_notice("保存成功！")
-        except Exception as e:
-            self._show_menu_notice(f"保存失败：{e}", failed=True)
-            # print(f"Error saving field info: {e}")
+        saveFieldInfo(self.scene.field_info, file_path)
+        self._show_menu_notice("保存成功！")
+        # except Exception as e:
+        #     print(e)
+        #     self._show_menu_notice(f"保存失败：{e}", failed=True)
 
     def _build_scheme_payload(self) -> dict:
         """收集当前方案的已确认数据。"""
@@ -273,23 +273,25 @@ class MainWindow(MainWindowNotice, QMainWindow):
         )
         if not file_path:
             return False
-        try:
-            self._save_scheme_to_path(file_path)
-            return True
-        except Exception as e:
-            self._show_menu_notice(f"另存为失败：{e}", failed=True)
-            return False
+        # try:
+        self._save_scheme_to_path(file_path)
+        return True
+        # except Exception as e:
+        #     print(e)
+        #     self._show_menu_notice(f"另存为失败：{e}", failed=True)
+        #     return False
 
     def _save_scheme(self, checked=False):
         """保存当前方案；若尚未指定文件则转为另存为。"""
         if self._scheme_file_path is None:
             return self._save_scheme_as()
-        try:
-            self._save_scheme_to_path(self._scheme_file_path)
-            return True
-        except Exception as e:
-            self._show_menu_notice(f"保存失败：{e}", failed=True)
-            return False
+        # try:
+        self._save_scheme_to_path(self._scheme_file_path)
+        return True
+        # except Exception as e:
+        #     print(e)
+        #     self._show_menu_notice(f"保存失败：{e}", failed=True)
+        #     return False
 
     def _open_scheme(self, checked=False):
         """打开方案文件并恢复到当前窗口。"""
@@ -304,40 +306,53 @@ class MainWindow(MainWindowNotice, QMainWindow):
         )
         if not file_path:
             return False
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                payload = json.load(f)
-            self._apply_scheme_payload(payload)
-            self._scheme_file_path = Path(file_path)
-            self._show_menu_notice(f"已打开：{Path(file_path).name}")
-            return True
-        except Exception as e:
-            self._show_menu_notice(f"打开失败：{e}", failed=True)
-            return False
+        # try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        self._apply_scheme_payload(payload)
+        self._scheme_file_path = Path(file_path)
+        self._show_menu_notice(f"已打开：{Path(file_path).name}")
+        return True
+        # except Exception as e:
+        #     print(e)
+        #     self._show_menu_notice(f"打开失败：{e}", failed=True)
+        #     return False
 
     def _export_pdf(self, checked=False):
         """将每个方案图节点导出为一页 A4 PDF。"""
-        default_name = "marching_map_export.pdf"
-        default_path = (
-            (self._scheme_file_path.with_suffix(".pdf") if self._scheme_file_path is not None else (scheme_default_dir() / default_name))
-        )
-        file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "导出为 PDF",
-            str(default_path),
-            "PDF 文件 (*.pdf)",
-        )
-        if not file_path:
-            return False
+        
+        if self._scheme_file_path is None:
+            return self._save_scheme_as()
+        # try:
+        self._save_scheme_to_path(self._scheme_file_path)
+        
+        # default_name = "marching_map_export.pdf"
+        # default_path = (
+        #     (self._scheme_file_path.with_suffix(".pdf") if self._scheme_file_path is not None else (scheme_default_dir() / default_name))
+        # )
+        # file_path, _ = QFileDialog.getSaveFileName(
+        #     self,
+        #     "导出为 PDF",
+        #     str(default_path),
+        #     "PDF 文件 (*.pdf)",
+        # )
+        # if not file_path:
+        #     return False
 
-        try:
-            self.scene.export_pdf(file_path, self.timelineMainWidget.graph_list)
-            self._show_menu_notice(f"已导出：{Path(file_path).name}")
-            return True
-        except Exception as e:
-            self._show_menu_notice(f"导出失败：{e}", failed=True)
-            print(e)
-            return False
+        # try:
+        pdf_path = self._scheme_file_path
+        stem = pdf_path.stem
+        conductor = pdf_path.with_name(f"{stem}_指挥视角.pdf")
+        performer = pdf_path.with_name(f"{stem}_表演者视角.pdf")
+        self.scene.export_conductor_pdf(conductor, self.timelineMainWidget.graph_list)
+        self.scene.export_performer_pdf(performer, self.timelineMainWidget.graph_list)
+
+        self._show_menu_notice(f"已导出 pdf 到 {stem}")
+        return True
+        # except Exception as e:
+        #     self._show_menu_notice(f"导出失败：{e}", failed=True)
+        #     print(e)
+        #     return False
 
     def _new_scheme(self, checked=False):
         """新建一个空白方案。"""
@@ -376,22 +391,23 @@ class MainWindow(MainWindowNotice, QMainWindow):
         event.accept()
 
     def _load_field_info(self):
-        try:
-            default_path = field_default_dir() / "field_settings.json"
-            file_path, _ = QFileDialog.getOpenFileName(
-                self,
-                "导入场地设置",
-                str(default_path),
-                "JSON 文件 (*.json)",
-            )
-            if not file_path:
-                return
+        # try:
+        default_path = field_default_dir() / "field_settings.json"
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "导入场地设置",
+            str(default_path),
+            "JSON 文件 (*.json)",
+        )
+        if not file_path:
+            return
 
-            loadFieldInfo(self.scene.field_info, Path(file_path))
-            # self.scene.set_field_info(field_info)
-            self._show_menu_notice("导入成功！")
-        except Exception as e:
-            self._show_menu_notice(f"导入失败：{e}", failed=True)
+        loadFieldInfo(self.scene.field_info, Path(file_path))
+        # self.scene.set_field_info(field_info)
+        self._show_menu_notice("导入成功！")
+        # except Exception as e:
+        #     print(e)
+        #     self._show_menu_notice(f"导入失败：{e}", failed=True)
             # print(f"Error loading field info: {e}")
     
     def setupToolBar(self):
@@ -513,17 +529,19 @@ class MainWindow(MainWindowNotice, QMainWindow):
         # 预留播放、暂停、前进、后退等按钮
         self.btnPlayPause = QPushButton("▶", self.animControlWidget)
         self.btnPlayPause.setFixedSize(48, 32)  # 加宽主播放按钮
-        self.btnPrev = QPushButton("⏮", self.animControlWidget)
-        self.btnPrev.setFixedSize(32, 32)
-        self.btnNext = QPushButton("⏭", self.animControlWidget)
-        self.btnNext.setFixedSize(32, 32)
+        # self.btnPrev = QPushButton("⏮", self.animControlWidget)
+        # self.btnPrev.setFixedSize(32, 32)
+        # self.btnNext = QPushButton("⏭", self.animControlWidget)
+        # self.btnNext.setFixedSize(32, 32)
 
         # 设置更大字体
         btnFont = self.btnPlayPause.font()
         btnFont.setPointSize(18)
-        for btn in [self.btnPrev, self.btnPlayPause, self.btnNext]:
-            btn.setFont(btnFont)
-            animLayout.addWidget(btn)
+        self.btnPlayPause.setFont(btnFont)
+        animLayout.addWidget(self.btnPlayPause)
+        # for btn in [self.btnPrev, self.btnPlayPause, self.btnNext]:
+        #     btn.setFont(btnFont)
+        #     animLayout.addWidget(btn)
 
         # 播放/暂停切换逻辑（仅UI，后续可绑定实际播放状态）
         def toggle_play_pause():
@@ -533,7 +551,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
                 self.btnPlayPause.setText("▶")
         self.btnPlayPause.clicked.connect(toggle_play_pause)    # 绑定按钮点击事件
         self.animControlWidget.setLayout(animLayout)    # 设置布局
-        self.animControlWidget.setFixedWidth(160)       # 设置固定宽度，确保播放控制区大小稳定
+        self.animControlWidget.setFixedWidth(80)       # 设置固定宽度，确保播放控制区大小稳定
         self.animControlWidget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)    # 水平固定，垂直扩展
 
         # 右侧时间轴主控件（横向滚动，不压缩每拍宽度）
@@ -997,17 +1015,18 @@ class MainWindow(MainWindowNotice, QMainWindow):
         action = self._confirm_delete_points_dialog(len(self.scene._selected_point_ids))
         if not action:
             return
-        try:
-            if action == "delete":
-                self.scene.delete_selected_points()
-                self._show_menu_notice("删除成功！")
-            elif action == "restore":
-                self.scene.restore_selected_points_to_prev()
-                self._show_menu_notice("已恢复转换点位置。")
-            else:
-                return
-        except Exception as e:
-            self._show_menu_notice(f"操作失败：{e}", failed=True)
+        # try:
+        if action == "delete":
+            self.scene.delete_selected_points()
+            self._show_menu_notice("删除成功！")
+        elif action == "restore":
+            self.scene.restore_selected_points_to_prev()
+            self._show_menu_notice("已恢复转换点位置。")
+        else:
+            return
+        # except Exception as e:
+        #     print(e)
+        #     self._show_menu_notice(f"操作失败：{e}", failed=True)
 
     def _confirm_delete_points_dialog(self, count: int) -> str | None:
         """显示确认对话框，返回动作字符串：'delete'、'restore' 或 None（取消）。"""
@@ -1037,11 +1056,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
         layout.addLayout(btn_layout)
         dlg.setLayout(layout)
         # p0 仅允许删除表演者点位，禁用恢复按钮
-        try:
-            if getattr(self.scene, "active_node", 0) == 0:
-                del_switch.setEnabled(False)
-        except Exception:
-            pass
+        if getattr(self.scene, "active_node", 0) == 0:
+            del_switch.setEnabled(False)
 
         res = dlg.exec()
         return getattr(dlg, "result_action", None)
