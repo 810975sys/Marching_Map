@@ -51,13 +51,13 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.toolButtons = {}   # 保存工具按钮引用，便于根据工具名更新按钮状态
         self.activeToolName = "框选"
         # self.pendingToolName = None
-        self._sampling_tools = {"线段", "弧", "曲线/折线", "圆", "多边形", "填充四边形", "路径"}    # 需要在绘制控制台显示采样设置的工具（"路径" 为特例，仅显示曲线模式）
+        self._sampling_tools = {"线段", "弧", "曲线/折线", "圆", "多边形", "填充四边形", "路径", "跟随"}    # 需要在绘制控制台显示采样设置的工具（"路径" 为特例，仅显示曲线模式）
         # self._dialog_required_tools = {
         #     "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形",
         #     "调整", "跟随", "路径", "间隔行进",
         #     "标签", "文本", "箭头",
         # }
-        self._drawing_tools = {"点", "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形", "路径"}
+        self._drawing_tools = {"点", "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形", "路径", "跟随"}
         self._text_tools = {"文本"}
         self._group_tools = {"分组"}
         self._select_tools = {"选择", "框选"}
@@ -69,11 +69,11 @@ class MainWindow(MainWindowNotice, QMainWindow):
         # self.setupDockWidgets()
         self.setupCentralView() # 主场景视图
         self.setupTimeline()    # 底部时间轴
+        self.setupFieldSettingsDock()   # 场地设置浮动面板
+        self.setupDrawingControlDock()  # 绘制控制浮动面板
         self.setupInteractions()    # 信号与槽绑定
         self.setupMainLayout()  # 主窗口整体布局
-        self.setupFieldSettingsDock()   # 场地设置浮动面板
         # self.setupToolOptionDock()      # 工具选项浮动面板
-        self.setupDrawingControlDock()  # 绘制控制浮动面板
         
         self.setWindowTitle("Marching Map Editor")
         self.resize(1200, 800)
@@ -715,7 +715,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
             keep_enabled=bool(status.get("keep_enabled", False)),
             confirm_enabled=confirm_enabled,
         )
-
 
     def onSamplingPointCountChanged(self, tool_name: str, point_count: int):
         """采样点数自动变化时，同步控制台显示。"""

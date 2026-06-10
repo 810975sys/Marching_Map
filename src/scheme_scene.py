@@ -48,6 +48,7 @@ from draw_utils import (
     _bilinear_point,
     _rotate_vector,
     _field_rotate_point,
+    sample_on_polyline,
 )
 
 # distance helper imported from scheme_helpers
@@ -90,7 +91,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._draft_preview_items = []      # 当前绘图草稿的预览图元列表
         self._pending_preview_items = []    # 当前未确认阶段的参考线预览图元列表（如曲线/折线工具在输入至少2个点位后的实时预览）
         self._draft_handle_items = []       # 当前绘图草稿的可拖动参考点图元列表（如曲线/折线工具在输入至少2个点位后的可调整参考点）
-        self._pending_points = []   # 当前工具操作中尚未提交的数据点位列表，如绘制中的线段或多边形顶点等
+        self._pending_points = []           # 当前工具操作中尚未提交的数据点位列表，如绘制中的线段或多边形顶点等
         
         self._adjustment_active = False     # 当前是否处于 “调整” 会话中
         self._adjustment_mode = "比例"      # 调整模式：比例、伸展、倾斜、歪曲
@@ -146,6 +147,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._temp_group_mark_head: bool = True  # True=默认在 tail 之后插入（用户偏好标记）
         self._temp_group_line_items = []  # 临时分组连线图元
         self._temp_group_helper_items = []  # 临时分组用的 helper 圆圈图元
+        self._follow_group_helper_items = []  # 跟随工具用的 group 首尾 helper 圆圈图元
         self._rematch_helper_items = []     # 绘图重匹配时的原点位辅助选择圈图元
         self._point_items_by_id = {}    # 当前显示的点位图元字典，key为点位ID，value为对应的 PerformerPointItem 图元；用于快速定位与更新特定点位的图元。
         self._label_items_by_id = {}    # 当前显示的标签图元字典，key为点位ID，value为对应的 QGraphicsSimpleTextItem 图元；用于快速定位与更新特定点位的标签图元。
@@ -167,6 +169,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         # margin = max(width_px, height_px) * 0.5 + 200.0
         self.setSceneRect(initial_field_rect)
         
+        self.export_ratio = 3.0   # 导出时的放大倍数，默认3倍，过大可能导致性能问题或内存不足；过小可能导致细节缺失。用户可根据实际需求调整。
         
         # 上一点位的绘制参数（用于预览上一节点的点位）
         self.pre_point_radius = 2.0
@@ -181,7 +184,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         #点位修改的参数
         self.helper_radius = 12
 
-        self.export_ratio = 3.0
 
     def _reset_adjustment_state(self, reset_controls: bool = True):
         """重置调整会话状态与图元；可选是否同时重置模式与角度。"""
@@ -649,11 +651,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             else QPageLayout.Orientation.Portrait
         )
 
-    # def _pdf_export_font_scale_factor(self, export_scale: float) -> float:
-    #     """把导出字号换算到页面导出坐标系。"""
-    #     base_scale = 22.0
-    #     return max(0.1, float(export_scale) / base_scale)
-
     def _pdf_export_content_padding(self, export_scale: float) -> tuple[float, float, float]:
         """计算 PDF 内容区留白（水平、上、下），下侧留白约为上侧的两倍。
 
@@ -956,7 +953,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def _clear_overlay_items(self):
         """清除当前所有点位与标签图元，准备重建。"""
-        for item in self._current_items + self._previous_items + self._label_items + self._selection_link_items + self._rematch_helper_items + self._textbox_items + self._textbox_handle_items:
+        for item in self._current_items + self._previous_items + self._label_items + self._selection_link_items + self._rematch_helper_items + self._textbox_items + self._textbox_handle_items + self._temp_group_helper_items + self._follow_group_helper_items:
             self.removeItem(item)
         self._current_items = []
         self._previous_items = []
@@ -966,6 +963,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._textbox_items = []
         self._textbox_items_by_id = {}
         self._textbox_handle_items = []
+        self._temp_group_helper_items = []
+        self._follow_group_helper_items = []
         self._point_items_by_id = {}
         self._label_items_by_id = {}
 
@@ -979,6 +978,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self._exit_textbox_mode()
         if previous_tool == "分组" and tool_name != "分组":
             self.clear_temp_groups()
+        if previous_tool == "跟随" and tool_name != "跟随":
+            self._clear_follow_group_helper_items()
             
         if tool_name in {"选择", "框选"}:
             self._selected_point_ids.clear()
@@ -1132,6 +1133,142 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self.removeItem(it)
         self._temp_group_helper_items = []
 
+    def _clear_follow_group_helper_items(self):
+        """清除跟随工具的首尾 helper。"""
+        for it in getattr(self, "_follow_group_helper_items", []):
+            self.removeItem(it)
+        self._follow_group_helper_items = []
+
+    def _follow_group_point_ids_for_group(self, group_info: dict) -> list[int]:
+        """返回跟随模式下该组的点位顺序；leader 始终排在第一位。"""
+        point_ids = group_info['point_ids']
+        if not point_ids:
+            return []
+        if group_info["leader"]:
+            return point_ids
+        return list(reversed(point_ids))
+
+    def _follow_group_point_ids_for_point_id(self, point_id: int) -> list[int]:
+        """返回点位在跟随模式下所属组的 leader-first 点位顺序。"""
+        point = self._find_point_by_id(point_id)
+        group_id = point['group_id']
+        if group_id is None:
+            return []
+        if group_id < 0 or group_id >= len(self.group_to_point):
+            return []
+        return self._follow_group_point_ids_for_group(self.group_to_point[group_id])
+
+    def _toggle_follow_group_leader(self, group_id: int) -> bool:
+        """切换指定组的 leader 端点（首/尾互换）。"""
+        if group_id < 0 or group_id >= len(self.group_to_point):
+            return False
+        group_info = self.group_to_point[group_id]
+        point_ids = group_info["point_ids"]
+        if len(point_ids) < 2:
+            return False
+        group_info["leader"] = not group_info["leader"]
+        return True
+
+    def _get_anchor(self) -> int:
+        groups = self.node_to_group[self.active_node]
+        active_groups = [
+            gid for gid in groups
+            if set(self.group_to_point[gid]['point_ids']) & self._selected_point_ids
+        ]
+        min_gid = min(active_groups)
+        min_group = self.group_to_point[min_gid]
+        ordered_ids = self._follow_group_point_ids_for_group(min_group)
+        anchor_point_id = next(
+            pid for pid in ordered_ids
+            if pid in self._selected_point_ids
+        )
+        return anchor_point_id
+
+    # def _sync_follow_path_data_for_leader_toggle(self, toggled_group_id: int):
+    #     """切换leader后同步当前节点 follow 路径的 leaders 列表与 path[0]。"""
+    #     node_paths = self.node_paths.get(self.active_node, [])
+    #     group_info = self.group_to_point[toggled_group_id]
+    #     group_pids = set(group_info["point_ids"])
+
+    #     for entry in node_paths:
+    #         if entry.get("type") != "follow":
+    #             continue
+    #         leaders = list(entry.get("leaders") or [])
+    #         # 检查该组是否涉及当前 leaders
+    #         involved = [lid for lid in leaders if int(lid) in group_pids]
+    #         if not involved:
+    #             continue
+
+    #         # 重新计算该组在当前 leader 状态下的实际 leader
+    #         ordered = self._follow_group_point_ids_for_group(group_info)
+    #         new_leader = int(ordered[0]) if ordered else None
+
+    #         # 更新 leaders 列表
+    #         old_anchor = int(leaders[0]) if leaders else None
+    #         new_leaders = []
+    #         for lid in leaders:
+    #             if int(lid) in group_pids:
+    #                 if new_leader is not None and new_leader not in new_leaders:
+    #                     new_leaders.append(new_leader)
+    #             else:
+    #                 new_leaders.append(int(lid))
+    #         entry["leaders"] = new_leaders
+
+    #         # 若旧 anchor 在切换组中，则将该组另一端点位坐标设为 path[0]
+    #         if old_anchor is not None and old_anchor in group_pids:
+    #             other_endpoint_id = int(ordered[-1])  # 与 leader 相反的那一端
+    #             point = self._find_point_in_node(self.active_node, other_endpoint_id)
+    #             if point is not None:
+    #                 path = entry.get("path", [])
+    #                 if path:
+    #                     path[0] = [float(point["x"]), float(point["y"])]
+    #                     self._draw_draft_overlay()
+    #                     # group_info["leader"] = not group_info["leader"]  # 同步 leader 状态
+    #         break
+
+    def _draw_follow_group_helpers(self):
+        """在跟随模式下为每组首尾绘制可点击 helper。"""
+        self._clear_follow_group_helper_items()
+        if self.active_tool != "跟随":
+            return
+
+        node_groups = self.node_to_group[self.active_node]
+        for group_id in node_groups:
+            if group_id < 0 or group_id >= len(self.group_to_point):
+                continue
+            group_info = self.group_to_point[group_id]
+            point_ids = [int(pid) for pid in group_info.get("point_ids", [])]
+            if len(point_ids) < 2:
+                continue
+            leader_first_ids = self._follow_group_point_ids_for_group(group_info)
+            if len(leader_first_ids) < 2:
+                continue
+            leader_id = int(leader_first_ids[0])
+            tail_id = int(leader_first_ids[-1])
+            for pid in (leader_id, tail_id):
+                item = self._point_items_by_id.get(pid)
+                if item is None:
+                    continue
+                pos = item.scenePos()
+                helper_radius = self.helper_radius
+                helper = QGraphicsEllipseItem(
+                    pos.x() - helper_radius,
+                    pos.y() - helper_radius,
+                    helper_radius * 2,
+                    helper_radius * 2,
+                )
+                helper.setPen(QPen(QColor("#000000"), 1.4))
+                if pid == leader_id:
+                    helper.setBrush(QBrush(QColor("#ff4d4d")))
+                else:
+                    helper.setBrush(QBrush(QColor(255, 193, 7, 40)))
+                helper.setZValue(1010)
+                helper.setData(0, "follow_group_helper")
+                helper.setData(1, int(group_id))
+                helper.setData(2, int(pid))
+                self.addItem(helper)
+                self._follow_group_helper_items.append(helper)
+
     def _update_temp_group_visuals(self):
         """绘制临时分组的连线与首尾 helper（仅首尾响应鼠标事件）。"""
         if self.active_tool != "分组":
@@ -1156,7 +1293,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 if item is None:
                     continue
                 pos = item.scenePos()
-                helper_radius = getattr(self, "helper_radius", 12)
+                helper_radius = self.helper_radius
                 helper = QGraphicsEllipseItem(
                     pos.x() - helper_radius,
                     pos.y() - helper_radius,
@@ -1199,7 +1336,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             if item is None:
                 continue
             pos = item.scenePos()
-            helper_radius = getattr(self, "helper_radius", 12)
+            helper_radius = self.helper_radius
             helper = QGraphicsEllipseItem(
                 pos.x() - helper_radius,
                 pos.y() - helper_radius,
@@ -1399,7 +1536,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         # 确保 node_to_group 长度足够
         max_node_index = max(len(self.node_points) - 1, len(self.node_to_group) - 1)
         while len(self.node_to_group) <= max_node_index:
-            self.node_to_group.append(set())
+            self.node_to_group.append([])
 
         start_node = int(self.active_node)
 
@@ -1528,7 +1665,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 if 0 <= gid < len(self.group_to_point):
                     group_ids_in_node.add(gid)
 
-            self.node_to_group[node_idx] = group_ids_in_node
+            self.node_to_group[node_idx] = list(group_ids_in_node)
 
             # 第五步：同步更新全局 group_to_point（将新创建的剩余点组中的点加入，避免重复）
             for remnant_key, new_gid in new_remnant_group_map.items():
@@ -1558,7 +1695,10 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
         for group_idx in node_groups:
             group_info = self.group_to_point[group_idx]
-            point_ids = [int(point_id) for point_id in group_info.get("point_ids", [])]
+            if self.active_tool == "跟随":
+                point_ids = self._follow_group_point_ids_for_group(group_info)
+            else:
+                point_ids = [int(point_id) for point_id in group_info.get("point_ids", [])]
             selected_in_group = [point_id for point_id in point_ids if point_id in self._selected_point_ids]
             if len(selected_in_group) < 2:
                 continue
@@ -1585,7 +1725,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
     def _find_point_by_id(self, point_id: int) -> dict | None:
         """根据点位ID查找当前节点中的点位数据字典"""
         for point in self.node_points[self.active_node]:
-            if int(point.get("id", -1)) == int(point_id):
+            if point['id'] == point_id:
                 return point
         return None
     
@@ -2341,22 +2481,19 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         if len(self._draft_handle_items) != len(self._draft_reference_points):
             return
         self._updating_draft_handles = True
-        try:
-            for handle, (x, y) in zip(self._draft_handle_items, self._draft_reference_points):
-                handle.setPos(self._field_to_scene(x, y))
-        finally:
-            self._updating_draft_handles = False
+        skip_first = self.active_tool in {"路径", '跟随'}
+        for handle, (x, y) in zip(self._draft_handle_items[1 if skip_first else 0:], self._draft_reference_points[1 if skip_first else 0:]):
+            handle.setPos(self._field_to_scene(x, y))
+        self._updating_draft_handles = False
 
     def _sync_pending_handle_positions(self):
         """把已有待确认参考点手柄同步到当前参考点坐标。"""
         if len(self._draft_handle_items) != len(self._pending_points):
             return
         self._updating_draft_handles = True
-        try:
-            for handle, (x, y) in zip(self._draft_handle_items, self._pending_points):
-                handle.setPos(self._field_to_scene(x, y))
-        finally:
-            self._updating_draft_handles = False
+        for handle, (x, y) in zip(self._draft_handle_items, self._pending_points):
+            handle.setPos(self._field_to_scene(x, y))
+        self._updating_draft_handles = False
 
     def _refresh_reference_overlay_for_active_tool(self):
         """重建当前参考点相关图元，避免拖动后残留旧图元。"""
@@ -2462,7 +2599,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 self._pending_preview_items.append(d)
 
         # 路径工具：显示路径线（可选择折线或平滑曲线），并绘制路径点用于预览；路径不依赖点位个数/间距设置
-        if self.active_tool == "路径" and len(self._pending_points) >= 2:
+        if self.active_tool in {"路径", "跟随"} and len(self._pending_points) >= 2:
             pts = list(self._pending_points)
             if getattr(self, '_curve_mode', 'polyline') == 'curve':
                 pts_path = _build_dense_curve_points(pts, float(self.field_info.grid_step))
@@ -2485,28 +2622,28 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                     self._pending_preview_items.append(d)
                 # 如果存在选中点，则为选中点生成按锚点到路径最后一点的整体平移预览（不写回数据）
 
-                selected_ids = self._ordered_selected_point_ids_for_drawing()
-                if selected_ids:
+                # selected_ids = self._selected_point_ids
+                # if selected_ids:
                     # 获取原始选中点的位置（field 坐标）
-                    src_points = [self._find_previous_point_by_id(int(pid)) for pid in selected_ids]
-                    if src_points and src_points[0] is not None:
-                        base_x = float(src_points[0].get("x", 0.0))
-                        base_y = float(src_points[0].get("y", 0.0))
-                        last_px, last_py = pts_path[-1]
-                        tx = float(last_px) - float(base_x)
-                        ty = float(last_py) - float(base_y)
-                        preview_points = []
-                        for p in src_points:
-                            if p is None:
-                                preview_points.append((0.0, 0.0))
-                            else:
-                                ox = float(p.get("x", 0.0))
-                                oy = float(p.get("y", 0.0))
-                                preview_points.append((ox + tx, oy + ty))
-                        # 使用与 render_preview_points 相同的渲染风格绘制选中点的平移预览
-                        moved_dots = self.render_preview_points(preview_points, pen_color="#2980b9", brush_color=(41, 128, 185, 120), z=895)
-                        for d in moved_dots:
-                            self._pending_preview_items.append(d)
+                src_points = [self._find_previous_point_by_id(int(pid)) for pid in self._selected_point_ids]
+                if src_points and src_points[0] is not None:
+                    base_x = float(src_points[0].get("x", 0.0))
+                    base_y = float(src_points[0].get("y", 0.0))
+                    last_px, last_py = pts_path[-1]
+                    tx = float(last_px) - float(base_x)
+                    ty = float(last_py) - float(base_y)
+                    preview_points = []
+                    for p in src_points:
+                        if p is None:
+                            preview_points.append((0.0, 0.0))
+                        else:
+                            ox = float(p.get("x", 0.0))
+                            oy = float(p.get("y", 0.0))
+                            preview_points.append((ox + tx, oy + ty))
+                    # 使用与 render_preview_points 相同的渲染风格绘制选中点的平移预览
+                    moved_dots = self.render_preview_points(preview_points, pen_color="#2980b9", brush_color=(41, 128, 185, 120), z=895)
+                    for d in moved_dots:
+                        self._pending_preview_items.append(d)
 
     def _update_textbox_hover_preview(self, scene_pos: QPointF):
         """更新文本框第一参考点后的鼠标吸附位置，并重绘预览矩形。"""
@@ -2564,7 +2701,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         """根据当前草稿工具和参考点生成最终的执行点位列表（field 坐标）。"""
         spacing = max(1e-9, float(self.field_info.grid_step) * 2.0)
         # 支持路径绘制工具——返回原始参考点或按曲线模式平滑后的点（不使用间距/点数设置）
-        if tool_name == "路径":
+        if tool_name in {"路径", "跟随"}:
             is_curve = getattr(self, '_curve_mode', 'polyline') == 'curve'
             if is_curve:
                 dense = _build_dense_curve_points(refs, float(self.field_info.grid_step))
@@ -2841,11 +2978,14 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             return scene_pos
         if index < 0 or index >= len(self._draft_reference_points):
             return scene_pos
+        # 路径/跟随工具的首个参考点是固定锚点，不允许拖动。
+        if self._draft_tool_name in {"路径", "跟随"} and index == 0:
+            return self._field_to_scene(*self._draft_reference_points[0])
         x, y = self._scene_to_field(scene_pos)
         x, y = self._snap_field_point(x, y)
         snapped_scene_pos = self._field_to_scene(x, y)
         self._draft_reference_points[index] = (x, y)
-        if self._draft_tool_name == "路径" and index < len(self._pending_points):
+        if self._draft_tool_name in {"路径", "跟随"}:
             # 路径工具后续新增参考点依赖 _pending_points，需同步更新避免回退到旧坐标。
             self._pending_points[index] = (x, y)
         # if self._draft_tool_name == "线段":
@@ -2896,10 +3036,11 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 
             if tool_name == "路径":
                 # 路径模式：以第一个选中点为锚，按路径最后一点生成预览点位并写回 node_points。
-                selected_ids = self._ordered_selected_point_ids_for_drawing()
-                if selected_ids and generated:
+                selected_ids = self._selected_point_ids
+                if generated:
                     path_points = list(generated)
-                    anchor_id = int(selected_ids[0])
+                    # 获取选中点对应的group，选取group_id最小的[0]，作为锚点
+                    anchor_id = self._get_anchor()
                     anchor_point = self._find_previous_point_by_id(anchor_id)
                     if anchor_point is not None and path_points:
                         base_x = float(anchor_point.get("x", 0.0))
@@ -2938,12 +3079,13 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                                 continue
                             point["x"] = float(preview["x"])
                             point["y"] = float(preview["y"])
+                            
                         # 记录路径信息：只保存锚点ID、路径点和成员点ID，成员偏移在插值时根据当前节点现算。
                         self._upsert_node_path_entry(
                             self.active_node,
                             'forward',
                             anchor_id,
-                            [(float(px), float(py)) for px, py in path_points],
+                            [[float(px), float(py)] for px, py in path_points],
                             [int(p.get("id", -1)) for p in selected_points],
                         )
                         self.sync_sampling_values_from_selection(tool_name)
@@ -2961,6 +3103,77 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                         self.dataChanged.emit()
                         return True
                     
+            elif tool_name == "跟随":
+                # 跟随模式：以第一个选中 leader 为锚，绘制 leader 路径，记录 leaders 列表与所属组成员
+                selected_ids = self._selected_point_ids
+                if generated:
+                    path_points = list(generated)
+                    anchor_id = self._get_anchor()
+                    anchor_point = self._find_previous_point_by_id(anchor_id)
+                    if anchor_point is not None and path_points:
+                        # 汇总各组成员，并把当前 leader 端点写入 leaders 列表。
+                        members_union = []
+                        leaders_union = []
+                        for lid in selected_ids:
+                            lid = int(lid)
+                            found_group = None
+                            for group in self.group_to_point:
+                                pids = [int(x) for x in group.get("point_ids", [])]
+                                if lid in pids:
+                                    found_group = group
+                                    ordered_group = self._follow_group_point_ids_for_group(group)
+                                    for pid in ordered_group:
+                                        if int(pid) not in members_union:
+                                            members_union.append(int(pid))
+                                    leader_id = int(ordered_group[0]) if ordered_group else lid
+                                    if leader_id not in leaders_union:
+                                        leaders_union.append(leader_id)
+                                    break
+                            if found_group is None:
+                                if lid not in members_union:
+                                    members_union.append(lid)
+                                if lid not in leaders_union:
+                                    leaders_union.append(lid)
+
+                        # 保存 follow 路径定义（需先注册，后续 _sample_point_from_node_path 依赖此数据）
+                        self._upsert_node_path_entry(
+                            self.active_node,
+                            'follow',
+                            anchor_id,
+                            [[float(px), float(py)] for px, py in path_points],
+                            members_union,
+                            leaders=leaders_union,
+                        )
+
+                        # 按 _sample_point_from_node_path 计算各点路径终点位置（progress=1.0）
+                        point_by_id = {int(point.get("id", -1)): point for point in current_points}
+                        for pid in selected_ids:
+                            sampled = self._sample_point_from_node_path(self.active_node, int(pid), 1.0)
+                            if sampled is None:
+                                continue
+                            point = point_by_id.get(int(pid))
+                            if point is None:
+                                continue
+                            point["x"] = float(sampled[0])
+                            point["y"] = float(sampled[1])
+                        self.sync_sampling_values_from_selection(tool_name)
+                        self.reset_sampling_defaults(tool_name)
+                        self._pending_points = []
+                        self._draft_reference_points = []
+                        self._reset_drawing_rematch_state(active=False)
+                        self._mark_node_manual(self.active_node)
+                        self._recalculate_following_auto_nodes(self.active_node, include_manual_nodes=True)
+                        self._clear_draft()
+                        if not had_draft:
+                            self.draftFinished.emit()
+                        self._render_points_for_active_node()
+                        self.drawingRematchStateChanged.emit()
+                        self.dataChanged.emit()
+                        return True
+
+            elif tool_name == "间隔行进":
+                pass
+                
             rematch_snapshot = self._drawing_rematch_snapshot()
             id_to_index = {int(p.get("id", -1)): idx for idx, p in enumerate(current_points)}
             if rematch_snapshot["active"]:
@@ -3009,7 +3222,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
             if new_point_ids:
                 # 添加到分组中
-                self.node_to_group[self.active_node].add(group_id)
+                self.node_to_group[self.active_node].append(group_id)
                 self.group_to_point.append({
                     "point_ids": new_point_ids, # 组内点位 ID 列表
                     "leader": True,  # leader 点位为正向第一个
@@ -3493,15 +3706,13 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 path_item.setZValue(890)
                 self.addItem(path_item)
                 self._draft_preview_items.append(path_item)
-                dots = self.render_preview_points(refs_path)
-                for dot in dots:
-                    self._draft_preview_items.append(dot)
 
-                selected_ids = self._ordered_selected_point_ids_for_drawing()
-                src_points = [self._find_previous_point_by_id(int(pid)) for pid in selected_ids]
-                if src_points and src_points[0] is not None:
-                    base_x = float(src_points[0].get("x", 0.0))
-                    base_y = float(src_points[0].get("y", 0.0))
+                # selected_ids = self._selected_point_ids
+                anchor = self._find_previous_point_by_id(self._get_anchor())
+                src_points = [self._find_previous_point_by_id(int(pid)) for pid in self._selected_point_ids]
+                if src_points and anchor is not None:
+                    base_x = float(anchor.get("x", 0.0))
+                    base_y = float(anchor.get("y", 0.0))
                     last_px, last_py = refs_path[-1]
                     tx = float(last_px) - float(base_x)
                     ty = float(last_py) - float(base_y)
@@ -3510,6 +3721,156 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                         if point is None:
                             continue
                         preview_points.append((float(point.get("x", 0.0)) + tx, float(point.get("y", 0.0)) + ty))
+                    moved_dots = self.render_preview_points(preview_points, pen_color="#2980b9", brush_color=(41, 128, 185, 120), z=895)
+                    for dot in moved_dots:
+                        self._draft_preview_items.append(dot)
+            return
+        
+        if self._draft_tool_name == "跟随" and len(self._draft_reference_points) >= 2:
+            refs = list(self._draft_reference_points)
+            if getattr(self, '_curve_mode', 'polyline') == 'curve':
+                refs_path = _build_dense_curve_points(refs, float(self.field_info.grid_step))
+            else:
+                refs_path = refs
+            if refs_path:
+                pen = QPen(QColor(210, 84, 0, 170), 1.3, Qt.PenStyle.DashLine)
+                path = QPainterPath()
+                path.moveTo(self._field_to_scene(*refs_path[0]))
+                for x, y in refs_path[1:]:
+                    path.lineTo(self._field_to_scene(x, y))
+                path_item = QGraphicsPathItem(path)
+                path_item.setPen(pen)
+                path_item.setZValue(890)
+                self.addItem(path_item)
+                self._draft_preview_items.append(path_item)
+
+                selected_ids = self._selected_point_ids
+
+                current_point_by_id = {
+                    int(point.get("id", -1)): point
+                    for point in self.node_points[self.active_node]
+                }
+                previous_point_by_id = {
+                    int(pid): self._find_previous_point_by_id(int(pid))
+                    for pid in selected_ids
+                }
+
+                total_length = 0.0
+                for index in range(len(refs_path) - 1):
+                    x1, y1 = refs_path[index]
+                    x2, y2 = refs_path[index + 1]
+                    total_length += math.hypot(x2 - x1, y2 - y1)
+
+                progress = 1.0
+                preview_points = []
+                for pid in selected_ids:
+                    point = current_point_by_id.get(int(pid))
+                    if point is None:
+                        continue
+
+                    group_members = self._follow_group_point_ids_for_point_id(int(pid))
+                    if not group_members:
+                        source_point = previous_point_by_id.get(int(pid)) or point
+                        leader_sample = sample_on_polyline(refs_path, total_length)
+                        if leader_sample is None:
+                            continue
+                        offset = (
+                            float(source_point.get("x", 0.0)) - float(point.get("x", 0.0)),
+                            float(source_point.get("y", 0.0)) - float(point.get("y", 0.0)),
+                        )
+                        preview_points.append((float(leader_sample[0]) + offset[0], float(leader_sample[1]) + offset[1]))
+                        continue
+
+                    try:
+                        member_index = group_members.index(int(pid))
+                    except ValueError:
+                        source_point = previous_point_by_id.get(int(pid)) or point
+                        leader_sample = sample_on_polyline(refs_path, total_length)
+                        if leader_sample is None:
+                            continue
+                        offset = (
+                            float(source_point.get("x", 0.0)) - float(point.get("x", 0.0)),
+                            float(source_point.get("y", 0.0)) - float(point.get("y", 0.0)),
+                        )
+                        preview_points.append((float(leader_sample[0]) + offset[0], float(leader_sample[1]) + offset[1]))
+                        continue
+
+                    if member_index == 0:
+                        anchor_id = self._get_anchor()
+                        # 仅 anchor 沿绝对路径行进
+                        if int(pid) == int(anchor_id):
+                            pos = sample_on_polyline(refs_path, total_length)
+                            if pos is not None:
+                                preview_points.append(pos)
+                        else:
+                            # 其余组 leader 相对于 anchor 行进
+                            anchor_orig = previous_point_by_id.get(int(anchor_id))
+                            member_orig = previous_point_by_id.get(int(pid))
+                            if anchor_orig is not None and member_orig is not None:
+                                offset_x = float(member_orig.get("x", 0.0)) - float(anchor_orig.get("x", 0.0))
+                                offset_y = float(member_orig.get("y", 0.0)) - float(anchor_orig.get("y", 0.0))
+                                anchor_pos = sample_on_polyline(refs_path, total_length)
+                                if anchor_pos is not None:
+                                    preview_points.append((float(anchor_pos[0]) + offset_x, float(anchor_pos[1]) + offset_y))
+                            else:
+                                pos = sample_on_polyline(refs_path, total_length)
+                                if pos is not None:
+                                    preview_points.append(pos)
+                        continue
+
+                    forward_points = []
+                    for group_index in range(member_index, -1, -1):
+                        member_pid = int(group_members[group_index])
+                        orig = previous_point_by_id.get(member_pid) or current_point_by_id.get(member_pid)
+                        if orig is None:
+                            forward_points = []
+                            break
+                        forward_points.append((float(orig.get("x", 0.0)), float(orig.get("y", 0.0))))
+
+                    if not forward_points:
+                        source_point = previous_point_by_id.get(int(pid)) or point
+                        leader_sample = sample_on_polyline(refs_path, total_length)
+                        if leader_sample is None:
+                            continue
+                        offset = (
+                            float(source_point.get("x", 0.0)) - float(point.get("x", 0.0)),
+                            float(source_point.get("y", 0.0)) - float(point.get("y", 0.0)),
+                        )
+                        preview_points.append((float(leader_sample[0]) + offset[0], float(leader_sample[1]) + offset[1]))
+                        continue
+
+                    front_length = 0.0
+                    for group_index in range(len(forward_points) - 1):
+                        ax, ay = forward_points[group_index]
+                        bx, by = forward_points[group_index + 1]
+                        front_length += math.hypot(bx - ax, by - ay)
+
+                    # 非 anchor 组的跟随点应沿该组 leader 的相对路径行进
+                    anchor_id = self._get_anchor()
+                    leader_is_anchor = int(group_members[0]) == int(anchor_id)
+                    if not leader_is_anchor:
+                        anchor_orig2 = previous_point_by_id.get(int(anchor_id))
+                        leader_orig2 = previous_point_by_id.get(int(group_members[0]))
+                        if anchor_orig2 is not None and leader_orig2 is not None:
+                            loff_x = float(leader_orig2.get("x", 0.0)) - float(anchor_orig2.get("x", 0.0))
+                            loff_y = float(leader_orig2.get("y", 0.0)) - float(anchor_orig2.get("y", 0.0))
+                            effective_path = [(float(px) + loff_x, float(py) + loff_y) for px, py in refs_path]
+                        else:
+                            effective_path = refs_path
+                    else:
+                        effective_path = refs_path
+
+                    combined_path = forward_points + [(float(px), float(py)) for px, py in effective_path]
+                    sample_dist = progress * total_length
+                    if sample_dist > front_length + total_length:
+                        sample_dist = front_length + total_length
+
+                    result_pos = sample_on_polyline(combined_path, sample_dist)
+                    if result_pos is None:
+                        continue
+                    preview_points.append(result_pos)
+
+                if preview_points:
                     moved_dots = self.render_preview_points(preview_points, pen_color="#2980b9", brush_color=(41, 128, 185, 120), z=895)
                     for dot in moved_dots:
                         self._draft_preview_items.append(dot)
@@ -3547,7 +3908,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             return
         self._updating_draft_handles = True
         for index, (x, y) in enumerate(self._pending_points):
-            if self.active_tool == "路径" and index == 0:
+            if self.active_tool in {"路径", "跟随"} and index == 0:
                 # 路径的第一个参考点是固定锚点，不允许拖动。
                 fixed = QGraphicsEllipseItem(-4.0, -4.0, 8.0, 8.0)
                 fixed.setPen(QPen(QColor("#d35400"), 1.2))
@@ -3580,7 +3941,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         """
         if self._updating_draft_handles:
             return scene_pos
-        if self.active_tool == "路径" and index == 0:
+        if self.active_tool in {"路径", "跟随"} and index == 0:
             # 路径首点固定，不允许拖动。
             return self._field_to_scene(*self._pending_points[0]) if self._pending_points else scene_pos
         if index < 0 or index >= len(self._pending_points):
@@ -3599,7 +3960,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def _handle_draw_tool(self, tool_name: str, field_point: tuple[float, float]):
         # 非单点工具进入草稿态后，仅允许拖拽现有参考点，不再响应新增点击。
-        if tool_name not in {"点", "路径"} and self._draft_tool_name and self._draft_reference_points:
+        if tool_name not in {"点", "路径", "跟随"} and self._draft_tool_name and self._draft_reference_points:
             return
 
         if tool_name == "点":
@@ -3613,19 +3974,19 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self._draw_draft_overlay()
             return
 
-        if tool_name == "路径":
+        if tool_name in {"路径", "跟随"}:
             # 路径工具：第一个参考点固定为锚点，后续点击仅记录轨迹点。
             if not self._pending_points:
-                anchor_id = next(iter(self._ordered_selected_point_ids_for_drawing()), None)
+                anchor_id = self._get_anchor()
                 if anchor_id is not None:
                     anchor_point = self._find_previous_point_by_id(int(anchor_id))
                     if anchor_point is not None:
                         self._pending_points.append((float(anchor_point["x"]), float(anchor_point["y"])))
             _append_unique_reference_point(self._pending_points, field_point)
             if len(self._pending_points) >= 2:
-                self._draft_tool_name = "路径"
+                self._draft_tool_name = tool_name
                 self._draft_reference_points = list(self._pending_points)
-                self.draftStarted.emit("路径")
+                self.draftStarted.emit(tool_name)
                 self._draw_draft_overlay()
             else:
                 self._draft_tool_name = None
@@ -3662,7 +4023,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self.drawingRematchStateChanged.emit()
 
     def _is_drawing_tool(self) -> bool:
-        return self.active_tool in {"点", "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形", "路径"}
+        return self.active_tool in {"点", "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形", "路径", "跟随"}
 
     def _render_points_for_active_node(self):
         """重绘当前节点与前一节点的点位叠加效果。"""
@@ -3714,6 +4075,9 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self._clear_draft_items()
             self._draw_pending_reference_preview()
             self._draw_pending_reference_points()
+        if self._draft_tool_name == "跟随":
+            self._draw_follow_group_helpers()
+            self.update()
         # 若存在临时分组信息，则绘制其连线与首尾 helper
         if getattr(self, "_temp_group_to_point", None):
             QTimer.singleShot(0, self._update_temp_group_visuals)
@@ -3984,6 +4348,31 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 event.accept()
                 return
 
+            if self.active_tool == "跟随" and item is not None and item.data(0) == "follow_group_helper":
+                group_id = item.data(1)
+                if group_id is not None and self._toggle_follow_group_leader(int(group_id)):
+                    # 若锚点（第一个选中点）在切换的组内，同步更新草稿路径起点为新 leader 上一节点位置
+                    selected_ids = self._selected_point_ids
+                    anchor_id = self._get_anchor()
+                    anchor_point = self._find_point_by_id(anchor_id)
+                    # if anchor_point is not None and anchor_point.get("group_id") is not None:
+                    point_group_id = int(anchor_point["group_id"])
+                    if point_group_id == int(group_id):
+                        group_info = self.group_to_point[point_group_id]
+                        ordered_ids = self._follow_group_point_ids_for_group(group_info)
+                        # if ordered_ids:
+                        new_anchor_id = int(ordered_ids[0])
+                        prev_point = self._find_previous_point_by_id(new_anchor_id)
+                        # if prev_point is not None:
+                        new_pos = (float(prev_point["x"]), float(prev_point["y"]))
+                        self._draft_reference_points[0] = new_pos
+                        # if self._pending_points:
+                        self._pending_points[0] = new_pos
+                    self._render_points_for_active_node()
+                    self.drawingRematchStateChanged.emit()
+                event.accept()
+                return
+
             # 分组工具交互：单击或框选用于向当前临时分组添加点
             if self.active_tool == "分组":
                 # 若点击了点或 helper，则把该点所属组或点本身加入当前临时组
@@ -4002,16 +4391,10 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                         event.accept()
                     self._render_points_for_active_node()
                     return
-                # 点击空白处：进入框选以批量添加到临时组（记录起点）
-                # self._selection_start_position = QPointF(event.scenePos())
-                # self._selection_current_position = QPointF(event.scenePos())
-                # self._update_selection_rect_item()
-                # event.accept()
-                # return
 
             # 非单点草稿态：禁止新增参考点点击，仅保留手柄拖拽。
             # 对于“路径”工具允许在草稿态继续添加参考点（轨迹追加）。
-            if self._is_drawing_tool() and self._draft_tool_name and self._draft_tool_name not in {"点", "路径"}:
+            if self._is_drawing_tool() and self._draft_tool_name and self._draft_tool_name not in {"点", "路径", "跟随"}:
                 event.accept()
                 return
 
@@ -4077,14 +4460,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def mouseMoveEvent(self, event):
         """绘图模式下拦截鼠标：左键拖动更新框选区域。"""
-        # 旧版尝试直接在 scene.mouseMoveEvent 中刷新文本框预览；
-        # 当视图未开启 mouse tracking 时，无按键移动不会稳定触发这里。
-        # if self.active_tool == "文本" and len(self._textbox_pending_points) == 1:
-        #     x, y = self._scene_to_field(event.scenePos())
-        #     x, y = self._snap_field_point(x, y)
-        #     self._textbox_hover_scene_pos = self._field_to_scene(x, y)
-        #     self._refresh_reference_overlay_for_active_tool()
-
         if event.buttons() & Qt.MouseButton.LeftButton and self._selection_start_position is not None:
             if self.active_tool in {"框选", "选择"}:
                 self._selection_current_position = QPointF(event.scenePos())
@@ -4112,4 +4487,3 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def keyPressEvent(self, event):
         super().keyPressEvent(event)
-

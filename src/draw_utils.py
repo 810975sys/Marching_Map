@@ -700,3 +700,23 @@ def _field_rotate_point(point: tuple[float, float], center: tuple[float, float],
     dy = point[1] - center[1]
     rx, ry = _rotate_vector(dx, dy, math.radians(float(angle_degrees)))
     return center[0] + rx, center[1] + ry
+
+def sample_on_polyline(points, distance):
+    """沿折线按距离采样"""
+    if not points:
+        return None
+    if distance <= 0.0:
+        return (float(points[0][0]), float(points[0][1]))
+    cum_len = 0.0
+    for i in range(len(points) - 1):
+        x1, y1 = points[i]
+        x2, y2 = points[i + 1]
+        seg_len = math.hypot(x2 - x1, y2 - y1)
+        if distance <= cum_len + seg_len + 1e-12:
+            t = (distance - cum_len) / seg_len if seg_len > 0 else 0.0
+            x = x1 + t * (x2 - x1)
+            y = y1 + t * (y2 - y1)
+            return (float(x), float(y))
+        cum_len += seg_len
+    # 超出总长则返回终点
+    return (float(points[-1][0]), float(points[-1][1]))

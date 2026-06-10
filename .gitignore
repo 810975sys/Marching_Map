@@ -2,6 +2,7 @@
 Marching_Map.code-workspace
 __pycache__/
 .venv/
+.vscode/
 
 # 忽略常见日志文件
 *.log

@@ -1,6 +1,7 @@
 """
 方案图数据层
 """
+from draw_utils import sample_on_polyline
 
 class SchemeSceneData:
     """保存每张方案图的点位数据、分组信息、节点编辑状态等核心数据，并提供相关操作方法。"""
@@ -11,7 +12,7 @@ class SchemeSceneData:
         self.node_manual_edited = [False]    # 按时间轴节点索引保存是否手动编辑过的状态，自动插值时以此判断是否覆盖
         
         # node 为下标，存储[set(group_ids), ...]，
-        self.node_to_group = [set()]  # 点位分组信息，每个分组包含 node（分组所属的节点）、point_ids（组内点位 ID 列表）、leader_id（leader 点位 ID） 等信息
+        self.node_to_group = [[]]  # 点位分组信息，每个分组包含 node（分组所属的节点）、point_ids（组内点位 ID 列表）、leader_id（leader 点位 ID） 等信息
         
         # group_id 为下标，存储[dict([point_ids], leader_pos), ...]，用于快速查询分组内点位 ID 列表。
         # leader 为 bool 值，表示选择首/尾的点位作为组内 leader。
@@ -43,33 +44,33 @@ class SchemeSceneData:
                 return point
         return None
 
-    def _normalize_node_path_entry(self, ref_entry: dict) -> dict | None:
-        """把 node_paths 记录整理成内部使用的列表结构。"""
-        if not isinstance(ref_entry, dict):
-            return None
-        path_type = str(ref_entry['type'])
+    # def _normalize_node_path_entry(self, ref_entry: dict) -> dict | None:
+    #     """把 node_paths 记录整理成内部使用的列表结构。"""
+    #     if not isinstance(ref_entry, dict):
+    #         return None
+    #     path_type = str(ref_entry['type'])
 
-        anchor_id = int(ref_entry['anchor_id'])
+    #     anchor_id = int(ref_entry['anchor_id'])
 
-        path_raw = ref_entry['path']
-        path = []
-        if isinstance(path_raw, list):
-            for item in path_raw:
-                if isinstance(item, (list, tuple)) and len(item) >= 2:
-                    path.append((float(item[0]), float(item[1])))
+    #     path_raw = ref_entry['path']
+    #     path = []
+    #     if isinstance(path_raw, list):
+    #         for item in path_raw:
+    #             if isinstance(item, (list, tuple)) and len(item) >= 2:
+    #                 path.append((float(item[0]), float(item[1])))
 
-        members = [int(pid) for pid in ref_entry['members']]
-        # members = []
-        # for pid in members_raw:
-        #     members.append(int(pid))
+    #     members = [int(pid) for pid in ref_entry['members']]
+    #     # members = []
+    #     # for pid in members_raw:
+    #     #     members.append(int(pid))
             
-        leaders = [int(pid) for pid in ref_entry['leaders']] if path_type == 'follow' else None
-        interval = (int(interval[0]), int(interval[1])) if path_type == 'interval' else None
+    #     leaders = [int(pid) for pid in ref_entry['leaders']] if path_type == 'follow' else None
+    #     interval = (int(interval[0]), int(interval[1])) if path_type == 'interval' else None
 
-        # seen = set()
-        # members = [pid for pid in members if not (pid in seen or seen.add(pid))]
+    #     # seen = set()
+    #     # members = [pid for pid in members if not (pid in seen or seen.add(pid))]
 
-        return {"type": path_type, "anchor_id": anchor_id, "path": path, "members": members, "leaders": leaders, "interval": interval}
+    #     return {"type": path_type, "anchor_id": anchor_id, "path": path, "members": members, "leaders": leaders, "interval": interval}
 
     def _upsert_node_path_entry(self, node_index: int, path_type: str, anchor_id: int, path: list[tuple[float, float]], 
                                 members: list[int], leaders: list[int] = None, interval: tuple[int, int] = None):
@@ -112,39 +113,11 @@ class SchemeSceneData:
         """导出已确认的方案图数据，用于保存到方案文件。"""
         return {
             "node_points": self.node_points,
-            # {
-            #     str(idx): [dict(point) for point in points]
-            #     for idx, points in sorted(self.node_points.items())
-            # },
-            "node_textboxes": {
-                str(idx): [dict(textbox) for textbox in textboxes]
-                for idx, textboxes in sorted(self.node_textboxes.items())
-            },
-            "node_manual_edited": [bool(flag) for flag in self.node_manual_edited],
-            "node_to_group": [sorted(int(group_id) for group_id in group_ids) for group_ids in self.node_to_group],
-            "group_to_point": [
-                {
-                    **dict(group),
-                    "point_ids": [int(point_id) for point_id in group.get("point_ids", [])],
-                }
-                for group in self.group_to_point
-            ],
-            "node_paths": {
-                str(node): [
-                    {
-                        'type': ref_entry['type'],
-                        "anchor_id": int(ref_entry.get("anchor_id", -1)),
-                        "path": ref_entry["path"],
-                        "members": ref_entry["members"],
-                        **({"leaders": ref_entry["leaders"]} if "leaders" in ref_entry else {}),
-                        **({"interval": ref_entry["interval"]} if "interval" in ref_entry else {}),        
-                    }
-                    for ref_entry in refs
-                    if isinstance(ref_entry, dict)
-                ]
-                for node, refs in sorted(self.node_paths.items(), key=lambda x: int(x[0]))
-                if refs
-            },
+            "node_textboxes": self.node_textboxes,
+            "node_manual_edited": self.node_manual_edited,
+            "node_to_group": self.node_to_group,
+            "group_to_point": self.group_to_point,
+            "node_paths": self.node_paths,
             "_next_point_id": int(self._next_point_id),
             "_next_textbox_id": int(self._next_textbox_id),
         }
@@ -156,73 +129,15 @@ class SchemeSceneData:
 
         self.setup_scene_data()
 
-        self.node_points = data.get("node_points", [[]])
-        # if not isinstance(node_points_data, dict):
-        #     raise ValueError("方案文件中的 node_points 格式无效")
-        # self.node_points = {}
-        # for node_index, points in enumerate(node_points_data):
-        #     # node_index = max(0, int(node_key))
-        #     if not isinstance(points, list):
-        #         raise ValueError(f"方案文件中的 node_points[{node_key}] 格式无效")
-        #     self.node_points
-        #     self.node_points[node_index] = [dict(point) for point in points if isinstance(point, dict)]
-        # self.node_points.setdefault(0, [])
-
-        node_textboxes_data = data.get("node_textboxes", {})
-        if not isinstance(node_textboxes_data, dict):
-            raise ValueError("方案文件中的 node_textboxes 格式无效")
-        self.node_textboxes = {}
-        for node_key, textboxes in node_textboxes_data.items():
-            node_index = max(0, int(node_key))
-            if not isinstance(textboxes, list):
-                raise ValueError(f"方案文件中的 node_textboxes[{node_key}] 格式无效")
-            self.node_textboxes[node_index] = [dict(textbox) for textbox in textboxes if isinstance(textbox, dict)]
-        self.node_textboxes.setdefault(0, [])
-
-        node_manual_data = data.get("node_manual_edited", [])
-        if not isinstance(node_manual_data, list):
-            raise ValueError("方案文件中的 node_manual_edited 格式无效")
-        self.node_manual_edited = [bool(flag) for flag in node_manual_data]
-        if not self.node_manual_edited:
-            self.node_manual_edited = [False]
-
-        node_to_group_data = data.get("node_to_group", [])
-        if not isinstance(node_to_group_data, list):
-            raise ValueError("方案文件中的 node_to_group 格式无效")
-        self.node_to_group = []
-        for group_ids in node_to_group_data:
-            if isinstance(group_ids, (list, tuple, set)):
-                self.node_to_group.append({int(group_id) for group_id in group_ids})
-            else:
-                self.node_to_group.append(set())
-        if not self.node_to_group:
-            self.node_to_group = [set()]
-
+        self.node_points = data.get("node_points", {})
+        # JSON 序列化后 int 键会变成 str，需要转回 int
+        self.node_textboxes = {int(k): v for k, v in data.get("node_textboxes", {}).items()}
+        self.node_manual_edited = data.get("node_manual_edited", [])
+        self.node_to_group = data.get("node_to_group", [])
         # load node_paths
-        node_paths_data = data.get("node_paths", {})
-        self.node_paths = {}
-        if isinstance(node_paths_data, dict):
-            for node_index, refs in node_paths_data.items():
-                entries = []
-                if not isinstance(refs, list):
-                    continue
-                for ref_entry in refs:
-                    normalized = self._normalize_node_path_entry(ref_entry)
-                    if normalized is not None:
-                        entries.append(normalized)
-                if entries:
-                    self.node_paths[node_index] = entries
-
-        group_to_point_data = data.get("group_to_point", [])
-        if not isinstance(group_to_point_data, list):
-            raise ValueError("方案文件中的 group_to_point 格式无效")
-        self.group_to_point = []
-        for group in group_to_point_data:
-            if not isinstance(group, dict):
-                continue
-            group_data = dict(group)
-            group_data["point_ids"] = [int(point_id) for point_id in group_data.get("point_ids", [])]
-            self.group_to_point.append(group_data)
+        self.node_paths = {int(k): v for k, v in data.get("node_paths", {}).items()}
+        
+        self.group_to_point = data.get("group_to_point", [])
 
         max_point_id = 0
         for points in self.node_points:
@@ -245,21 +160,21 @@ class SchemeSceneData:
         self._next_textbox_id = max(1, max_textbox_id + 1, saved_next_textbox_id)
 
         # 确保基础节点结构完整，避免后续渲染时访问缺失索引。
-        expected_node_count = max(1, int(node_count)) if node_count is not None else 0
-        max_node_index = max(
-            len(self.node_points),
-            max((int(key) for key in self.node_textboxes.keys()), default=0),
-            len(self.node_manual_edited) - 1,
-            len(self.node_to_group) - 1,
-            max((int(key) for key in self.node_paths.keys()), default=0),
-            expected_node_count - 1,
-        )
-        for idx in range(0, max_node_index + 1):
-            self.node_points.append([]) if idx >= len(self.node_points) else None
-            self.node_textboxes.setdefault(idx, [])
-            self.node_paths.setdefault(idx, [])
-        while len(self.node_to_group) <= max_node_index:
-            self.node_to_group.append(set())
+        # expected_node_count = max(1, int(node_count)) if node_count is not None else 0
+        # max_node_index = max(
+        #     len(self.node_points),
+        #     max((int(key) for key in self.node_textboxes.keys()), default=0),
+        #     len(self.node_manual_edited) - 1,
+        #     len(self.node_to_group) - 1,
+        #     max((int(key) for key in self.node_paths.keys()), default=0),
+        #     expected_node_count - 1,
+        # )
+        # for idx in range(0, max_node_index + 1):
+        #     self.node_points.append([]) if idx >= len(self.node_points) else None
+        #     self.node_textboxes.setdefault(idx, [])
+        #     self.node_paths.setdefault(idx, [])
+        # while len(self.node_to_group) <= max_node_index:
+        #     self.node_to_group.append(set())
 
     def ensure_node_exists(self, node_index: int):
         """确保目标节点存在；新节点默认复制前一节点点位。"""
@@ -331,20 +246,20 @@ class SchemeSceneData:
                         if next_running >= mid_length:
                             split_idx = idx
                             if segment_length <= 1e-9:
-                                split_point = (float(path[idx][0]), float(path[idx][1]))
+                                split_point = [float(path[idx][0]), float(path[idx][1])]
                             else:
                                 local_progress = (mid_length - running) / segment_length
                                 ax, ay = path[idx]
                                 bx, by = path[idx + 1]
-                                split_point = (
+                                split_point = [
                                     float(ax) + (float(bx) - float(ax)) * local_progress,
                                     float(ay) + (float(by) - float(ay)) * local_progress,
-                                )
+                                ]
                             break
                         running = next_running
 
                     if split_point is None:
-                        split_point = (float(path[-1][0]), float(path[-1][1]))
+                        split_point = [float(path[-1][0]), float(path[-1][1])]
                         split_idx = len(path) - 1
 
                     left_path = path[: split_idx + 1] + [split_point]
@@ -374,19 +289,9 @@ class SchemeSceneData:
             right_entry["interval"] = path_info['interval']
         return left_entry, right_entry
 
-    def on_node_inserted(self, node_index: int):
+    def on_node_inserted(self, inserted_index: int):
         """在中间拍位插入节点后，按新时间轴索引重排并初始化新节点点位。"""
-        inserted_index = int(node_index)
-
-        # 重排节点索引：从后往前遍历，遇到索引 >= inserted_index 的节点都往后挪一位。
-        # self.node_points.insert(inserted_index, self.node_points[inserted_index - 1] if inserted_index - 1 >= 0 else [])
-        # moved_points = {}
-        # for idx in reversed(range(len(self.node_points))):
-        #     if idx >= inserted_index:
-        #         moved_points[idx + 1] = self.node_points[idx]
-        #     else:
-        #         moved_points[idx] = self.node_points[idx]
-        # self.node_points = moved_points
+        # inserted_index = int(node_index)
 
         moved_textboxes = {}
         for idx in sorted(self.node_textboxes.keys(), reverse=True):
@@ -396,12 +301,11 @@ class SchemeSceneData:
                 moved_textboxes[idx] = self.node_textboxes[idx]
         self.node_textboxes = moved_textboxes
 
-
         # 重排节点手动编辑状态
         self.node_manual_edited.insert(inserted_index, False)
         
         # 添加新节点的分组信息
-        self.node_to_group.insert(inserted_index, self.node_to_group[inserted_index - 1] if inserted_index - 1 >= 0 else set())
+        self.node_to_group.insert(inserted_index, self.node_to_group[inserted_index - 1] if inserted_index - 1 >= 0 else [])
         
         # 新节点点位初始化
         left_idx = inserted_index - 1
@@ -410,7 +314,7 @@ class SchemeSceneData:
         
         if left_idx < len(self.node_points) and right_idx <= len(self.node_points):  # 如果左右节点都存在则插值
             # 插值新节点点位
-            self.node_points.insert(inserted_index, [])
+            self.node_points.insert(inserted_index, self.node_points[left_idx])  # 先复制左节点，修复follow插值的点位丢失问题
             self.node_points[inserted_index] = self._interpolate_points_at_beat(left_idx, right_idx, self._node_start_beat(inserted_index))
             
             # 更新路径设置
@@ -533,11 +437,116 @@ class SchemeSceneData:
 
     def _sample_point_from_node_path(self, node_index: int, point_id: int, progress: float) -> tuple[float, float] | None:
         """若点位在节点路径中，按路径进度采样其位置。"""
+        if node_index not in self.node_paths:
+            return None
         node_paths = self.node_paths[node_index]
         for ref_entry in node_paths:
             members = ref_entry.get("members", [])
             if int(point_id) not in {int(pid) for pid in members}:
                 continue
+            # follow 类型：以第一组 leader 为参考路径，其他组 leader 按初始偏移平移，组内其他点沿各自 leader 的相对偏移移动。
+            if ref_entry.get("type") == 'follow':
+                path = ref_entry.get("path", [])
+                if not path:
+                    return None
+
+                import math
+                total_length = 0.0
+                for idx in range(len(path) - 1):
+                    ax, ay = path[idx]
+                    bx, by = path[idx + 1]
+                    total_length += math.hypot(bx - ax, by - ay)
+                group_info = None
+                group_members = None
+                for group in self.group_to_point:
+                    pids = [int(x) for x in group.get("point_ids", [])]
+                    if int(point_id) in pids:
+                        group_info = group
+                        group_members = pids if group["leader"] else list(reversed(pids))
+                        break
+
+                if group_info is None or not group_members:
+                    offset = self._node_path_member_offset(node_index, ref_entry, int(point_id))
+                    leader0_sample = self._sample_position_along_path(path, progress)
+                    if leader0_sample is None:
+                        return None
+                    return float(leader0_sample[0]) + float(offset[0]), float(leader0_sample[1]) + float(offset[1])
+
+                id_to_orig = {int(p.get("id", -1)): p for p in self.node_points[node_index - 1]}
+                leader_distance = progress * total_length
+
+                if int(point_id) == int(group_members[0]):
+                    anchor_id = ref_entry.get("anchor_id")
+                    # 仅 anchor 沿绝对路径行进
+                    if int(point_id) == int(anchor_id):
+                        pos = self._sample_position_along_path(path, progress)
+                        return (float(pos[0]), float(pos[1])) if pos else None
+                    # 其余组 leader 相对于 anchor 行进：保持与 anchor 的初始偏移量
+                    anchor_orig = id_to_orig.get(int(anchor_id))
+                    member_orig = id_to_orig.get(int(point_id))
+                    if anchor_orig is not None and member_orig is not None:
+                        offset_x = float(member_orig.get("x", 0.0)) - float(anchor_orig.get("x", 0.0))
+                        offset_y = float(member_orig.get("y", 0.0)) - float(anchor_orig.get("y", 0.0))
+                        anchor_pos = self._sample_position_along_path(path, progress)
+                        if anchor_pos is not None:
+                            return float(anchor_pos[0]) + offset_x, float(anchor_pos[1]) + offset_y
+                    # 降级：若无法计算偏移，则沿绝对路径行进
+                    pos = self._sample_position_along_path(path, progress)
+                    return (float(pos[0]), float(pos[1])) if pos else None
+
+                try:
+                    idx = group_members.index(int(point_id))
+                except ValueError:
+                    offset = self._node_path_member_offset(node_index, ref_entry, int(point_id))
+                    leader0_sample = self._sample_position_along_path(path, progress)
+                    if leader0_sample is None:
+                        return None
+                    return float(leader0_sample[0]) + float(offset[0]), float(leader0_sample[1]) + float(offset[1])
+
+                # 非 anchor 组的跟随点应沿该组 leader 的相对路径行进
+                anchor_id = ref_entry.get("anchor_id")
+                leader_is_anchor = int(group_members[0]) == int(anchor_id)
+                if not leader_is_anchor:
+                    anchor_orig2 = id_to_orig.get(int(anchor_id))
+                    leader_orig2 = id_to_orig.get(int(group_members[0]))
+                    if anchor_orig2 is not None and leader_orig2 is not None:
+                        loff_x = float(leader_orig2.get("x", 0.0)) - float(anchor_orig2.get("x", 0.0))
+                        loff_y = float(leader_orig2.get("y", 0.0)) - float(anchor_orig2.get("y", 0.0))
+                        effective_path = [(float(p[0]) + loff_x, float(p[1]) + loff_y) for p in path]
+                    else:
+                        effective_path = path
+                else:
+                    effective_path = path
+
+                forward_points = []
+                for j in range(idx, -1, -1):
+                    pid = group_members[j]
+                    orig = id_to_orig.get(int(pid))
+                    if orig is None:
+                        offset = self._node_path_member_offset(node_index, ref_entry, int(point_id))
+                        leader0_sample = self._sample_position_along_path(path, progress)
+                        if leader0_sample is None:
+                            return None
+                        return float(leader0_sample[0]) + float(offset[0]), float(leader0_sample[1]) + float(offset[1])
+                    forward_points.append((float(orig.get("x", 0.0)), float(orig.get("y", 0.0))))
+
+                front_length = 0.0
+                for i in range(len(forward_points) - 1):
+                    ax, ay = forward_points[i]
+                    bx, by = forward_points[i + 1]
+                    front_length += math.hypot(bx - ax, by - ay)
+
+                combined_path = forward_points + [(float(p[0]), float(p[1])) for p in effective_path]
+                sample_dist = leader_distance
+                if sample_dist > front_length + total_length:
+                    sample_dist = front_length + total_length
+
+                result_pos = sample_on_polyline(combined_path, sample_dist)
+                if result_pos is None:
+                    return None
+                return result_pos
+                
+            # 普通路径（forward/interval 等）使用 anchor 偏移方式
             sampled = self._sample_position_along_path(ref_entry.get("path", []), progress)
             if sampled is None:
                 return None

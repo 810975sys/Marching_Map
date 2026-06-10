@@ -17,10 +17,6 @@ Marching_Map/
 │   │   └─ ...
 │   └─ ...
 │
-├─ config/        # 软件预设参数（如全局配置、默认参数等，建议单独放）
-│   ├─ app_config.json # 软件全局配置
-│   └─ ...
-│
 ├─ readme.md      # 项目说明文档
 ├─ Marching_Map.code-workspace # VSCode 工作区配置
 ├─ 初步构想.txt   # 项目初步构想
