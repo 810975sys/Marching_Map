@@ -93,20 +93,31 @@ class GridRenderer:
             idx += 1
         painter.restore()
 
-    def draw_field_labels(self, painter: QPainter):
-        """绘制四侧坐标标签。"""
+    def draw_field_labels(self, painter: QPainter, max_font_size: int | None = None):
+        """绘制四侧坐标标签。
+
+        max_font_size — 若指定，则限制最终字号的点大小不超过此值（仅对该次调用生效）。
+        """
         s = self.field_info
         painter.save()
         font = QFont()
-        font.setPointSize(round(s.label_zoom * s.scale))  # 字体大小随缩放调整
+        font_size = round(s.label_zoom * s.scale)
+        # 若指定了 max_font_size，则同时将字号和偏移量的有效缩放限制在对应的缩放值内
+        if max_font_size is not None and s.label_zoom > 0:
+            capped_scale = min(s.scale, max_font_size / s.label_zoom)
+            font_size = min(font_size, max_font_size)
+            effective_scale = capped_scale
+        else:
+            effective_scale = s.scale
+        font.setPointSize(font_size)  # 字体大小随缩放调整
         painter.setFont(font)
         # 只在粗线（场地经纬线）处显示坐标数字，且数字中心与线对齐
         metrics = painter.fontMetrics()
         offset_x = s.offset.x()
         offset_y = s.offset.y()
-        # label_y_offset 随 scale 适配，基准scale=18
+        # label_y_offset 随 scale 适配，基准scale=18，使用有效缩放避免字号受限时偏移过大
         base_offset = s.label_y_offset
-        offset_scale = s.scale / 18 if s.scale > 0 else 1
+        offset_scale = effective_scale / 18 if effective_scale > 0 else 1
         label_y_offset = base_offset * offset_scale
         # 上下数字（纵向粗线），0线可指定
         zero_x = s.field_rect.left() + s.label_y_zero_step * s.grid_step

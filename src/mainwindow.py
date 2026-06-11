@@ -320,11 +320,13 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
     def _export_pdf(self, checked=False):
         """将每个方案图节点导出为一页 A4 PDF。"""
-        
         if self._scheme_file_path is None:
-            return self._save_scheme_as()
+            self._save_scheme_as()
+            if self._scheme_file_path is None:
+                return False
         # try:
-        self._save_scheme_to_path(self._scheme_file_path)
+        else:
+            self._save_scheme_to_path(self._scheme_file_path)
         
         # default_name = "marching_map_export.pdf"
         # default_path = (

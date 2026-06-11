@@ -661,10 +661,10 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                         float(abs(self.field_info.label_y_offset)) + font_px)
 
         # 保持原先对水平留白的保护规则
-        horizontal_padding = max(128.0, offset_px * 5.0)
+        horizontal_padding = max(64.0, offset_px * 2.0)
 
         # 设定上/下不对称：上侧取较小的基准，下侧约为上侧的两倍并至少保持与旧逻辑相同的下限
-        top_padding = max(64.0, offset_px * 3.0)
+        top_padding = max(64.0, offset_px * 2.0)
         bottom_padding = max(128.0, top_padding * 2.0)
 
         return horizontal_padding, top_padding, bottom_padding
@@ -724,7 +724,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         )
         export_grid_renderer.draw_background_grid(painter, field_scene_rect)
         export_grid_renderer.draw_field_lines(painter)
-        export_grid_renderer.draw_field_labels(painter)
+        export_grid_renderer.draw_field_labels(painter, max_font_size=36)
 
     def _add_pdf_export_point_items(self, scene: QGraphicsScene, point: dict, export_scale: float, export_offset: QPointF):
         """向临时导出场景添加一个点位及其标签。"""
