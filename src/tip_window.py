@@ -18,7 +18,7 @@ class TipWindow(QDialog):
         main_layout.setContentsMargins(16, 16, 16, 16)
         main_layout.setSpacing(12)
 
-        self.tip_content = QLabel(("- 画布：鼠标中键/右键拖动；Ctrl+滚轮缩放\n\n"+
+        self.tip_content = QLabel(("- 画布：滚轮缩放；鼠标中键/右键拖动\n\n"+
                               "- 方案图节点：右键编辑；快捷键'+'新增；双击插入；Ctrl+滚轮缩放\n"+
                               "  删除节点时，会同步删除该节点与下一个节点的“路径”、“跟随”状态\n\n"+
                               "- “选择”功能：按 Shift 反转组内选择；按 Ctrl 可进行单点选择\n"+

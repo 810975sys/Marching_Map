@@ -18,26 +18,28 @@ class FieldMove(QGraphicsView):
         self._last_pos = None
 
     def wheelEvent(self, event):
-        """滚轮交互：默认上下平移，Shift 左右平移，Ctrl 缩放。"""
+        """滚轮缩放"""
+        # """滚轮交互：默认上下平移，Shift 左右平移，Ctrl 缩放。"""
         scene = self.scene()
         # if not hasattr(scene, 'field_info'):
         #     return super().wheelEvent(event)
         s = scene.field_info
-        modifiers = event.modifiers()
+        # modifiers = event.modifiers()
         delta = event.angleDelta().y() / 120  # 滚轮一格为120
-        if modifiers & Qt.KeyboardModifier.ControlModifier:
+        # if modifiers & Qt.KeyboardModifier.ControlModifier:
             # Ctrl+滚轮缩放
-            scale = s.scale * (1.1 ** delta)
-            scale = max(SCALE_MIN, min(SCALE_MAX, scale))  # 限制缩放范围
-            s.set_scale(scale)
-        elif modifiers & Qt.KeyboardModifier.ShiftModifier:
-            # Shift+滚轮左右平移
-            offset = s.offset
-            s.set_offset(offset.x() + delta * 10, offset.y())
-        else:
-            # 普通滚轮上下平移
-            offset = s.offset
-            s.set_offset(offset.x(), offset.y() + delta * 10)
+        # 滚轮缩放
+        scale = s.scale * (1.1 ** delta)
+        scale = max(SCALE_MIN, min(SCALE_MAX, scale))  # 限制缩放范围
+        s.set_scale(scale)
+        # elif modifiers & Qt.KeyboardModifier.ShiftModifier:
+        #     # Shift+滚轮左右平移
+        #     offset = s.offset
+        #     s.set_offset(offset.x() + delta * 10, offset.y())
+        # else:
+        #     # 普通滚轮上下平移
+        #     offset = s.offset
+        #     s.set_offset(offset.x(), offset.y() + delta * 10)
 
     def mousePressEvent(self, event):
         """按键按下：绘图左键交给场景，中键/右键进入平移。"""
