@@ -1,7 +1,7 @@
 """
 方案图数据层
 """
-from draw_utils import sample_on_polyline
+from draw_utils import sample_on_polyline, _calc_interval_beats
 
 class SchemeSceneData:
     """保存每张方案图的点位数据、分组信息、节点编辑状态等核心数据，并提供相关操作方法。"""
@@ -129,11 +129,11 @@ class SchemeSceneData:
 
         self.setup_scene_data()
 
-        self.node_points = data.get("node_points", {})
+        self.node_points = data.get("node_points", [[]])
         # JSON 序列化后 int 键会变成 str，需要转回 int
         self.node_textboxes = {int(k): v for k, v in data.get("node_textboxes", {}).items()}
-        self.node_manual_edited = data.get("node_manual_edited", [])
-        self.node_to_group = data.get("node_to_group", [])
+        self.node_manual_edited = data.get("node_manual_edited", [False])
+        self.node_to_group = data.get("node_to_group", [[]])
         # load node_paths
         self.node_paths = {int(k): v for k, v in data.get("node_paths", {}).items()}
         
@@ -435,7 +435,7 @@ class SchemeSceneData:
 
         return float(path[-1][0]), float(path[-1][1])
 
-    def _sample_point_from_node_path(self, node_index: int, point_id: int, progress: float) -> tuple[float, float] | None:
+    def _sample_point_from_node_path(self, node_index: int, point_id: int, progress: float, sum_beat: int, relative_beat: int) -> tuple[float, float] | None:
         """若点位在节点路径中，按路径进度采样其位置。"""
         if node_index not in self.node_paths:
             return None
@@ -444,7 +444,7 @@ class SchemeSceneData:
             members = ref_entry.get("members", [])
             if int(point_id) not in {int(pid) for pid in members}:
                 continue
-            # follow 类型：以第一组 leader 为参考路径，其他组 leader 按初始偏移平移，组内其他点沿各自 leader 的相对偏移移动。
+            # follow （跟随）：以第一组 leader 为参考路径，其他组 leader 按初始偏移平移，组内其他点沿各自 leader 的相对偏移移动。
             if ref_entry.get("type") == 'follow':
                 path = ref_entry.get("path", [])
                 if not path:
@@ -545,8 +545,68 @@ class SchemeSceneData:
                 if result_pos is None:
                     return None
                 return result_pos
-                
-            # 普通路径（forward/interval 等）使用 anchor 偏移方式
+
+            # interval （间隔行进）：按拍数精确控制落后启动与提前/滞后停止
+            if ref_entry.get("type") == 'interval':
+                path = ref_entry.get("path", [])
+                if not path or len(path) < 2:
+                    return None
+                interval_cfg = ref_entry.get("interval", (2, 0))
+                fall_count = int(interval_cfg[0]) if isinstance(interval_cfg, (list, tuple)) else 2
+                stop_count = int(interval_cfg[1]) if isinstance(interval_cfg, (list, tuple)) else 0
+
+                # 查找该点在组内的位置
+                members = ref_entry.get("members", [])
+                anchor_id = ref_entry.get("anchor_id")
+                try:
+                    member_idx = members.index(int(point_id))
+                    anchor_idx = members.index(int(anchor_id))
+                except ValueError:
+                    # 不在组内或找不到锚点，使用普通偏移方式
+                    sampled = self._sample_position_along_path(path, progress)
+                    if sampled is None:
+                        return None
+                    offset = self._node_path_member_offset(node_index, ref_entry, int(point_id))
+                    return float(sampled[0]) + float(offset[0]), float(sampled[1]) + float(offset[1])
+
+                dist_from_anchor = abs(member_idx - anchor_idx)
+
+                start_beat, end_beat = _calc_interval_beats(
+                    dist_from_anchor, sum_beat, fall_count, stop_count,
+                )
+
+                # ========== 获取起止位置 ==========
+                member_start = self._find_point_in_node(node_index - 1, int(point_id))
+
+                if member_start is None:
+                    member_start_pos = (float(path[0][0]), float(path[0][1]))
+                else:
+                    member_start_pos = (float(member_start["x"]), float(member_start["y"]))
+
+                # 终点：end_node 中的已确认位置
+                member_end = self._find_point_in_node(node_index, int(point_id))
+                if member_end is None:
+                    return None
+                member_end_pos = (float(member_end["x"]), float(member_end["y"]))
+
+                # ========== 计算局部进度 ==========
+                if relative_beat <= start_beat:
+                    # 尚未开始运动：停留在起点
+                    local = 0.0
+                elif relative_beat >= end_beat:
+                    # 运动已结束：到达终点
+                    local = 1.0
+                else:
+                    # 运动中：在 [start_beat, end_beat] 区间内线性插值
+                    local = (relative_beat - start_beat) / (end_beat - start_beat)
+                    local = max(0.0, min(1.0, local))
+
+                px = member_start_pos[0] + (member_end_pos[0] - member_start_pos[0]) * local
+                py = member_start_pos[1] + (member_end_pos[1] - member_start_pos[1]) * local
+
+                return px, py
+
+            # forward （路径）使用 anchor 偏移方式
             sampled = self._sample_position_along_path(ref_entry.get("path", []), progress)
             if sampled is None:
                 return None
@@ -562,20 +622,21 @@ class SchemeSceneData:
         start_map = {int(p["id"]): p for p in start_points}
         end_map = {int(p["id"]): p for p in end_points}
 
-        start_beat = self._node_start_beat(start_node)
-        end_beat = self._node_start_beat(end_node)
-        denom = end_beat - start_beat
-        if abs(denom) <= 1e-9:
+        start_beat = self._node_start_beat(start_node)  # 起始节拍数
+        end_beat = self._node_start_beat(end_node)      # 结束节拍数
+        sum_beat = end_beat - start_beat                   # 总节拍数
+        relative_beat = target_beat - start_beat        # 当前拍位相对于起始拍的偏移
+        if abs(sum_beat) <= 1e-9:
             t = 0.0
         else:
-            t = max(0.0, min(1.0, (int(target_beat) - start_beat) / denom))
+            t = max(0.0, min(1.0, relative_beat / sum_beat))
 
         points = []
         for point_id in sorted(set(start_map.keys()) | set(end_map.keys())):
             sp = start_map.get(point_id)
             ep = end_map.get(point_id)
             if sp is not None and ep is not None:
-                sampled = self._sample_point_from_node_path(end_node, point_id, t)
+                sampled = self._sample_point_from_node_path(end_node, point_id, t, sum_beat, relative_beat)
                 if sampled is not None:
                     px, py = sampled
                     point = {"id": point_id, "x": float(px), "y": float(py)}
@@ -595,7 +656,7 @@ class SchemeSceneData:
                     point["group_id"] = sp.get("group_id")
                 points.append(point)
             elif ep is not None:
-                sampled = self._sample_point_from_node_path(end_node, point_id, t)
+                sampled = self._sample_point_from_node_path(end_node, point_id, t, sum_beat, relative_beat)
                 if sampled is not None:
                     px, py = sampled
                     point = {"id": point_id, "x": float(px), "y": float(py)}

@@ -49,6 +49,7 @@ from draw_utils import (
     _rotate_vector,
     _field_rotate_point,
     sample_on_polyline,
+    _calc_interval_beats
 )
 
 # distance helper imported from scheme_helpers
@@ -148,6 +149,11 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._temp_group_line_items = []  # 临时分组连线图元
         self._temp_group_helper_items = []  # 临时分组用的 helper 圆圈图元
         self._follow_group_helper_items = []  # 跟随工具用的 group 首尾 helper 圆圈图元
+        self._interval_helper_items = []    # 间隔行进工具用的 helper 拖拽手柄图元
+        self._interval_anchor_id = None     # 间隔行进锚点 ID
+        self._interval_original_positions = {}  # 间隔行进锚点拖动前的原始位置快照 {point_id: (x, y)}
+        self._interval_drag_position = None  # 当前拖拽中锚点的 field 坐标 (x, y)，仅拖拽中有效，不写入 node_points
+        self._interval_dragging = False      # 是否正在拖拽间隔行进 helper
         self._rematch_helper_items = []     # 绘图重匹配时的原点位辅助选择圈图元
         self._point_items_by_id = {}    # 当前显示的点位图元字典，key为点位ID，value为对应的 PerformerPointItem 图元；用于快速定位与更新特定点位的图元。
         self._label_items_by_id = {}    # 当前显示的标签图元字典，key为点位ID，value为对应的 QGraphicsSimpleTextItem 图元；用于快速定位与更新特定点位的标签图元。
@@ -223,6 +229,10 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._textbox_preview = []
         self._textbox_pending_points = []
         self._selected_textbox_id = None
+        # self._interval_anchor_id = None
+        # self._interval_original_positions = {}
+        # self._interval_drag_position = None
+        self._clear_interval_helpers()
         self._clear_overlay_items()
 
     # def load_confirmed_state_data(self, data: dict, node_count: int | None = None):
@@ -953,7 +963,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def _clear_overlay_items(self):
         """清除当前所有点位与标签图元，准备重建。"""
-        for item in self._current_items + self._previous_items + self._label_items + self._selection_link_items + self._rematch_helper_items + self._textbox_items + self._textbox_handle_items + self._temp_group_helper_items + self._follow_group_helper_items:
+        for item in self._current_items + self._previous_items + self._label_items + self._selection_link_items + self._rematch_helper_items + self._textbox_items + self._textbox_handle_items + self._temp_group_helper_items + self._follow_group_helper_items + self._interval_helper_items + self._pending_preview_items:
             self.removeItem(item)
         self._current_items = []
         self._previous_items = []
@@ -965,6 +975,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._textbox_handle_items = []
         self._temp_group_helper_items = []
         self._follow_group_helper_items = []
+        self._clear_interval_helpers()
+        self._pending_preview_items = []
         self._point_items_by_id = {}
         self._label_items_by_id = {}
 
@@ -980,6 +992,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self.clear_temp_groups()
         if previous_tool == "跟随" and tool_name != "跟随":
             self._clear_follow_group_helper_items()
+        if previous_tool == "间隔行进" and tool_name != "间隔行进":
+            self._clear_interval_helpers()
             
         if tool_name in {"选择", "框选"}:
             self._selected_point_ids.clear()
@@ -1091,7 +1105,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._selection_link_items = []
         
     def _draw_temp_group_links(self, groups: list[list[int]]):
-        """在当前场景中临时绘制指定点位之间的连线（不修改 _selection_link_items）。"""
+        """在当前场景中临时绘制点位组内连线（不修改 _selection_link_items）。"""
         self._temp_group_line_items = []
         pen = QPen(QColor("#f39c12"), 2, Qt.PenStyle.SolidLine)
         pen.setCosmetic(True)
@@ -1184,48 +1198,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         )
         return anchor_point_id
 
-    # def _sync_follow_path_data_for_leader_toggle(self, toggled_group_id: int):
-    #     """切换leader后同步当前节点 follow 路径的 leaders 列表与 path[0]。"""
-    #     node_paths = self.node_paths.get(self.active_node, [])
-    #     group_info = self.group_to_point[toggled_group_id]
-    #     group_pids = set(group_info["point_ids"])
-
-    #     for entry in node_paths:
-    #         if entry.get("type") != "follow":
-    #             continue
-    #         leaders = list(entry.get("leaders") or [])
-    #         # 检查该组是否涉及当前 leaders
-    #         involved = [lid for lid in leaders if int(lid) in group_pids]
-    #         if not involved:
-    #             continue
-
-    #         # 重新计算该组在当前 leader 状态下的实际 leader
-    #         ordered = self._follow_group_point_ids_for_group(group_info)
-    #         new_leader = int(ordered[0]) if ordered else None
-
-    #         # 更新 leaders 列表
-    #         old_anchor = int(leaders[0]) if leaders else None
-    #         new_leaders = []
-    #         for lid in leaders:
-    #             if int(lid) in group_pids:
-    #                 if new_leader is not None and new_leader not in new_leaders:
-    #                     new_leaders.append(new_leader)
-    #             else:
-    #                 new_leaders.append(int(lid))
-    #         entry["leaders"] = new_leaders
-
-    #         # 若旧 anchor 在切换组中，则将该组另一端点位坐标设为 path[0]
-    #         if old_anchor is not None and old_anchor in group_pids:
-    #             other_endpoint_id = int(ordered[-1])  # 与 leader 相反的那一端
-    #             point = self._find_point_in_node(self.active_node, other_endpoint_id)
-    #             if point is not None:
-    #                 path = entry.get("path", [])
-    #                 if path:
-    #                     path[0] = [float(point["x"]), float(point["y"])]
-    #                     self._draw_draft_overlay()
-    #                     # group_info["leader"] = not group_info["leader"]  # 同步 leader 状态
-    #         break
-
     def _draw_follow_group_helpers(self):
         """在跟随模式下为每组首尾绘制可点击 helper。"""
         self._clear_follow_group_helper_items()
@@ -1268,6 +1240,376 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 helper.setData(2, int(pid))
                 self.addItem(helper)
                 self._follow_group_helper_items.append(helper)
+
+    def _clear_interval_helpers(self, full_reset: bool = True):
+        """清除间隔行进工具的 helper 拖拽手柄。"""
+        for it in getattr(self, "_interval_helper_items", []):
+            self.removeItem(it)
+        self._interval_helper_items = []
+        self._interval_dragging = False
+        if full_reset:
+            self._interval_anchor_id = None
+            self._interval_original_positions = {}
+            self._interval_drag_position = None
+
+    def _draw_interval_helpers(self):
+        """在间隔行进模式下为所有选中点位绘制 helper 圆圈。"""
+        self._clear_interval_helpers(full_reset=False)
+        if self.active_tool != "间隔行进":
+            return
+        if not self._selected_point_ids:
+            return
+
+        # 收集所有涉及组的点位（用于确定组的顺序和范围）
+        node_points = self.node_points[self.active_node]
+
+        for pid in self._selected_point_ids:
+            pid = int(pid)
+            item = self._point_items_by_id.get(pid)
+            if item is None:
+                continue
+            pos = item.scenePos()
+
+            helper_radius = self.helper_radius
+            helper = QGraphicsEllipseItem(
+                -helper_radius,
+                -helper_radius,
+                helper_radius * 2,
+                helper_radius * 2,
+            )
+            helper.setPos(pos)
+            helper.setPen(QPen(QColor("#d35400"), 1.4))
+            helper.setBrush(QBrush(QColor(0, 0, 0, 0)))
+            helper.setZValue(1000)
+            helper.setData(0, "interval_helper")
+            helper.setData(1, pid)
+            self.addItem(helper)
+            self._interval_helper_items.append(helper)
+
+    def _on_interval_drag_started(self, point_id: int, scene_pos: QPointF):
+        """间隔行进 helper 拖动开始时：记录原始位置快照并设置该点为锚点。"""
+        self._interval_anchor_id = int(point_id)
+        self._interval_drag_position = None
+        self._interval_original_positions = {}
+        # 切换到新锚点时，清空所有预览图元，并复原之前被移动过视觉效果的点位
+        for item in getattr(self, "_pending_preview_items", []):
+            self.removeItem(item)
+        self._pending_preview_items = []
+        self._clear_draft_items()
+        # 将所有 PerformerPointItem 恢复到 node_points[active_node] 位置
+        for p in self.node_points[self.active_node]:
+            pid = int(p.get("id", -1))
+            item = self._point_items_by_id.get(pid)
+            if item is not None:
+                item.setPos(self._field_to_scene(float(p.get("x", 0.0)), float(p.get("y", 0.0))))
+        # helper 同步移到正确位置（不重建，避免丢失鼠标事件）
+        for h in self._interval_helper_items:
+            pid = int(h.data(1))
+            p_item = self._point_items_by_id.get(pid)
+            if p_item is not None:
+                h.setPos(p_item.scenePos())
+        # 以 active_node - 1 为基准记录原始位置
+        src_node = max(0, self.active_node - 1)
+        node_points = self.node_points[src_node]
+        for p in node_points:
+            pid = int(p.get("id", -1))
+            self._interval_original_positions[pid] = (float(p.get("x", 0.0)), float(p.get("y", 0.0)))
+        self._clear_draft_items()
+
+    def _on_interval_helper_moved(self, point_id: int, scene_pos: QPointF) -> QPointF:
+        """间隔行进 helper 拖动中：计算锚点偏移并预览全组移动。"""
+        fx, fy = self._scene_to_field(scene_pos)
+        fx, fy = self._snap_field_point(fx, fy)
+
+        if self._interval_anchor_id is None:
+            return self._field_to_scene(fx, fy)
+
+        anchor_id = self._interval_anchor_id
+        orig = self._interval_original_positions.get(anchor_id)
+        if orig is None:
+            return self._field_to_scene(fx, fy)
+
+        # 存储拖拽位置到临时变量，不修改 node_points
+        self._interval_drag_position = (fx, fy)
+
+        # 仅同步更新 PerformerPointItem 的视觉位置（不写回 node_points）
+        anchor_item = self._point_items_by_id.get(anchor_id)
+        if anchor_item is not None:
+            new_scene_pos = self._field_to_scene(fx, fy)
+            anchor_item.setPos(new_scene_pos)
+
+        # 同步锚点的 helper 圆圈跟随 PerformerPointItem 移动
+        for h in self._interval_helper_items:
+            if int(h.data(1)) == int(anchor_id):
+                h.setPos(new_scene_pos)
+                break
+
+        # 清空上一次的预览图元
+        for item in getattr(self, "_pending_preview_items", []):
+            self.removeItem(item)
+        self._pending_preview_items = []
+
+        # 锚点的移动向量（总共移动量）
+        dx = fx - orig[0]
+        dy = fy - orig[1]
+
+        # 获取 fall/stop 设置
+        parent = self.parent()
+        dock = getattr(parent, "drawingControlDock", None)
+        fall_count = 2
+        stop_count = 0
+        if dock is not None:
+            fall_count = int(getattr(dock, "fallCountSpin", None).value() if getattr(dock, "fallCountSpin", None) else 2)
+            stop_count = int(getattr(dock, "stopCountSpin", None).value() if getattr(dock, "stopCountSpin", None) else 0)
+
+        # 确定锚点所在组的点位顺序
+        anchor_point = self._find_point_by_id(anchor_id)
+        if anchor_point is None:
+            return self._field_to_scene(fx, fy)
+
+        group_id = anchor_point.get("group_id")
+        group_members = []
+        if group_id is not None and int(group_id) < len(self.group_to_point):
+            group_info = self.group_to_point[int(group_id)]
+            group_members = [int(pid) for pid in group_info.get("point_ids", [])]
+
+        if not group_members or len(group_members) < 2:
+            # 无组或单点：仅移动锚点自身
+            preview_points = []
+            src_points = []
+            for pid in self._selected_point_ids:
+                p_orig = self._interval_original_positions.get(int(pid))
+                if p_orig is None:
+                    continue
+                src_points.append({"id": int(pid), "x": p_orig[0], "y": p_orig[1]})
+                if int(pid) == int(anchor_id):
+                    preview_points.append((p_orig[0] + dx, p_orig[1] + dy))
+                else:
+                    preview_points.append(p_orig)
+            self._draw_interval_preview(preview_points, src_points)
+            return self._field_to_scene(fx, fy)
+
+        # 找到锚点在组内的索引
+        anchor_index = group_members.index(int(anchor_id))
+
+        # 计算每个组内点的偏移量：相邻点落后 fall_count 拍
+        # 组长度
+        group_len = len(group_members)
+
+        preview_points = []
+        src_points = []
+        sum_beat = self._node_start_beat(self.active_node) - self._node_start_beat(self.active_node - 1)
+
+        # 以锚点实际移动拍数为基准计算每拍位移量
+        dx, dy = dx / sum_beat, dy / sum_beat
+
+        for pid in self._selected_point_ids:
+            pid = int(pid)
+            p_orig = self._interval_original_positions.get(pid)
+
+            if pid not in group_members:
+                # 不在同一组，保持原位
+                src_points.append({"id": pid, "x": p_orig[0], "y": p_orig[1]})
+                preview_points.append(p_orig)
+                continue
+
+            try:
+                member_idx = group_members.index(pid)
+            except ValueError:
+                src_points.append({"id": pid, "x": p_orig[0], "y": p_orig[1]})
+                preview_points.append(p_orig)
+                continue
+
+            # 距离锚点的索引偏移
+            dist_from_anchor = abs(member_idx - anchor_index)
+
+            # 与 _sample_point_from_node_path 的 interval 分支使用相同的拍数计算逻辑
+            start_beat, end_beat = _calc_interval_beats(
+                dist_from_anchor, sum_beat, fall_count, stop_count,
+            )
+
+            move_count = end_beat - start_beat if end_beat > start_beat else 0
+            px = p_orig[0] + dx * move_count
+            py = p_orig[1] + dy * move_count
+            src_points.append({"id": pid, "x": p_orig[0], "y": p_orig[1]})
+            preview_points.append((px, py))
+
+        self._draw_interval_preview(preview_points, src_points)
+        return self._field_to_scene(fx, fy)
+
+    def _confirm_interval_marching(self, had_draft: bool) -> bool:
+        """确认间隔行进：将锚点移动量与间隔设置写入 node_paths。"""
+        anchor_id = self._interval_anchor_id
+        orig = self._interval_original_positions.get(anchor_id)
+        anchor_point = self._find_point_by_id(anchor_id)
+        current_points = self.node_points[self.active_node]
+
+        if orig is None or anchor_point is None:
+            self._clear_draft()
+            self._clear_interval_helpers()
+            self._pending_points = []
+            if not had_draft:
+                self.draftFinished.emit()
+            self._render_points_for_active_node()
+            self.drawingRematchStateChanged.emit()
+            return False
+
+        # 从拖拽位置读取锚点最终坐标（未写入 node_points）
+        if self._interval_drag_position is not None:
+            anchor_fx, anchor_fy = self._interval_drag_position
+        else:
+            anchor_fx, anchor_fy = float(anchor_point.get("x", 0.0)), float(anchor_point.get("y", 0.0))
+
+        # 锚点移动量
+        dx = anchor_fx - orig[0]
+        dy = anchor_fy - orig[1]
+
+        # 获取组成员
+        group_id = anchor_point.get("group_id")
+        members_union = list(self._selected_point_ids)
+        if group_id is not None and int(group_id) < len(self.group_to_point):
+            group_info = self.group_to_point[int(group_id)]
+            members_union = [int(pid) for pid in group_info.get("point_ids", [])]
+        else:
+            members_union = [int(pid) for pid in self._selected_point_ids]
+
+        # 获取 dock 中的 interval 设置
+        parent = self.parent()
+        dock = getattr(parent, "drawingControlDock", None)
+        fall_count = 2
+        stop_count = 0
+        if dock is not None:
+            fall_spin = getattr(dock, "fallCountSpin", None)
+            stop_spin = getattr(dock, "stopCountSpin", None)
+            if fall_spin is not None:
+                fall_count = int(fall_spin.value())
+            if stop_spin is not None:
+                stop_count = int(stop_spin.value())
+
+        # 先预计算各成员是否有运动节拍，过滤出活跃成员
+        active_members = []
+        if len(members_union) >= 2:
+            for pid in members_union:
+                try:
+                    member_idx = members_union.index(pid)
+                    anchor_idx = members_union.index(int(anchor_id))
+                except ValueError:
+                    continue
+                dist_from_anchor = abs(member_idx - anchor_idx)
+
+                sum_beat = self._node_start_beat(self.active_node) - self._node_start_beat(self.active_node - 1)
+
+                start_beat, end_beat = _calc_interval_beats(
+                    dist_from_anchor, sum_beat, fall_count, stop_count,
+                )
+
+                # 有实际运动节拍才视为活跃成员
+                if start_beat < sum_beat and end_beat > start_beat:
+                    active_members.append(pid)
+
+        # 存储路径（锚点原始位置到新位置），仅含活跃成员
+        path = [(float(orig[0]), float(orig[1])),
+                (float(anchor_fx), float(anchor_fy))]
+
+        self._upsert_node_path_entry(
+            self.active_node,
+            'interval',
+            anchor_id,
+            path,
+            active_members,
+            interval=(fall_count, stop_count),
+        )
+
+        # 应用活跃成员的各点最终位置
+        point_by_id = {int(p.get("id", -1)): p for p in current_points}
+        # 计算锚点拍数基准（与预览 _on_interval_helper_moved 一致）
+        anchor_idx = active_members.index(int(anchor_id))
+        sum_beat = self._node_start_beat(self.active_node) - self._node_start_beat(self.active_node - 1)
+
+        dx, dy = dx / sum_beat, dy / sum_beat
+
+        for pid in active_members:
+            pid = int(pid)
+            p_orig = self._interval_original_positions.get(pid)
+            if p_orig is None:
+                continue
+            point = point_by_id.get(pid)
+            if point is None:
+                continue
+
+            member_idx = active_members.index(pid)
+
+            dist_from_anchor = abs(member_idx - anchor_idx)
+
+            start_beat, end_beat = _calc_interval_beats(
+                dist_from_anchor, sum_beat, fall_count, stop_count,
+            )
+
+            move_count = end_beat - start_beat
+            point["x"] = p_orig[0] + dx * move_count
+            point["y"] = p_orig[1] + dy * move_count
+
+        self.sync_sampling_values_from_selection("间隔行进")
+        self.reset_sampling_defaults("间隔行进")
+        self._pending_points = []
+        self._draft_reference_points = []
+        self._reset_drawing_rematch_state(active=False)
+        self._mark_node_manual(self.active_node)
+        self._recalculate_following_auto_nodes(self.active_node, include_manual_nodes=True)
+        self._clear_draft()
+        self._clear_interval_helpers()
+        if not had_draft:
+            self.draftFinished.emit()
+        self._render_points_for_active_node()
+        self.drawingRematchStateChanged.emit()
+        self.dataChanged.emit()
+        return True
+
+    def _draw_interval_preview(self, preview_points: list[tuple[float, float]], src_points: list[dict] | None = None):
+        """绘制间隔行进的预览点位与连线。"""
+        # 清除之前的预览
+        for item in getattr(self, "_pending_preview_items", []):
+            self.removeItem(item)
+        self._pending_preview_items = []
+
+        if not preview_points:
+            return
+
+        for px, py in preview_points:
+            scene_pos = self._field_to_scene(px, py)
+            r = 4.0
+            dot = QGraphicsEllipseItem(
+                scene_pos.x() - r,
+                scene_pos.y() - r,
+                r * 2,
+                r * 2,
+            )
+            dot.setPen(QPen(QColor("#2980b9"), 1.4))
+            dot.setBrush(QBrush(QColor(41, 128, 185, 120)))
+            dot.setZValue(895)
+            dot.setData(0, "interval_preview")
+            self.addItem(dot)
+            self._pending_preview_items.append(dot)
+        # 绘制原始位置->预览位置的连线
+        if src_points:
+            self._pending_preview_items.extend(
+                self._build_preview_line_items(list(preview_points), src_points, z=885)
+            )
+
+    def _refresh_interval_preview(self):
+        """刷新预览。"""
+        if self.active_tool != "间隔行进" or self._interval_anchor_id is None:
+            return
+        anchor_id = self._interval_anchor_id
+        # 优先使用 _interval_drag_position（node_points 未写入拖拽位置）
+        if self._interval_drag_position is not None:
+            pos = self._field_to_scene(*self._interval_drag_position)
+        else:
+            anchor_point = self._find_point_by_id(anchor_id)
+            if anchor_point is None:
+                return
+            pos = self._field_to_scene(float(anchor_point.get("x", 0.0)), float(anchor_point.get("y", 0.0)))
+        self._on_interval_helper_moved(anchor_id, pos)
 
     def _update_temp_group_visuals(self):
         """绘制临时分组的连线与首尾 helper（仅首尾响应鼠标事件）。"""
@@ -3007,6 +3349,10 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             tool_name = "曲线/折线"
             refs = list(self._pending_points)
 
+        # 间隔行进：无需草稿状态，直接使用锚点和原始位置快照
+        if self.active_tool == "间隔行进" and self._interval_anchor_id is not None and self._interval_original_positions:
+            return self._confirm_interval_marching(had_draft)
+
         if not tool_name or not refs:
             self._clear_draft()
             self._pending_points = []
@@ -3171,9 +3517,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                         self.dataChanged.emit()
                         return True
 
-            elif tool_name == "间隔行进":
-                pass
-                
             rematch_snapshot = self._drawing_rematch_snapshot()
             id_to_index = {int(p.get("id", -1)): idx for idx, p in enumerate(current_points)}
             if rematch_snapshot["active"]:
@@ -3244,6 +3587,13 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def cancel_current_drawing(self):
         """取消当前草稿，不写入点位。"""
+        # 间隔行进：清理锚点状态和 helper
+        if self.active_tool == "间隔行进":
+            self._clear_interval_helpers()
+            self._render_points_for_active_node()
+            self.drawingRematchStateChanged.emit()
+            return
+
         # 取消绘制时：对所有采样工具恢复默认参数
         tools_to_reset = set()
         if self._draft_tool_name in self._sampling_tools:
@@ -4078,6 +4428,15 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         if self._draft_tool_name == "跟随":
             self._draw_follow_group_helpers()
             self.update()
+        if self.active_tool == "间隔行进":
+            self._draw_interval_helpers()
+            if self._interval_anchor_id is not None and self._interval_drag_position is not None:
+                # 将锚点的 PerformerPointItem 移到拖拽位置（node_points 未修改）
+                anchor_item = self._point_items_by_id.get(self._interval_anchor_id)
+                if anchor_item is not None:
+                    anchor_item.setPos(self._field_to_scene(*self._interval_drag_position))
+                # 直接刷新预览（_clear_overlay_items 已清空旧预览图元）
+                self._refresh_interval_preview()
         # 若存在临时分组信息，则绘制其连线与首尾 helper
         if getattr(self, "_temp_group_to_point", None):
             QTimer.singleShot(0, self._update_temp_group_visuals)
@@ -4328,6 +4687,14 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 super().mousePressEvent(event)
                 return
 
+            # 间隔行进工具：点击 helper 圆圈启动拖拽
+            if self.active_tool == "间隔行进" and item is not None and item.data(0) == "interval_helper":
+                point_id = int(item.data(1))
+                self._on_interval_drag_started(point_id, event.scenePos())
+                self._interval_dragging = True
+                event.accept()
+                return
+
             rematch_snapshot = self._drawing_rematch_snapshot()
             clicked_point_id = None
             if isinstance(item, PerformerPointItem):
@@ -4470,6 +4837,12 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 event.accept()
                 return
 
+        # 间隔行进工具拖拽中
+        if self._interval_dragging and self._interval_anchor_id is not None:
+            self._on_interval_helper_moved(self._interval_anchor_id, event.scenePos())
+            event.accept()
+            return
+
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
@@ -4480,6 +4853,12 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 scene_rect = QRectF(self._selection_start_position, self._selection_current_position).normalized()
                 self._select_points_in_scene_rect(scene_rect, self.active_tool, event)
                 self._clear_selection_rect()
+                event.accept()
+                return
+
+            # 间隔行进工具拖拽释放
+            if self._interval_dragging:
+                self._interval_dragging = False
                 event.accept()
                 return
 

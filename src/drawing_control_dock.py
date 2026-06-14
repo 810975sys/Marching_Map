@@ -81,8 +81,8 @@ class DrawingControlDock(QDockWidget):
         self._adjustment_mode_tips = {
             "比例": "保持长宽比缩放，整体等比例变化。",
             "伸展": "沿拖拽方向拉伸或压缩，可单独改变宽高。",
-            "倾斜": "拖动角点产生斜切效果，保持对边关系。",
-            "歪曲": "对四角做非均匀变形，允许更自由的形变。",
+            "倾斜": "对选中点与其逆时针相邻点构成的边进行移动。",
+            "歪曲": "对四角做非均匀变形。",
         }
         for mode_name in ["比例", "伸展", "倾斜", "歪曲"]:
             button = QToolButton(self.adjustWidget)
@@ -255,7 +255,27 @@ class DrawingControlDock(QDockWidget):
         line_layout.addWidget(self._p02_row)
         line_layout.addWidget(self._polygon_row)
         line_layout.addWidget(self.curve_row)
-        
+
+        # 间隔行进参数区域
+        self.intervalWidget = QWidget(content)
+        interval_layout = QHBoxLayout(self.intervalWidget)
+        interval_layout.setContentsMargins(0, 0, 0, 0)
+        interval_layout.setSpacing(6)
+        fall_cnt_label = QLabel("落后拍数", self.intervalWidget)
+        self.fallCountSpin = QSpinBox(self.intervalWidget)
+        self.fallCountSpin.setRange(0, 99)
+        self.fallCountSpin.setValue(2)
+        stop_cnt_label = QLabel("提前停止拍数", self.intervalWidget)
+        self.stopCountSpin = QSpinBox(self.intervalWidget)
+        self.stopCountSpin.setRange(0, 99)
+        self.stopCountSpin.setValue(0)
+        interval_layout.addWidget(fall_cnt_label)
+        interval_layout.addWidget(self.fallCountSpin)
+        interval_layout.addWidget(stop_cnt_label)
+        interval_layout.addWidget(self.stopCountSpin)
+        layout.addWidget(self.intervalWidget)
+        self.intervalWidget.setVisible(False)
+
         # 确认/取消按钮区域
         button_layout = QHBoxLayout()
         button_layout.addWidget(self.confirmButton)
@@ -285,7 +305,20 @@ class DrawingControlDock(QDockWidget):
         self.lineShiftPointCountAutoButton.toggled.connect(self._on_line_spacing_auto_toggled2)    # P0-P2 点位个数自动按钮切换时同步到场景
             # 多边形控制
         self.polygonSideCountSpin.valueChanged.connect(self._on_polygon_side_count_changed) # 多边形边数变化时同步到场景
-        
+
+        # 间隔行进控制：变化时刷新场景预览（不重新渲染整个场景，仅更新预览）
+        def _on_interval_param_changed():
+            parent = getattr(self, 'parent', lambda: None)()
+            if parent is None:
+                parent = self.parent()
+            scene = getattr(parent, 'scene', None)
+            if scene is None:
+                return
+            scene._refresh_interval_preview()
+            
+        self.fallCountSpin.valueChanged.connect(_on_interval_param_changed)
+        self.stopCountSpin.valueChanged.connect(_on_interval_param_changed)
+
         # 折线/曲线切换控制
         def _on_curve_mode_changed():
             parent = getattr(self, 'parent', lambda: None)()
@@ -319,6 +352,10 @@ class DrawingControlDock(QDockWidget):
     def setGroupSettingVisible(self, visible: bool):
         """设置分组设置控制区可见性。"""
         self.groupWidget.setVisible(bool(visible))
+
+    def setIntervalControlsVisible(self, visible: bool):
+        """设置间隔行进控制区可见性。"""
+        self.intervalWidget.setVisible(bool(visible))
 
     def setTextBoxFontSize(self, value: int):
         """设置文本框字号显示值。"""

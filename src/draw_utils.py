@@ -720,3 +720,25 @@ def sample_on_polyline(points, distance):
         cum_len += seg_len
     # 超出总长则返回终点
     return (float(points[-1][0]), float(points[-1][1]))
+
+def _calc_interval_beats(
+    dist_from_anchor: int, sum_beat: int, fall_count: int, stop_count: int,
+) -> tuple[int, int]:
+    """计算间隔行进中某点的运动开始拍和结束拍数。
+
+    参数:
+        dist_from_anchor: 该点与锚点在组内的索引距离差
+        sum_beat: 两个节点之间的总节拍数
+        fall_count: 相邻点之间的落后拍数（≥0）
+        stop_count: 端点提前停止拍数（≥0）
+
+    返回:
+        (start_beat, end_beat) 运动区间，左闭右开
+    """
+    # 落后启动：anchor 移动 fall_count 拍后下一个点才启动
+    start_beat = dist_from_anchor * fall_count
+
+    # 提前停止：anchor 停止前 stop_count 拍前，下一个点停止
+    end_beat = sum_beat - (stop_count * dist_from_anchor)
+
+    return start_beat, end_beat

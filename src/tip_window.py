@@ -23,7 +23,8 @@ class TipWindow(QDialog):
                               "  删除节点时，会同步删除该节点与下一个节点的“路径”、“跟随”状态\n\n"+
                               "- “选择”功能：按 Shift 反转组内选择；按 Ctrl 可进行单点选择\n"+
                               "  “框选”功能：按 Ctrl 可保持选择点位\n\n"+
-                              "- 场地坐标：旋转角度为负则不显示"), self)
+                              "- 场地坐标：旋转角度为负则不显示\n\n" + 
+                              "❗标签、箭头、撤回、播放演示功能暂未实现，敬请期待"), self)
         self.tip_content.setWordWrap(True)
         self.tip_content.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         self.tip_content.setFocusPolicy(Qt.FocusPolicy.NoFocus)

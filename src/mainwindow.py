@@ -491,6 +491,9 @@ class MainWindow(MainWindowNotice, QMainWindow):
             '文本': "确定对角点绘制文本框",
             '调整': "拖动角点与中心点调整所选点位",
             '分组': "对点位分组进行连接、分割", 
+            '跟随': "确定路径的经过点，所选点位跟随组leader沿路径移动",
+            '路径': "确定路径的经过点，所选点位沿路径平移",
+            '间隔行进': "拖动点位，组内其余点位以固定间隔移动",
         }
         self.drawingControlDock.statusLabel.setText(tool_text.get(tool_name, ""))
 
@@ -630,6 +633,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.drawingControlDock.setDrawingRematchVisible(False)
         self.drawingControlDock.setTextBoxControlsVisible(tool_name == "文本")
         self.drawingControlDock.setGroupSettingVisible(tool_name == "分组")
+        self.drawingControlDock.setIntervalControlsVisible(tool_name == "间隔行进")
+        
         if tool_name == "调整":
             # self.drawingControlDock.setOperationLabels("确认调整 Enter", "取消调整 Esc")
             self.drawingControlDock.setSamplingToolVisible(None, False)
@@ -656,6 +661,14 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self.drawingControlDock.setCurveModeVisible(False)
             self.drawingControlDock.setDraftActive(False)
             self.scene.start_temp_group_edit_from_selection()   # 初始化临时分组
+            self.drawingControlDock.confirmButton.setEnabled(True)
+            self.drawingControlDock.cancelButton.setEnabled(True)
+            return
+
+        if tool_name == "间隔行进":
+            self.drawingControlDock.setSamplingToolVisible(None, False)
+            self.drawingControlDock.setCurveModeVisible(False)
+            self.drawingControlDock.setDraftActive(False)
             self.drawingControlDock.confirmButton.setEnabled(True)
             self.drawingControlDock.cancelButton.setEnabled(True)
             return
