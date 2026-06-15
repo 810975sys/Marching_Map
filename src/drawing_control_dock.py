@@ -98,7 +98,7 @@ class DrawingControlDock(QDockWidget):
         self.adjustModeTipLabel.setWordWrap(True)
         self.adjustModeTipLabel.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         
-        self.rotationAngleLabel = QLabel("旋转角度", self.adjustWidget)
+        self.rotationAngleLabel = QLabel("旋转角度（调整点位位置，点位将沿直线运动至新位置）", self.adjustWidget)
         self.rotationAngleLabel.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.rotationAngleSpin = QDoubleSpinBox(self.adjustWidget)
         self.rotationAngleSpin.setRange(-360.0, 360.0)
@@ -276,6 +276,22 @@ class DrawingControlDock(QDockWidget):
         layout.addWidget(self.intervalWidget)
         self.intervalWidget.setVisible(False)
 
+        # 旋转参数区域（独立于调整模式的旋转控件）
+        self.rotateWidget = QWidget(content)
+        rotate_layout = QHBoxLayout(self.rotateWidget)
+        rotate_layout.setContentsMargins(0, 0, 0, 0)
+        rotate_layout.setSpacing(6)
+        self.rotateAngleLabel = QLabel("旋转角度", self.rotateWidget)
+        self.rotateAngleLabel.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.rotateAngleSpin = QDoubleSpinBox(self.rotateWidget)
+        self.rotateAngleSpin.setRange(-3600.0, 3600.0)
+        self.rotateAngleSpin.setDecimals(1)
+        self.rotateAngleSpin.setSingleStep(1.0)
+        rotate_layout.addWidget(self.rotateAngleLabel)
+        rotate_layout.addWidget(self.rotateAngleSpin)
+        layout.addWidget(self.rotateWidget)
+        self.rotateWidget.setVisible(False)
+
         # 确认/取消按钮区域
         button_layout = QHBoxLayout()
         button_layout.addWidget(self.confirmButton)
@@ -356,6 +372,16 @@ class DrawingControlDock(QDockWidget):
     def setIntervalControlsVisible(self, visible: bool):
         """设置间隔行进控制区可见性。"""
         self.intervalWidget.setVisible(bool(visible))
+
+    def setRotateControlsVisible(self, visible: bool):
+        """设置旋转控制区可见性：显示独立的旋转角度标签与输入框。"""
+        self.rotateWidget.setVisible(bool(visible))
+
+    def setRotateAngle(self, angle: float):
+        """设置旋转角度显示值（独立旋转控件）。"""
+        self.rotateAngleSpin.blockSignals(True)
+        self.rotateAngleSpin.setValue(float(angle))
+        self.rotateAngleSpin.blockSignals(False)
 
     def setTextBoxFontSize(self, value: int):
         """设置文本框字号显示值。"""

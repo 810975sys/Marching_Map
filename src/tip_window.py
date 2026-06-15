@@ -34,7 +34,3 @@ class TipWindow(QDialog):
         font.setPointSize(12)
         self.tip_content.setFont(font)
         main_layout.addWidget(self.tip_content)
-
-    # def set_tip_text(self, text: str):
-    #     """设置 Tips 文本内容。"""
-    #     self.contentEdit.setPlainText(text)

@@ -61,8 +61,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self._text_tools = {"文本"}
         self._group_tools = {"分组"}
         self._select_tools = {"选择", "框选"}
-        self._transform_tools = {"调整", "跟随", "路径", "间隔行进"}
-        self._p0_forbidden_transform_tools = {"跟随", "路径", "间隔行进"}
+        self._transform_tools = {"调整", "跟随", "路径", "间隔行进", "旋转"}
+        self._p0_forbidden_transform_tools = {"跟随", "路径", "间隔行进", "旋转"}
         
         self.setupMenus()   # 菜单栏
         self.setupToolBar()    # 工具栏
@@ -423,7 +423,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             ['选择', '框选'],   # 选择工具
             ['点', '线段', '弧', '曲线/折线', '填充四边形', '圆', '多边形'],    # 绘制工具
             ['调整', '分组'],   # 调整工具
-            ['跟随', '路径', '间隔行进'],   # 变换工具
+            ['跟随', '路径', '间隔行进', '旋转'],   # 变换工具
             ['标签', '文本', '箭头']    # 标注工具
         ]
         
@@ -489,16 +489,22 @@ class MainWindow(MainWindowNotice, QMainWindow):
             '填充四边形': "确定填充四边形三个顶点；拖动空心矩形可对单点进行修正。",
             '曲线/折线': "确定曲线/折线的经过点；拖动空心矩形可对单点进行修正。",
             '文本': "确定对角点绘制文本框",
-            '调整': "拖动角点与中心点调整所选点位",
+            '调整': "拖动角点与中心点调整所选点位（旋转仅调整位置，点位轨迹为直线）",
             '分组': "对点位分组进行连接、分割", 
             '跟随': "确定路径的经过点，所选点位跟随组leader沿路径移动",
             '路径': "确定路径的经过点，所选点位沿路径平移",
             '间隔行进': "拖动点位，组内其余点位以固定间隔移动",
+            '旋转': "设置旋转角度，所选点位绕中心点旋转（点位轨迹为圆弧）",
         }
         self.drawingControlDock.statusLabel.setText(tool_text.get(tool_name, ""))
 
         if tool_name == "调整" and not self.scene._selected_point_ids:
             self._show_menu_notice("请先选中点位，再进入调整模式。", failed=True)
+            self._set_active_tool("框选")
+            return
+
+        if tool_name == "旋转" and not self.scene._selected_point_ids:
+            self._show_menu_notice("请先选中点位，再进入旋转模式。", failed=True)
             self._set_active_tool("框选")
             return
 
@@ -634,6 +640,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.drawingControlDock.setTextBoxControlsVisible(tool_name == "文本")
         self.drawingControlDock.setGroupSettingVisible(tool_name == "分组")
         self.drawingControlDock.setIntervalControlsVisible(tool_name == "间隔行进")
+        self.drawingControlDock.setRotateControlsVisible(tool_name == "旋转")
         
         if tool_name == "调整":
             # self.drawingControlDock.setOperationLabels("确认调整 Enter", "取消调整 Esc")
@@ -669,6 +676,15 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self.drawingControlDock.setSamplingToolVisible(None, False)
             self.drawingControlDock.setCurveModeVisible(False)
             self.drawingControlDock.setDraftActive(False)
+            self.drawingControlDock.confirmButton.setEnabled(True)
+            self.drawingControlDock.cancelButton.setEnabled(True)
+            return
+
+        if tool_name == "旋转":
+            self.drawingControlDock.setSamplingToolVisible(None, False)
+            self.drawingControlDock.setCurveModeVisible(False)
+            self.drawingControlDock.setDraftActive(False)
+            self.drawingControlDock.setRotateAngle(float(getattr(self.scene, "_rotate_angle", 0.0)))
             self.drawingControlDock.confirmButton.setEnabled(True)
             self.drawingControlDock.cancelButton.setEnabled(True)
             return
@@ -947,6 +963,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.drawingControlDock.nextMatchButton.clicked.connect(self._on_drawing_match_next_requested)
         self.drawingControlDock.keepMatchButton.clicked.connect(self._on_drawing_match_keep_requested)
         self.drawingControlDock.rotationAngleSpin.valueChanged.connect(self.scene.set_adjustment_rotation)
+        self.drawingControlDock.rotateAngleSpin.valueChanged.connect(self.scene.set_rotate_angle)
         for mode_name, button in self.drawingControlDock.adjustModeButtons.items():
             button.toggled.connect(lambda checked=False, mode=mode_name: self._on_adjustment_mode_toggled(mode, checked))
         # 分组按钮连接
@@ -967,10 +984,12 @@ class MainWindow(MainWindowNotice, QMainWindow):
         elif self.activeToolName == "分组":
             # 将临时分组写回并退出分组模式
             self.scene.confirm_temp_groups()
+        elif self.activeToolName == "旋转":
+            self.scene.confirm_rotate()
         else:
             if self.scene.confirm_current_drawing() is False:
                 self._sync_drawing_rematch_controls()
-                return
+                # return
         self.onToolButtonClicked("框选")  # 草稿完成后自动切回选择工具
 
     def _on_control_cancelled(self):
@@ -987,6 +1006,9 @@ class MainWindow(MainWindowNotice, QMainWindow):
             # 取消分组编辑：清除临时分组预览，但保留绘制控制台的内容与可见性
             self.scene.clear_temp_groups()
             self.onToolButtonClicked("框选")
+            return
+        if self.activeToolName == "旋转":
+            self.scene.cancel_rotate()
             return
         self.scene.cancel_current_drawing()
 

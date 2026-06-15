@@ -149,11 +149,16 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._temp_group_line_items = []  # 临时分组连线图元
         self._temp_group_helper_items = []  # 临时分组用的 helper 圆圈图元
         self._follow_group_helper_items = []  # 跟随工具用的 group 首尾 helper 圆圈图元
-        self._interval_helper_items = []    # 间隔行进工具用的 helper 拖拽手柄图元
+        self._interval_helper_items = {}    # 间隔行进工具用的 helper 拖拽手柄图元 {point_id: QGraphicsEllipseItem}
         self._interval_anchor_id = None     # 间隔行进锚点 ID
         self._interval_original_positions = {}  # 间隔行进锚点拖动前的原始位置快照 {point_id: (x, y)}
         self._interval_drag_position = None  # 当前拖拽中锚点的 field 坐标 (x, y)，仅拖拽中有效，不写入 node_points
         self._interval_dragging = False      # 是否正在拖拽间隔行进 helper
+        self._rotate_angle = 0.0             # 旋转工具当前角度（度）
+        self._rotate_center_point = (0.0, 0.0)  # 旋转中心点 field 坐标
+        self._rotate_helper_items = []       # 旋转工具用的旋转中心 helper 图元
+        self._rotate_dragging = False        # 是否正在拖拽旋转中心 helper
+        self._rotate_source_points = []      # 旋转工具初始点位快照（用于预览）
         self._rematch_helper_items = []     # 绘图重匹配时的原点位辅助选择圈图元
         self._point_items_by_id = {}    # 当前显示的点位图元字典，key为点位ID，value为对应的 PerformerPointItem 图元；用于快速定位与更新特定点位的图元。
         self._label_items_by_id = {}    # 当前显示的标签图元字典，key为点位ID，value为对应的 QGraphicsSimpleTextItem 图元；用于快速定位与更新特定点位的标签图元。
@@ -175,7 +180,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         # margin = max(width_px, height_px) * 0.5 + 200.0
         self.setSceneRect(initial_field_rect)
         
-        self.export_ratio = 3.0   # 导出时的放大倍数，默认3倍，过大可能导致性能问题或内存不足；过小可能导致细节缺失。用户可根据实际需求调整。
+        self.export_ratio = 3.0   # 导出时的放大倍数，默认3倍。
         
         # 上一点位的绘制参数（用于预览上一节点的点位）
         self.pre_point_radius = 2.0
@@ -234,10 +239,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         # self._interval_drag_position = None
         self._clear_interval_helpers()
         self._clear_overlay_items()
-
-    # def load_confirmed_state_data(self, data: dict, node_count: int | None = None):
-    #     """仅恢复数据层状态，不重绘场景。"""
-    #     super().load_confirmed_state(data, node_count=node_count)
 
     def _copy_textboxes_for_node(self, node_index: int) -> list[dict]:
         return [dict(tb) for tb in self.node_textboxes.get(int(node_index), [])]
@@ -963,7 +964,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def _clear_overlay_items(self):
         """清除当前所有点位与标签图元，准备重建。"""
-        for item in self._current_items + self._previous_items + self._label_items + self._selection_link_items + self._rematch_helper_items + self._textbox_items + self._textbox_handle_items + self._temp_group_helper_items + self._follow_group_helper_items + self._interval_helper_items + self._pending_preview_items:
+        for item in self._current_items + self._previous_items + self._label_items + self._selection_link_items + self._rematch_helper_items + self._textbox_items + self._textbox_handle_items + self._temp_group_helper_items + self._follow_group_helper_items + self._rotate_helper_items + self._pending_preview_items:
             self.removeItem(item)
         self._current_items = []
         self._previous_items = []
@@ -975,7 +976,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._textbox_handle_items = []
         self._temp_group_helper_items = []
         self._follow_group_helper_items = []
-        self._clear_interval_helpers()
+        self._clear_rotate_helpers()
         self._pending_preview_items = []
         self._point_items_by_id = {}
         self._label_items_by_id = {}
@@ -993,7 +994,11 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         if previous_tool == "跟随" and tool_name != "跟随":
             self._clear_follow_group_helper_items()
         if previous_tool == "间隔行进" and tool_name != "间隔行进":
+            self._interval_dragging = False
             self._clear_interval_helpers()
+        if previous_tool == "旋转" and tool_name != "旋转":
+            self._rotate_dragging = False
+            self._clear_rotate_helpers()
             
         if tool_name in {"选择", "框选"}:
             self._selected_point_ids.clear()
@@ -1014,6 +1019,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self.sync_sampling_values_from_selection(tool_name)
         if tool_name == "文本":
             self._enter_textbox_mode()
+        if tool_name == "旋转" and self._selected_point_ids:
+            self.begin_rotate()
         self._render_points_for_active_node()   # 刷新点位显示
         if tool_name == "调整" and self._selected_point_ids:
             self.begin_adjustment()
@@ -1023,6 +1030,10 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         """切换当前时间轴节点并刷新显示。"""
         if self.active_tool == "调整" and self._adjustment_active:
             self._reset_adjustment_state(reset_controls=True)
+
+        # 切换节点时中止任何正在进行的 helper 拖拽
+        self._rotate_dragging = False
+        self._interval_dragging = False
 
         self.active_node = max(0, int(node_index))  # 确保节点索引非负
         self.ensure_node_exists(self.active_node)   # 确保目标节点存在，若不存在则初始化
@@ -1231,7 +1242,11 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 )
                 helper.setPen(QPen(QColor("#000000"), 1.4))
                 if pid == leader_id:
-                    helper.setBrush(QBrush(QColor("#ff4d4d")))
+                    if pid == self._get_anchor():
+                        helper.setBrush(QBrush(QColor("#ff4d4d")))
+                    else:
+                        # 非 anchor 的 leader 端点刷绿
+                        helper.setBrush(QBrush(QColor("#00cc00")))
                 else:
                     helper.setBrush(QBrush(QColor(255, 193, 7, 40)))
                 helper.setZValue(1010)
@@ -1243,32 +1258,244 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def _clear_interval_helpers(self, full_reset: bool = True):
         """清除间隔行进工具的 helper 拖拽手柄。"""
-        for it in getattr(self, "_interval_helper_items", []):
+        for it in getattr(self, "_interval_helper_items", {}).values():
             self.removeItem(it)
-        self._interval_helper_items = []
-        self._interval_dragging = False
+        self._interval_helper_items = {}
+        # 注意：不重置 _interval_dragging，拖拽标志由 mousePress/Release 和切换工具时管理
         if full_reset:
             self._interval_anchor_id = None
             self._interval_original_positions = {}
             self._interval_drag_position = None
 
-    def _draw_interval_helpers(self):
-        """在间隔行进模式下为所有选中点位绘制 helper 圆圈。"""
-        self._clear_interval_helpers(full_reset=False)
-        if self.active_tool != "间隔行进":
+    def _clear_rotate_helpers(self):
+        """清除旋转工具的 helper 图元。"""
+        for it in getattr(self, "_rotate_helper_items", []):
+            self.removeItem(it)
+        self._rotate_helper_items = []
+        # 注意：不重置 _rotate_dragging，拖拽标志由 mousePress/Release 和切换工具时管理
+
+    def _draw_rotate_helpers(self):
+        """在旋转模式下绘制可拖动的旋转中心 helper。"""
+        self._clear_rotate_helpers()
+        if self.active_tool != "旋转":
             return
         if not self._selected_point_ids:
             return
+        cx, cy = self._rotate_center_point
+        scene_pos = self._field_to_scene(cx, cy)
+        helper_radius = self.helper_radius
+        helper = QGraphicsEllipseItem(
+            scene_pos.x() - helper_radius,
+            scene_pos.y() - helper_radius,
+            helper_radius * 2,
+            helper_radius * 2,
+        )
+        helper.setPen(QPen(QColor("#e74c3c"), 2.0))
+        helper.setBrush(QBrush(QColor(0, 0, 0, 0)))
+        helper.setZValue(1000)
+        helper.setData(0, "rotate_helper")
+        helper.setData(1, "center")
+        self.addItem(helper)
+        self._rotate_helper_items.append(helper)
 
-        # 收集所有涉及组的点位（用于确定组的顺序和范围）
-        node_points = self.node_points[self.active_node]
+        # 十字准线标记旋转中心
+        cross_size = helper_radius * 0.5
+        pen_cross = QPen(QColor("#e74c3c"), 1.0, Qt.PenStyle.DashLine)
+        pen_cross.setCosmetic(True)
+        h_line = QGraphicsLineItem(scene_pos.x() - cross_size, scene_pos.y(), scene_pos.x() + cross_size, scene_pos.y())
+        h_line.setPen(pen_cross)
+        h_line.setZValue(999)
+        self.addItem(h_line)
+        self._rotate_helper_items.append(h_line)
+        v_line = QGraphicsLineItem(scene_pos.x(), scene_pos.y() - cross_size, scene_pos.x(), scene_pos.y() + cross_size)
+        v_line.setPen(pen_cross)
+        v_line.setZValue(999)
+        self.addItem(v_line)
+        self._rotate_helper_items.append(v_line)
 
-        for pid in self._selected_point_ids:
-            pid = int(pid)
+    def begin_rotate(self):
+        """进入旋转模式：以上一张图对应点位的位置为起始，以选中点位中心为默认旋转中心，角度归零。"""
+        if not self._selected_point_ids:
+            return
+
+        prev_points = self.node_points[self.active_node - 1]
+        source_points = [
+            dict(p) for p in prev_points
+            if int(p.get("id", -1)) in self._selected_point_ids
+        ]
+        if not source_points:
+            return
+
+        min_x = min(float(p["x"]) for p in source_points)
+        max_x = max(float(p["x"]) for p in source_points)
+        min_y = min(float(p["y"]) for p in source_points)
+        max_y = max(float(p["y"]) for p in source_points)
+        self._rotate_center_point = ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
+        self._rotate_angle = 0.0
+        self._rotate_source_points = [dict(p) for p in source_points]
+        self._rotate_dragging = False
+
+    def set_rotate_angle(self, angle: float):
+        """设置旋转角度并刷新预览。"""
+        self._rotate_angle = float(angle)
+        self._refresh_rotate_preview()
+
+    def _refresh_rotate_preview(self):
+        """根据当前旋转中心和角度更新选中点位的预览位置（不写回 node_points）。"""
+        if self.active_tool != "旋转":
+            return
+        cx, cy = self._rotate_center_point
+        angle_deg = self._rotate_angle
+        for src in self._rotate_source_points:
+            pid = int(src.get("id", -1))
             item = self._point_items_by_id.get(pid)
             if item is None:
                 continue
+            rx, ry = _field_rotate_point(
+                (float(src["x"]), float(src["y"])),
+                (cx, cy),
+                angle_deg,
+            )
+            item.setPos(self._field_to_scene(rx, ry))
+            # 同步标签位置
+            label = self._label_items_by_id.get(pid)
+            if label is not None:
+                pos = self._field_to_scene(rx, ry)
+                angle_label = (int(self.label_pos) % 24) * 15
+                angle_rad = math.radians(angle_label)
+                dx = math.cos(angle_rad) * float(self.label_offset)
+                dy = math.sin(angle_rad) * float(self.label_offset)
+                br = label.boundingRect()
+                label.setPos(pos.x() + dx - br.width() / 2.0, pos.y() + dy - br.height() / 2.0)
+
+        # 绘制原始位置到预览位置的弧线（仅绘制第一个点位的弧线）
+        for item in getattr(self, "_adjustment_preview_line_items", []):
+            self.removeItem(item)
+        self._adjustment_preview_line_items = []
+        if abs(angle_deg) > 1e-6 and self._rotate_source_points:
+            src = self._rotate_source_points[0]
+            pid = int(src.get("id", -1))
+            rx, ry = _field_rotate_point(
+                (float(src["x"]), float(src["y"])),
+                (cx, cy),
+                angle_deg,
+            )
+            # 沿旋转路径插值采样，构建弧线
+            steps = 30
+            path = QPainterPath()
+            start_pt = self._field_to_scene(float(src["x"]), float(src["y"]))
+            path.moveTo(start_pt)
+            for i in range(1, steps + 1):
+                t = i / steps
+                interp_angle = angle_deg * t
+                ix, iy = _field_rotate_point(
+                    (float(src["x"]), float(src["y"])),
+                    (cx, cy),
+                    interp_angle,
+                )
+                path.lineTo(self._field_to_scene(ix, iy))
+
+            arc_item = QGraphicsPathItem(path)
+            pen = QPen(QColor("#000000"), 1)
+            pen.setCosmetic(True)
+            arc_item.setPen(pen)
+            arc_item.setZValue(885)
+            self.addItem(arc_item)
+            self._adjustment_preview_line_items.append(arc_item)
+
+        self._refresh_selected_group_links()
+        self._draw_rotate_helpers()
+
+    def _on_rotate_center_moved(self, scene_pos: QPointF) -> QPointF:
+        """旋转中心 helper 拖动时更新中心点并刷新预览。"""
+        fx, fy = self._scene_to_field(scene_pos)
+        fx, fy = self._snap_field_point(fx, fy)
+        self._rotate_center_point = (float(fx), float(fy))
+        self._refresh_rotate_preview()
+        return self._field_to_scene(fx, fy)
+
+    def confirm_rotate(self):
+        """确认旋转：将旋转后的点位写回 node_points，记录 node_paths。"""
+        if self.active_tool != "旋转" or not self._rotate_source_points:
+            return
+        cx, cy = self._rotate_center_point
+        angle_deg = self._rotate_angle
+        current_points = self.node_points[self.active_node]
+        point_by_id = {int(p.get("id", -1)): p for p in current_points}
+        members = []
+        for src in self._rotate_source_points:
+            pid = int(src.get("id", -1))
+            members.append(pid)
+            rx, ry = _field_rotate_point(
+                (float(src["x"]), float(src["y"])),
+                (cx, cy),
+                angle_deg,
+            )
+            p = point_by_id.get(pid)
+            if p is not None:
+                p["x"] = float(rx)
+                p["y"] = float(ry)
+
+        self.clear_selected_point_in_path()
+        self._upsert_node_path_entry(
+            self.active_node,
+            'rotate',
+            anchor_id=sorted(members)[0],
+            members=members,
+            rotate_info=((float(cx), float(cy)), float(angle_deg)),
+        )
+        self._clear_rotate_helpers()
+        self._rotate_dragging = False
+        self._rotate_source_points = []
+        self._rotate_angle = 0.0
+        self._mark_node_manual(self.active_node)
+        self._recalculate_following_auto_nodes(self.active_node, include_manual_nodes=True)
+        self._render_points_for_active_node()
+        self.dataChanged.emit()
+
+    def cancel_rotate(self):
+        """取消旋转：恢复原始点位位置并清理状态。"""
+        self._clear_rotate_helpers()
+        self._rotate_dragging = False
+        self._rotate_source_points = []
+        self._rotate_angle = 0.0
+        # 清理预览连线
+        for item in getattr(self, "_adjustment_preview_line_items", []):
+            self.removeItem(item)
+        self._adjustment_preview_line_items = []
+        self._render_points_for_active_node()
+
+    def _draw_interval_helpers(self):
+        """在间隔行进模式下增量更新所有选中点位的 helper 圆圈。"""
+        if self.active_tool != "间隔行进":
+            self._clear_interval_helpers(full_reset=False)
+            return
+        if not self._selected_point_ids:
+            self._clear_interval_helpers(full_reset=False)
+            return
+
+        selected_ids = set(int(pid) for pid in self._selected_point_ids)
+
+        # step 1: 移除已被取消选中的 helper
+        stale_ids = [
+            pid for pid in self._interval_helper_items
+            if pid is None or pid not in selected_ids
+        ]
+        for pid in stale_ids:
+            h = self._interval_helper_items.pop(pid)
+            self.removeItem(h)
+
+        # step 2: 为新增选中点创建 helper，已有则仅更新位置
+        for pid in selected_ids:
+            item = self._point_items_by_id.get(int(pid))
+            if item is None:
+                continue
             pos = item.scenePos()
+
+            existing = self._interval_helper_items.get(int(pid))
+            if existing is not None:
+                existing.setPos(pos)
+                continue
 
             helper_radius = self.helper_radius
             helper = QGraphicsEllipseItem(
@@ -1282,9 +1509,9 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             helper.setBrush(QBrush(QColor(0, 0, 0, 0)))
             helper.setZValue(1000)
             helper.setData(0, "interval_helper")
-            helper.setData(1, pid)
+            helper.setData(1, int(pid))
             self.addItem(helper)
-            self._interval_helper_items.append(helper)
+            self._interval_helper_items[int(pid)] = helper
 
     def _on_interval_drag_started(self, point_id: int, scene_pos: QPointF):
         """间隔行进 helper 拖动开始时：记录原始位置快照并设置该点为锚点。"""
@@ -1303,8 +1530,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             if item is not None:
                 item.setPos(self._field_to_scene(float(p.get("x", 0.0)), float(p.get("y", 0.0))))
         # helper 同步移到正确位置（不重建，避免丢失鼠标事件）
-        for h in self._interval_helper_items:
-            pid = int(h.data(1))
+        for pid, h in self._interval_helper_items.items():
             p_item = self._point_items_by_id.get(pid)
             if p_item is not None:
                 h.setPos(p_item.scenePos())
@@ -1339,10 +1565,9 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             anchor_item.setPos(new_scene_pos)
 
         # 同步锚点的 helper 圆圈跟随 PerformerPointItem 移动
-        for h in self._interval_helper_items:
-            if int(h.data(1)) == int(anchor_id):
-                h.setPos(new_scene_pos)
-                break
+        h = self._interval_helper_items.get(int(anchor_id))
+        if h is not None:
+            h.setPos(new_scene_pos)
 
         # 清空上一次的预览图元
         for item in getattr(self, "_pending_preview_items", []):
@@ -2274,6 +2499,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         if not self._adjustment_preview_points:
             self._adjustment_preview_points = self._build_adjustment_preview_points()
 
+        self.clear_selected_point_in_path()
+        
         current_points = self.node_points[self.active_node]
         # 若存在选中点集合，则按索引匹配仅移动匹配到的原点位；否则保持旧逻辑全部替换
         if self._selected_point_ids:
@@ -3338,6 +3565,19 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self.drawingRematchStateChanged.emit()
         return snapped_scene_pos
 
+    def clear_selected_point_in_path(self):
+        """清空 path 内的选中点位"""
+        if self.active_node in self.node_paths.keys():
+            paths = self.node_paths[self.active_node]
+            new_paths = []
+            for path_info in paths:
+                members = path_info['members']
+                new_member = [id for id in members if id not in self._selected_point_ids]
+                if new_member:
+                    path_info['members'] = new_member
+                    new_paths.append(path_info)
+            self.node_paths[self.active_node] = new_paths
+    
     def confirm_current_drawing(self):
         """确认当前草稿并写入当前节点点位。"""
         tool_name = self._draft_tool_name
@@ -3349,11 +3589,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             tool_name = "曲线/折线"
             refs = list(self._pending_points)
 
-        # 间隔行进：无需草稿状态，直接使用锚点和原始位置快照
-        if self.active_tool == "间隔行进" and self._interval_anchor_id is not None and self._interval_original_positions:
-            return self._confirm_interval_marching(had_draft)
-
-        if not tool_name or not refs:
+        if (not tool_name or not refs) and self.active_tool != '间隔行进':
             self._clear_draft()
             self._pending_points = []
             if not had_draft:
@@ -3367,18 +3603,19 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
         # 如果有选中点，则按索引匹配移动已存在的点；多余的生成点不新增
         if self._selected_point_ids:
-            if self.active_node in self.node_paths:
-                # 清空 path 内的选中点位
-                paths = self.node_paths[self.active_node]
-                new_paths = []
-                for path_info in paths:
-                    members = path_info['members']
-                    new_member = [id for id in members if id not in self._selected_point_ids]
-                    if new_member:
-                        path_info['members'] = new_member
-                        new_paths.append(path_info)
-                if new_paths:
-                    self.node_paths[self.active_node] = new_paths
+            self.clear_selected_point_in_path()
+            # if self.active_node in self.node_paths.keys():
+            #     # 清空 path 内的选中点位
+            #     paths = self.node_paths[self.active_node]
+            #     new_paths = []
+            #     for path_info in paths:
+            #         members = path_info['members']
+            #         new_member = [id for id in members if id not in self._selected_point_ids]
+            #         if new_member:
+            #             path_info['members'] = new_member
+            #             new_paths.append(path_info)
+            #     if new_paths:
+            #         self.node_paths[self.active_node] = new_paths
                 
             if tool_name == "路径":
                 # 路径模式：以第一个选中点为锚，按路径最后一点生成预览点位并写回 node_points。
@@ -3516,6 +3753,9 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                         self.drawingRematchStateChanged.emit()
                         self.dataChanged.emit()
                         return True
+            
+            elif  self.active_tool == "间隔行进" and self._interval_anchor_id is not None and self._interval_original_positions:
+                return self._confirm_interval_marching(had_draft)
 
             rematch_snapshot = self._drawing_rematch_snapshot()
             id_to_index = {int(p.get("id", -1)): idx for idx, p in enumerate(current_points)}
@@ -3769,14 +4009,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         if shift_len <= 1e-9:
             return max(1, int(state.get("point_count_shift", 1)))
         return max(1, int(shift_len // spacing_shift) + 1)
-
-    # def _sampling_shift_length_for_refs(self, tool_name: str, refs: list[tuple[float, float]]) -> float:
-    #     """计算填充四边形第二方向（P0-P2）的长度。"""
-    #     if tool_name != "填充四边形" or len(refs) < 3:
-    #         return 0.0
-    #     ax, ay = refs[0]
-    #     cx, cy = refs[2]
-    #     return math.hypot(cx - ax, cy - ay)
 
     def _sampling_auto_spacing_steps_shift_for_refs(self, tool_name: str, refs: list[tuple[float, float]]) -> float:
         """计算填充四边形第二方向（P0-P2）的自动间隔步数。"""
@@ -4437,6 +4669,9 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                     anchor_item.setPos(self._field_to_scene(*self._interval_drag_position))
                 # 直接刷新预览（_clear_overlay_items 已清空旧预览图元）
                 self._refresh_interval_preview()
+        if self.active_tool == "旋转":
+            self._draw_rotate_helpers()
+            self._refresh_rotate_preview()
         # 若存在临时分组信息，则绘制其连线与首尾 helper
         if getattr(self, "_temp_group_to_point", None):
             QTimer.singleShot(0, self._update_temp_group_visuals)
@@ -4695,6 +4930,12 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 event.accept()
                 return
 
+            # 旋转工具：点击旋转中心 helper 启动拖拽
+            if self.active_tool == "旋转" and item is not None and item.data(0) == "rotate_helper":
+                self._rotate_dragging = True
+                event.accept()
+                return
+
             rematch_snapshot = self._drawing_rematch_snapshot()
             clicked_point_id = None
             if isinstance(item, PerformerPointItem):
@@ -4843,6 +5084,12 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             event.accept()
             return
 
+        # 旋转工具拖拽中
+        if self._rotate_dragging:
+            self._on_rotate_center_moved(event.scenePos())
+            event.accept()
+            return
+
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
@@ -4859,6 +5106,12 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             # 间隔行进工具拖拽释放
             if self._interval_dragging:
                 self._interval_dragging = False
+                event.accept()
+                return
+
+            # 旋转工具拖拽释放
+            if self._rotate_dragging:
+                self._rotate_dragging = False
                 event.accept()
                 return
 

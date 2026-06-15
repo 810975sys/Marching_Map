@@ -28,12 +28,13 @@ class SchemeSceneData:
         # node_paths: 每个节点下按参考点ID保存路径定义，路径定义包含 path（路径点列表）和 members（成员点位与路径偏移量的映射）。
         # 格式: { node_index: # 节点索引
         # [{
-        # "type": str, # 路径类型 {'forward', 'follow', 'interval'}，对应平移、跟随、间隔行进三种
+        # "type": str, # 路径类型 {'forward', 'follow', 'interval', 'rotate'}，对应平移、跟随、间隔行进、旋转四种
         # "path": [(x,y), ...], # 路径点列表
         # "anchor_id": int, # 锚点 ID，用于计算路径偏移量的参考点
         # "members": [point_ids] # 成员点位 ID 列表
             # "leaders": [point_ids] # follow 特有，各组的 leader id 列表
             # "interval": (start, stop), # interval 类型特有，表示点位晚启动、早停止x拍
+            # "rotate_info": ((center_x, center_y), angle), # rotate 类型特有，表示旋转中心点和旋转角度（度数，正数为顺时针）
         # }, ...], ...] }
         self.node_paths = {}
 
@@ -72,20 +73,29 @@ class SchemeSceneData:
 
     #     return {"type": path_type, "anchor_id": anchor_id, "path": path, "members": members, "leaders": leaders, "interval": interval}
 
-    def _upsert_node_path_entry(self, node_index: int, path_type: str, anchor_id: int, path: list[tuple[float, float]], 
-                                members: list[int], leaders: list[int] = None, interval: tuple[int, int] = None):
+    def _upsert_node_path_entry(self, node_index: int, path_type: str, anchor_id: int = 0, path: list[tuple[float, float]] | None = None, 
+                                members: list[int] | None = None, leaders: list[int] = None, interval: tuple[int, int] = None,
+                                rotate_info: tuple[tuple[float, float], float] = None):
         """在指定节点中新增或更新一条路径定义。"""
         idx = max(0, int(node_index))
         entry = {
             'type': path_type, 
             "anchor_id": int(anchor_id),
-            "path": [(float(x), float(y)) for x, y in path],
             "members": [int(point_id) for point_id in members],
         }
-        if leaders is not None:
+        if path_type == 'forward':
+            entry["path"] = [(float(x), float(y)) for x, y in path]
+        if path_type == 'follow':
+            # entry["anchor_id"] = int(anchor_id)
+            entry["path"] = [(float(x), float(y)) for x, y in path]
             entry["leaders"] = [int(point_id) for point_id in leaders]
-        if interval is not None:
+        elif path_type == 'interval':
+            # entry["anchor_id"] = int(anchor_id)
+            entry["path"] = [(float(x), float(y)) for x, y in path]
             entry["interval"] = (int(interval[0]), int(interval[1]))
+        elif path_type == 'rotate':
+            center, angle = rotate_info
+            entry["rotate_info"] = ((float(center[0]), float(center[1])), float(angle))
 
         node_paths = self.node_paths.setdefault(idx, [])
         for entry_index, existed in enumerate(node_paths):
@@ -158,23 +168,6 @@ class SchemeSceneData:
         saved_next_textbox_id = int(data.get("_next_textbox_id", max_textbox_id + 1))
         self._next_point_id = max(1, max_point_id + 1, saved_next_point_id)
         self._next_textbox_id = max(1, max_textbox_id + 1, saved_next_textbox_id)
-
-        # 确保基础节点结构完整，避免后续渲染时访问缺失索引。
-        # expected_node_count = max(1, int(node_count)) if node_count is not None else 0
-        # max_node_index = max(
-        #     len(self.node_points),
-        #     max((int(key) for key in self.node_textboxes.keys()), default=0),
-        #     len(self.node_manual_edited) - 1,
-        #     len(self.node_to_group) - 1,
-        #     max((int(key) for key in self.node_paths.keys()), default=0),
-        #     expected_node_count - 1,
-        # )
-        # for idx in range(0, max_node_index + 1):
-        #     self.node_points.append([]) if idx >= len(self.node_points) else None
-        #     self.node_textboxes.setdefault(idx, [])
-        #     self.node_paths.setdefault(idx, [])
-        # while len(self.node_to_group) <= max_node_index:
-        #     self.node_to_group.append(set())
 
     def ensure_node_exists(self, node_index: int):
         """确保目标节点存在；新节点默认复制前一节点点位。"""
@@ -287,6 +280,11 @@ class SchemeSceneData:
         if path_info['type'] == 'interval':
             left_entry["interval"] = path_info['interval']
             right_entry["interval"] = path_info['interval']
+        if path_info['type'] == 'rotate' and 'rotate_info' in path_info:
+            center, angle = path_info['rotate_info']
+            half_angle = float(angle) / 2.0
+            left_entry["rotate_info"] = ((float(center[0]), float(center[1])), half_angle)
+            right_entry["rotate_info"] = ((float(center[0]), float(center[1])), half_angle)
         return left_entry, right_entry
 
     def on_node_inserted(self, inserted_index: int):
@@ -435,7 +433,7 @@ class SchemeSceneData:
 
         return float(path[-1][0]), float(path[-1][1])
 
-    def _sample_point_from_node_path(self, node_index: int, point_id: int, progress: float, sum_beat: int, relative_beat: int) -> tuple[float, float] | None:
+    def _sample_point_from_node_path(self, node_index: int, point_id: int, progress: float, sum_beat: int = 0, relative_beat: int = 0) -> tuple[float, float] | None:
         """若点位在节点路径中，按路径进度采样其位置。"""
         if node_index not in self.node_paths:
             return None
@@ -444,8 +442,9 @@ class SchemeSceneData:
             members = ref_entry.get("members", [])
             if int(point_id) not in {int(pid) for pid in members}:
                 continue
-            # follow （跟随）：以第一组 leader 为参考路径，其他组 leader 按初始偏移平移，组内其他点沿各自 leader 的相对偏移移动。
+            
             if ref_entry.get("type") == 'follow':
+            # follow （跟随）：以第一组 leader 为参考路径，其他组 leader 按初始偏移平移，组内其他点沿各自 leader 的相对偏移移动。
                 path = ref_entry.get("path", [])
                 if not path:
                     return None
@@ -522,12 +521,12 @@ class SchemeSceneData:
                 for j in range(idx, -1, -1):
                     pid = group_members[j]
                     orig = id_to_orig.get(int(pid))
-                    if orig is None:
-                        offset = self._node_path_member_offset(node_index, ref_entry, int(point_id))
-                        leader0_sample = self._sample_position_along_path(path, progress)
-                        if leader0_sample is None:
-                            return None
-                        return float(leader0_sample[0]) + float(offset[0]), float(leader0_sample[1]) + float(offset[1])
+                    # if orig is None:
+                    #     offset = self._node_path_member_offset(node_index, ref_entry, int(point_id))
+                    #     leader0_sample = self._sample_position_along_path(path, progress)
+                    #     if leader0_sample is None:
+                    #         return None
+                    #     return float(leader0_sample[0]) + float(offset[0]), float(leader0_sample[1]) + float(offset[1])
                     forward_points.append((float(orig.get("x", 0.0)), float(orig.get("y", 0.0))))
 
                 front_length = 0.0
@@ -546,8 +545,8 @@ class SchemeSceneData:
                     return None
                 return result_pos
 
-            # interval （间隔行进）：按拍数精确控制落后启动与提前/滞后停止
-            if ref_entry.get("type") == 'interval':
+            elif ref_entry.get("type") == 'interval':
+                # interval （间隔行进）：按拍数精确控制落后启动与提前/滞后停止
                 path = ref_entry.get("path", [])
                 if not path or len(path) < 2:
                     return None
@@ -606,12 +605,36 @@ class SchemeSceneData:
 
                 return px, py
 
-            # forward （路径）使用 anchor 偏移方式
-            sampled = self._sample_position_along_path(ref_entry.get("path", []), progress)
-            if sampled is None:
-                return None
-            offset = self._node_path_member_offset(node_index, ref_entry, int(point_id))
-            return float(sampled[0]) + float(offset[0]), float(sampled[1]) + float(offset[1])
+            elif ref_entry.get("type") == 'rotate':
+                # rotate （旋转）：绕旋转中心按进度旋转
+                rotate_info = ref_entry.get("rotate_info")
+                if rotate_info is None:
+                    return None
+                center, angle = rotate_info
+                cx, cy = float(center[0]), float(center[1])
+                total_angle = float(angle)
+                # 找到该点在上一节点的初始位置
+                prev_point = self._find_point_in_node(node_index - 1, int(point_id))
+                px, py = float(prev_point.get("x", 0.0)), float(prev_point.get("y", 0.0))
+                # 按进度线性插值旋转角度
+                current_angle = total_angle * progress
+                import math
+                rad = math.radians(current_angle)
+                cos_a = math.cos(rad)
+                sin_a = math.sin(rad)
+                dx = px - cx
+                dy = py - cy
+                rx = cx + dx * cos_a - dy * sin_a
+                ry = cy + dx * sin_a + dy * cos_a
+                return float(rx), float(ry)
+
+            elif ref_entry.get("type") == 'forward':
+                # forward （路径）
+                sampled = self._sample_position_along_path(ref_entry.get("path", []), progress)
+                if sampled is None:
+                    return None
+                offset = self._node_path_member_offset(node_index, ref_entry, int(point_id))
+                return float(sampled[0]) + float(offset[0]), float(sampled[1]) + float(offset[1])
         return None
 
     def _interpolate_points_at_beat(self, start_node: int, end_node: int, target_beat: int) -> list[dict]:
