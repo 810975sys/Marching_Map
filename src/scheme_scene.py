@@ -218,6 +218,64 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._render_points_for_active_node()
         self.update()
 
+    def set_preview_sub_beat(self, beat_float: float):
+        """按浮点拍位渲染 sub-beat 预览（仅供播放演示，不写回数据、不触发 dataChanged）。"""
+        beat_float = max(0.0, float(beat_float))
+        total_beats = sum(self.parent().timelineMainWidget.graph_list[1:]) if self.parent() is not None else 0
+        if total_beats > 0:
+            beat_float = min(beat_float, float(total_beats))
+        # 不修改 self.preview_beat（保持当前编辑状态不变）
+        self._render_points_for_sub_beat(beat_float)
+        self.update()
+
+    def _render_points_for_sub_beat(self, beat_float: float):
+        """按浮点拍位重建点位图元（不改变内部状态，仅渲染）。"""
+        self._clear_overlay_items()
+
+        # ── 1) 手动查找 beat_float 所在的区间（包容左边界，支持 sub-beat） ──
+        starts = [self._node_start_beat(i) for i in range(len(self.node_points))]
+        left_node = None
+        right_node = None
+        for left in range(len(starts) - 1):
+            if starts[left] <= beat_float < starts[left + 1]:
+                left_node, right_node = left, left + 1
+                break
+
+        # ── 2) 精确命中节点起始拍（容差 0.001 拍） ──
+        int_beat = int(beat_float)
+        node_at_beat = self._node_index_at_beat(int_beat)
+        is_exact_node = (
+            node_at_beat is not None
+            and abs(beat_float - float(int_beat)) < 0.001
+        )
+
+        if is_exact_node:
+            # 拍位落在节点起始拍 → 直接渲染该节点
+            preview_node = node_at_beat
+            if preview_node > 0:
+                for point in self.node_points[preview_node - 1]:
+                    self._draw_point_item(point, pre_view=True, draw_label=False)
+            current_points = self._points_for_node_render(preview_node)
+
+        elif left_node is not None and right_node is not None:
+            # 拍位在区间内 → sub-beat 插值
+            for point in self.node_points[left_node]:
+                self._draw_point_item(point, pre_view=True, draw_label=False)
+            current_points = self._interpolate_points_at_sub_beat(
+                left_node, right_node, beat_float)
+
+        else:
+            # 降级：显示当前活动节点
+            if self.active_node > 0:
+                for point in self.node_points[self.active_node - 1]:
+                    self._draw_point_item(point, pre_view=True, draw_label=False)
+            current_points = self._points_for_node_render(self.active_node)
+
+        for point in current_points:
+            self._draw_point_item(point, pre_view=False, draw_label=True)
+
+        self._draw_textbox_items()
+
     def load_confirmed_state(self, data: dict, node_count: int | None = None):
         """恢复已确认的方案图数据，并清理当前编辑中的临时状态。"""
         super().load_confirmed_state(data, node_count=node_count)
@@ -3577,6 +3635,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 if new_member:
                     path_info['members'] = new_member
                     new_paths.append(path_info)
+                    if path_info['type'] == 'rotate':
+                        path_info['anchor_id'] = sorted(new_member)[0]
             self.node_paths[self.active_node] = new_paths
     
     def confirm_current_drawing(self):

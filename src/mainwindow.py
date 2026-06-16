@@ -4,11 +4,12 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QToolBar,
     QVBoxLayout, QWidget, QFileDialog, 
     QHBoxLayout, QPushButton, QSizePolicy, QToolButton, QGridLayout, QFrame,
-    QLabel, QLineEdit, QSlider, QButtonGroup, QDialog,
+    QLabel, QLineEdit, QSlider, QButtonGroup, QDialog, QSpinBox,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer, QElapsedTimer
 from PyQt6.QtGui import QIcon
 from pathlib import Path
+import time
 
 # 导入自定义场景
 from src.field_info import (
@@ -47,6 +48,13 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self._scheme_file_path: Path | None = None
         self._scheme_dirty = False
         self._scheme_dirty_suppressed = False
+        # 播放演示状态
+        self._playback_timer = QTimer(self)
+        self._playback_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._playback_timer.timeout.connect(self._on_playback_tick)
+        self._playback_active = False
+        self._playback_elapsed = QElapsedTimer()
+        self._playback_start_beat = 0.0  # 开始播放时的拍位（float）
         # 工具栏按钮映射：工具名 -> QToolButton
         self.toolButtons = {}   # 保存工具按钮引用，便于根据工具名更新按钮状态
         self.activeToolName = "框选"
@@ -218,6 +226,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             "field_info": self.scene.field_info.to_dict(),
             "graph_list": list(self.timelineMainWidget.graph_list),
             "scene": self.scene.export_confirmed_state(),
+            "bpm": self.bpmSpinBox.value(),
         }
 
     def _apply_scheme_payload(self, payload: dict):
@@ -245,7 +254,9 @@ class MainWindow(MainWindowNotice, QMainWindow):
             field_info_data = payload.get("field_info", {})
             self.scene.field_info.load_from_dict(field_info_data)
 
-            self._scheme_file_path = None
+            # self._scheme_file_path = None
+            
+            self.bpmSpinBox.setValue(payload.get("bpm", 120))
         finally:
             self._scheme_dirty_suppressed = False
         self._set_scheme_dirty(False)
@@ -295,6 +306,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
     def _open_scheme(self, checked=False):
         """打开方案文件并恢复到当前窗口。"""
+        self._stop_playback()
         if not self._ensure_scheme_can_be_replaced("打开方案"):
             return False
         default_path = self._scheme_file_path or (scheme_default_dir() / "marching_map_scheme.json")
@@ -358,6 +370,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
     def _new_scheme(self, checked=False):
         """新建一个空白方案。"""
+        self._stop_playback()
         if not self._ensure_scheme_can_be_replaced("新建方案"):
             return False
         self._scheme_dirty_suppressed = True
@@ -370,6 +383,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self.drawingControlDock.hide()
             self.onTimelineNodeSelected(0)
             self.scene.set_preview_beat(0)
+            self.bpmSpinBox.setValue(120)
         finally:
             self._scheme_dirty_suppressed = False
         self._set_scheme_dirty(False)
@@ -378,6 +392,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
     def closeEvent(self, event):
         """关闭窗口前处理未保存修改。"""
+        self._stop_playback()
         decision = self._prompt_unsaved_changes("退出")
         if decision is None:
             event.ignore()
@@ -476,6 +491,9 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
     def onToolButtonClicked(self, tool_name: str):
         """处理工具栏按钮点击，并在需要时转到浮动控制台确认。"""
+        # 播放演示中点击任何工具按钮都停止播放
+        if self._playback_active:
+            self._stop_playback()
         # if not checked:
         #     if self.activeToolName == tool_name and tool_name in self.toolButtons:
         #         self.toolButtons[tool_name].setChecked(True)
@@ -534,35 +552,41 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
         # 左侧动画播放组件区域
         self.animControlWidget = QWidget(self.timelineWidget)
-        animLayout = QHBoxLayout()
+        animLayout = QVBoxLayout()
         animLayout.setContentsMargins(8, 0, 8, 0)   # 设置内边距，让按钮不贴边显示
-        animLayout.setSpacing(4)    # 设置按钮间距
-        # 预留播放、暂停、前进、后退等按钮
+        animLayout.setSpacing(1)    # 设置按钮间距
+        # BPM 速度调节
+        bpmLayout = QHBoxLayout()
+        bpmLayout.setContentsMargins(0, 0, 0, 0)
+        bpmLayout.setSpacing(0)
+        bpmLabel = QLabel("bpm", self.animControlWidget)
+        self.bpmSpinBox = QSpinBox(self.animControlWidget)
+        self.bpmSpinBox.setRange(1, 300)
+        self.bpmSpinBox.setValue(120)
+        self.bpmSpinBox.setFixedWidth(75)
+        bpmLayout.addWidget(bpmLabel)
+        bpmLayout.addWidget(self.bpmSpinBox)
+        animLayout.addLayout(bpmLayout)
+
+        # 预留播放、暂停按钮
         self.btnPlayPause = QPushButton("▶", self.animControlWidget)
         self.btnPlayPause.setFixedSize(48, 32)  # 加宽主播放按钮
-        # self.btnPrev = QPushButton("⏮", self.animControlWidget)
-        # self.btnPrev.setFixedSize(32, 32)
-        # self.btnNext = QPushButton("⏭", self.animControlWidget)
-        # self.btnNext.setFixedSize(32, 32)
 
         # 设置更大字体
         btnFont = self.btnPlayPause.font()
         btnFont.setPointSize(18)
         self.btnPlayPause.setFont(btnFont)
         animLayout.addWidget(self.btnPlayPause)
-        # for btn in [self.btnPrev, self.btnPlayPause, self.btnNext]:
-        #     btn.setFont(btnFont)
-        #     animLayout.addWidget(btn)
 
-        # 播放/暂停切换逻辑（仅UI，后续可绑定实际播放状态）
+        # 播放/暂停切换逻辑
         def toggle_play_pause():
-            if self.btnPlayPause.text() == "▶":
-                self.btnPlayPause.setText("⏸")
+            if self._playback_active:
+                self._stop_playback()
             else:
-                self.btnPlayPause.setText("▶")
+                self._start_playback()
         self.btnPlayPause.clicked.connect(toggle_play_pause)    # 绑定按钮点击事件
         self.animControlWidget.setLayout(animLayout)    # 设置布局
-        self.animControlWidget.setFixedWidth(80)       # 设置固定宽度，确保播放控制区大小稳定
+        self.animControlWidget.setFixedWidth(120)       # 设置固定宽度，确保播放控制区大小稳定
         self.animControlWidget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)    # 水平固定，垂直扩展
 
         # 右侧时间轴主控件（横向滚动，不压缩每拍宽度）
@@ -710,6 +734,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
     def onTimelineNodeSelected(self, node_index: int):
         """时间轴选中节点变化时，同步场景与工具可用状态。"""
+        if self._playback_active:
+            self._stop_playback()
         self.scene.set_active_node(node_index)
         self.updateContextToolAvailability(node_index, len(getattr(self.scene, "_selected_point_ids", set())))
 
@@ -1164,6 +1190,84 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self._sync_drawing_rematch_controls()
         # 隐藏分组面板（非分组工具时）
         self.drawingControlDock.setGroupSettingVisible(False)
+
+    # ──────────────── 播放演示 ────────────────
+
+    def _start_playback(self):
+        """开始播放演示：从当前拍位启动定时器，按 BPM 推进。"""
+        total_beats = sum(self.timelineMainWidget.graph_list[1:])
+        if total_beats <= 0:
+            return
+
+        self._playback_active = True
+        self.btnPlayPause.setText("⏸")
+        total_beats = sum(self.timelineMainWidget.graph_list[1:])
+        cur_beat = self.timelineMainWidget.current_beat
+        if cur_beat >= total_beats:
+            self._playback_start_beat = 0.0
+            self._playback_elapsed.restart()
+        else:
+            self._playback_start_beat = float(cur_beat)
+        self._playback_elapsed.start()
+        # 以约 60fps 刷新，保证 sub-beat 过渡平滑
+        self._playback_timer.start(60)
+
+    def _stop_playback(self):
+        """停止播放演示，恢复编辑态预览。"""
+        self._playback_timer.stop()
+        self._playback_active = False
+        self.btnPlayPause.setText("▶")
+        # 恢复编辑态渲染
+        self.scene.set_preview_beat(int(self.timelineMainWidget.current_beat))
+
+    def _on_playback_tick(self):
+        """播放定时器回调：根据 BPM 和已用时间计算当前浮点拍位，同步游标与场景。"""
+        if not self._playback_active:
+            return
+
+        bpm = max(1, self.bpmSpinBox.value())
+        elapsed_ms = self._playback_elapsed.elapsed()
+        elapsed_minutes = elapsed_ms / 60000.0  # 将毫秒转换为分钟
+        beat_float = self._playback_start_beat + elapsed_minutes * float(bpm)
+
+        total_beats = sum(self.timelineMainWidget.graph_list[1:])
+        if total_beats <= 0:
+            self._stop_playback()
+            return
+
+        # 到达或超过末尾：从头开始循环播放
+        if beat_float >= float(total_beats):
+            self.timelineMainWidget.current_beat = total_beats
+            self.timelineMainWidget.update()
+            self.scene.set_preview_sub_beat(float(total_beats))
+            self._stop_playback()
+            return
+        # if beat_float >= float(total_beats):
+        #     self._playback_start_beat = 0.0
+        #     self._playback_elapsed.restart()
+        #     beat_float = 0.0
+        #     # 更新游标到第 0 拍
+        #     self.timelineMainWidget.current_beat = 0
+        #     self.timelineMainWidget.update()
+        #     self.scene.set_preview_sub_beat(0.0)
+        #     return
+
+        int_beat = int(beat_float)
+
+        # 同步时间轴游标（不触发信号，避免数据回写）
+        if self.timelineMainWidget.current_beat != int_beat:
+            self.timelineMainWidget.current_beat = int_beat
+            self.timelineMainWidget.update()
+            # 自动滚动时间轴使游标保持可见
+            cursor_x = self.timelineMainWidget._beat_to_x(int_beat)
+            scroll_bar = self.timelineScrollArea.horizontalScrollBar()
+            if scroll_bar is not None:
+                viewport_width = self.timelineScrollArea.viewport().width()
+                half_view = viewport_width // 2
+                scroll_bar.setValue(max(0, cursor_x - half_view))
+
+        # 场景 sub-beat 渲染（不写回数据）
+        self.scene.set_preview_sub_beat(beat_float)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

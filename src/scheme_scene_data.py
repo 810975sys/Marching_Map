@@ -86,11 +86,9 @@ class SchemeSceneData:
         if path_type == 'forward':
             entry["path"] = [(float(x), float(y)) for x, y in path]
         if path_type == 'follow':
-            # entry["anchor_id"] = int(anchor_id)
             entry["path"] = [(float(x), float(y)) for x, y in path]
             entry["leaders"] = [int(point_id) for point_id in leaders]
         elif path_type == 'interval':
-            # entry["anchor_id"] = int(anchor_id)
             entry["path"] = [(float(x), float(y)) for x, y in path]
             entry["interval"] = (int(interval[0]), int(interval[1]))
         elif path_type == 'rotate':
@@ -201,7 +199,21 @@ class SchemeSceneData:
             empty_entry = {'type': None, "anchor_id": None, "path": [], "members": []}
             return empty_entry, empty_entry.copy()
 
-        path = path_info['path']
+        # rotate 类型无需路径拆分，只需角度减半，提前处理
+        if path_info.get('type') == 'rotate':
+            empty_entry = {
+                'type': path_info['type'],
+                "anchor_id": path_info['anchor_id'],
+                "members": path_info['members'],
+            }
+            if 'rotate_info' in path_info:
+                center, angle = path_info['rotate_info']
+                half_angle = float(angle) / 2.0
+                rotate_entry = ((float(center[0]), float(center[1])), half_angle)
+                empty_entry["rotate_info"] = rotate_entry
+            return empty_entry, empty_entry.copy()
+
+        path = path_info.get('path', [])
         if len(path) < 2:
             left_path = list(path)
             right_path = list(path)
@@ -433,8 +445,11 @@ class SchemeSceneData:
 
         return float(path[-1][0]), float(path[-1][1])
 
-    def _sample_point_from_node_path(self, node_index: int, point_id: int, progress: float, sum_beat: int = 0, relative_beat: int = 0) -> tuple[float, float] | None:
-        """若点位在节点路径中，按路径进度采样其位置。"""
+    def _sample_point_from_node_path(self, node_index: int, point_id: int, progress: float, sum_beat: int = 0, relative_beat: float | int = 0.0) -> tuple[float, float] | None:
+        """若点位在节点路径中，按路径进度采样其位置。
+
+        relative_beat 可为浮点数以支持 sub-beat 进度（用于播放演示）。
+        """
         if node_index not in self.node_paths:
             return None
         node_paths = self.node_paths[node_index]
@@ -685,6 +700,59 @@ class SchemeSceneData:
                     point = {"id": point_id, "x": float(px), "y": float(py)}
                 else:
                     point = {"id": point_id, "x": float(ep["x"]), "y": float(ep["y"]) }
+                if ep.get("group_id") is not None:
+                    point["group_id"] = ep.get("group_id")
+                points.append(point)
+        return points
+
+    def _interpolate_points_at_sub_beat(self, start_node: int, end_node: int, beat_float: float) -> list[dict]:
+        """按浮点拍位进行插值，支持 sub-beat 平滑预览（仅供播放演示，不写回数据）。"""
+        start_points = self._points_for_node_render(start_node)
+        end_points = self._points_for_node_render(end_node)
+
+        start_map = {int(p["id"]): p for p in start_points}
+        end_map = {int(p["id"]): p for p in end_points}
+
+        start_beat = float(self._node_start_beat(start_node))
+        end_beat = float(self._node_start_beat(end_node))
+        sum_beat = end_beat - start_beat
+        relative_beat = float(beat_float) - start_beat  # 浮点数，支持 sub-beat
+        if abs(sum_beat) <= 1e-9:
+            t = 0.0
+        else:
+            t = max(0.0, min(1.0, relative_beat / sum_beat))
+
+        points = []
+        for point_id in sorted(set(start_map.keys()) | set(end_map.keys())):
+            sp = start_map.get(point_id)
+            ep = end_map.get(point_id)
+            if sp is not None and ep is not None:
+                sampled = self._sample_point_from_node_path(end_node, point_id, t, int(sum_beat), relative_beat)
+                if sampled is not None:
+                    px, py = sampled
+                    point = {"id": point_id, "x": float(px), "y": float(py)}
+                else:
+                    point = {
+                        "id": point_id,
+                        "x": float(sp["x"]) + (float(ep["x"]) - float(sp["x"])) * t,
+                        "y": float(sp["y"]) + (float(ep["y"]) - float(sp["y"])) * t,
+                    }
+                group_id = ep.get("group_id", sp.get("group_id"))
+                if group_id is not None:
+                    point["group_id"] = group_id
+                points.append(point)
+            elif sp is not None:
+                point = {"id": point_id, "x": float(sp["x"]), "y": float(sp["y"])}
+                if sp.get("group_id") is not None:
+                    point["group_id"] = sp.get("group_id")
+                points.append(point)
+            elif ep is not None:
+                sampled = self._sample_point_from_node_path(end_node, point_id, t, int(sum_beat), relative_beat)
+                if sampled is not None:
+                    px, py = sampled
+                    point = {"id": point_id, "x": float(px), "y": float(py)}
+                else:
+                    point = {"id": point_id, "x": float(ep["x"]), "y": float(ep["y"])}
                 if ep.get("group_id") is not None:
                     point["group_id"] = ep.get("group_id")
                 points.append(point)
