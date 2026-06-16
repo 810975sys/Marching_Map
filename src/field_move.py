@@ -3,7 +3,7 @@
 """
 from PyQt6.QtWidgets import QGraphicsView
 from PyQt6.QtCore import Qt
-from field_info import SCALE_MIN, SCALE_MAX
+from src.field_info import SCALE_MIN, SCALE_MAX
 
 class FieldMove(QGraphicsView):
     """场景视图交互层：负责滚轮缩放/平移与鼠标拖拽逻辑。"""

@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from field_info import FieldInfo, format_value
+from src.field_info import FieldInfo, format_value
 
 
 class FieldSettingsDock(QDockWidget):

@@ -3,7 +3,6 @@
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QDialog, QLabel, QVBoxLayout
 
-
 class TipWindow(QDialog):
     """用于展示 Tips 内容的弹窗。"""
 

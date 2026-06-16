@@ -11,7 +11,7 @@ from PyQt6.QtGui import QIcon
 from pathlib import Path
 
 # 导入自定义场景
-from field_info import (
+from src.field_info import (
     SCALE_MIN,
     SCALE_MAX,
     ZOOM_PERCENT_FACTOR,
@@ -21,14 +21,14 @@ from field_info import (
     saveFieldInfo, 
     loadFieldInfo, 
 )
-from field_move import FieldMove
-from scheme_scene import SchemeScene
-from field_settings_dock import FieldSettingsDock
-from timeline_widget import TimelineWidget, TimelineScrollArea
+from src.field_move import FieldMove
+from src.scheme_scene import SchemeScene
+from src.field_settings_dock import FieldSettingsDock
+from src.timeline_widget import TimelineWidget, TimelineScrollArea
 # from mainwindow_docks import DrawingControlDock, TimelineScrollArea, ToolOptionDock
-from drawing_control_dock import DrawingControlDock
-from mainwindow_notice import MainWindowNotice
-from tip_window import TipWindow
+from src.drawing_control_dock import DrawingControlDock
+from src.mainwindow_notice import MainWindowNotice
+from src.tip_window import TipWindow
 # from field_info import _field_default_dir
 
 

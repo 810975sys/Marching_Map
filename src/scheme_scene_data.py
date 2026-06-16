@@ -1,7 +1,7 @@
 """
 方案图数据层
 """
-from draw_utils import sample_on_polyline, _calc_interval_beats
+from src.draw_utils import sample_on_polyline, _calc_interval_beats
 
 class SchemeSceneData:
     """保存每张方案图的点位数据、分组信息、节点编辑状态等核心数据，并提供相关操作方法。"""

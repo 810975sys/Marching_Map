@@ -16,3 +16,8 @@ __pycache__/
 fields/
 saves/
 test.py
+
+# 忽略打包文件
+dist/
+build/
+*.spec

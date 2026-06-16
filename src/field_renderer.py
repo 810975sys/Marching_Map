@@ -1,6 +1,6 @@
 from PyQt6.QtCore import QPointF, QRectF
 from PyQt6.QtGui import QFont, QPainter, QPen
-from field_info import FieldInfo, format_value
+from src.field_info import FieldInfo, format_value
 
 def _crisp_pixel(value: float, pen_width: float) -> float:
     """将轴对齐线条吸附到更稳定的像素位置。"""

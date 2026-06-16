@@ -16,11 +16,12 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal, QMarginsF
 from PyQt6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPolygonF, QFont, QPdfWriter, QPageSize, QPageLayout
-from field_info import FieldInfo, ZOOM_PERCENT_FACTOR
-from field_renderer import GridRenderer
-from scene_items import PerformerPointItem, ReferenceHandleItem, MovementControlHandleItem, TextBoxItem
-from scheme_scene_data import SchemeSceneData
-from draw_utils import (
+
+from src.field_info import FieldInfo, ZOOM_PERCENT_FACTOR
+from src.field_renderer import GridRenderer
+from src.scene_items import PerformerPointItem, ReferenceHandleItem, MovementControlHandleItem, TextBoxItem
+from src.scheme_scene_data import SchemeSceneData
+from src.draw_utils import (
     _distance,
     # _dedupe_points,
     # _sample_line_points_with_count,
