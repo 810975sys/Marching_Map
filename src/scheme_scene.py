@@ -3634,11 +3634,49 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 new_member = [id for id in members if id not in self._selected_point_ids]
                 if new_member:
                     path_info['members'] = new_member
-                    new_paths.append(path_info)
                     if path_info['type'] == 'rotate':
                         path_info['anchor_id'] = sorted(new_member)[0]
-            self.node_paths[self.active_node] = new_paths
-    
+                    else:
+                        # 参考 _get_anchor 的查找规则：从 new_member 中按组排序选择 anchor
+                        groups = self.node_to_group[self.active_node]
+                        active_groups = [
+                            gid for gid in groups
+                            if set(self.group_to_point[gid]['point_ids']) & set(new_member)
+                        ]
+                        if active_groups:
+                            min_gid = min(active_groups)
+                            min_group = self.group_to_point[min_gid]
+                            ordered_ids = self._follow_group_point_ids_for_group(min_group)
+                            new_anchor_id = next(
+                                (pid for pid in ordered_ids if pid in new_member),
+                                new_member[0],
+                            )
+                        else:
+                            new_anchor_id = sorted(new_member)[0]
+                        old_anchor_id = path_info['anchor_id']
+                        path_info['anchor_id'] = new_anchor_id
+
+                        # path 中的每个点位加上原 anchor 到现 anchor 的向量（基于上一节点位置）
+                        prev_points = self.node_points[self.active_node - 1]
+                        old_pos = None
+                        new_pos = None
+                        for p in prev_points:
+                            pid = p['id']
+                            if pid == old_anchor_id:
+                                old_pos = (float(p['x']), float(p['y']))
+                            if pid == new_anchor_id:
+                                new_pos = (float(p['x']), float(p['y']))
+                        if old_pos is not None and new_pos is not None:
+                            dx = new_pos[0] - old_pos[0]
+                            dy = new_pos[1] - old_pos[1]
+                            path_info['path'] = [(px + dx, py + dy) for px, py in path_info['path']]
+                            
+                    new_paths.append(path_info)
+            if new_paths:
+                self.node_paths[self.active_node] = new_paths
+            else:
+                self.node_paths.pop(self.active_node, None)
+
     def confirm_current_drawing(self):
         """确认当前草稿并写入当前节点点位。"""
         tool_name = self._draft_tool_name
@@ -3665,18 +3703,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         # 如果有选中点，则按索引匹配移动已存在的点；多余的生成点不新增
         if self._selected_point_ids:
             self.clear_selected_point_in_path()
-            # if self.active_node in self.node_paths.keys():
-            #     # 清空 path 内的选中点位
-            #     paths = self.node_paths[self.active_node]
-            #     new_paths = []
-            #     for path_info in paths:
-            #         members = path_info['members']
-            #         new_member = [id for id in members if id not in self._selected_point_ids]
-            #         if new_member:
-            #             path_info['members'] = new_member
-            #             new_paths.append(path_info)
-            #     if new_paths:
-            #         self.node_paths[self.active_node] = new_paths
                 
             if tool_name == "路径":
                 # 路径模式：以第一个选中点为锚，按路径最后一点生成预览点位并写回 node_points。
