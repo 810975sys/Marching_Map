@@ -19,7 +19,7 @@ from PyQt6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPolygonF,
 
 from src.field_info import FieldInfo, ZOOM_PERCENT_FACTOR
 from src.field_renderer import GridRenderer
-from src.scene_items import PerformerPointItem, ReferenceHandleItem, MovementControlHandleItem, TextBoxItem
+from src.scene_items import PerformerPointItem, ReferenceHandleItem, MovementControlHandleItem, TextBoxItem, ArrowItem
 from src.scheme_scene_data import SchemeSceneData
 from src.draw_utils import (
     _distance,
@@ -173,6 +173,15 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._selected_textbox_id = None   # 当前选中的预览文本框ID
         self._textbox_font_size = 8   # 文本工具默认字号
 
+        # 箭头工具状态
+        self._arrow_preview = []  # node_arrows 副本，当前编辑中的箭头列表
+        self._arrow_editing_index = 0  # 当前编辑的箭头在预览列表中的索引
+        self._arrow_pending_points = []  # 箭头绘制草稿参考点列表
+        self._arrow_items = []  # 当前显示的 ArrowItem 图元列表
+        self._arrow_handle_items = []  # 箭头参考点手柄列表
+        self._arrow_draft_preview_items = []  # 箭头草稿预览线图元列表
+        self._updating_arrow = False  # 箭头更新中标志，防止递归
+
         # 固定为启动时的初始场景大小，避免新增图元导致 sceneRect 自动变化。
         initial_field_rect = self.field_info.field_rect
         # initial_scale = float(self.field_info.scale)
@@ -297,6 +306,10 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         # self._interval_original_positions = {}
         # self._interval_drag_position = None
         self._clear_interval_helpers()
+        self._arrow_preview = []
+        self._arrow_editing_index = 0
+        self._arrow_pending_points = []
+        self._clear_arrow_items()
         self._clear_overlay_items()
 
     def _copy_textboxes_for_node(self, node_index: int) -> list[dict]:
@@ -726,6 +739,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
         返回 (horizontal_padding, top_padding, bottom_padding)。
         """
+        # print("计算 PDF 导出内容留白，export_scale:", export_scale)
         font_px = float(self.field_info.label_zoom) * export_scale
         offset_px = max(float(abs(self.field_info.label_x_offset)) + font_px,
                         float(abs(self.field_info.label_y_offset)) + font_px)
@@ -849,6 +863,31 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         item.setZValue(100)
         scene.addItem(item)
 
+    def _add_pdf_export_arrow_items(self, scene: QGraphicsScene, arrow: dict, export_scale: float, export_offset: QPointF, *, negate: bool = False):
+        """向临时导出场景添加一个箭头。negate=True 时对坐标取负（表演视角）。"""
+        field_pts = arrow.get('points', [])
+        if not field_pts or len(field_pts) < 2:
+            return
+        sign = -1.0 if negate else 1.0
+        scene_pts = [
+            (sign * float(p[0]) * export_scale + float(export_offset.x()),
+             sign * float(p[1]) * export_scale + float(export_offset.y()))
+            for p in field_pts
+        ]
+        item = ArrowItem(
+            arrow_index=-1,
+            arrow_type=arrow.get('type', 'line'),
+            points=scene_pts,
+            style=dict(arrow.get('style', {'forward': True, 'backward': False, 'mid': False})),
+            clicked_callback=None,
+            is_current=False,
+            # arrow_size=0.375 * export_scale,
+            arrow_size=24,
+        )
+        item.set_mouse_interactive(False)
+        item.setZValue(800)
+        scene.addItem(item)
+
     def _build_pdf_export_scene(self, node_index: int, page_cnt: int, export_scale: float, export_offset: QPointF) -> QGraphicsScene:
         """为单个方案图节点构建临时导出场景。"""
         export_scene = QGraphicsScene()
@@ -867,6 +906,9 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self._add_pdf_export_point_items(export_scene, point, export_scale, export_offset)
         for textbox in self.node_textboxes.get(node_index, []):
             self._add_pdf_export_textbox_items(export_scene, textbox, export_scale, export_offset)
+        for arrow in self.node_arrows.get(node_index, []):
+            self._add_pdf_export_arrow_items(export_scene, arrow, export_scale, export_offset, negate=False)
+
         return export_scene
 
     def export_conductor_pdf(self, file_path: str | Path, cnt_per_page: list[int] | None = None):
@@ -986,6 +1028,9 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 tmp_tb["y2"] = -float(textbox.get("y2", 0.0))
                 self._add_pdf_export_textbox_items(export_scene, tmp_tb, export_scale, export_offset)
 
+            for arrow in self.node_arrows.get(node_index, []):
+                self._add_pdf_export_arrow_items(export_scene, arrow, export_scale, export_offset, negate=True)
+
             export_scene.setSceneRect(page_rect)
 
             painter.save()
@@ -1023,7 +1068,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def _clear_overlay_items(self):
         """清除当前所有点位与标签图元，准备重建。"""
-        for item in self._current_items + self._previous_items + self._label_items + self._selection_link_items + self._rematch_helper_items + self._textbox_items + self._textbox_handle_items + self._temp_group_helper_items + self._follow_group_helper_items + self._rotate_helper_items + self._pending_preview_items:
+        for item in self._current_items + self._previous_items + self._label_items + self._selection_link_items + self._rematch_helper_items + self._textbox_items + self._textbox_handle_items + self._temp_group_helper_items + self._follow_group_helper_items + self._rotate_helper_items + self._pending_preview_items + self._arrow_items + self._arrow_handle_items + self._arrow_draft_preview_items:
             self.removeItem(item)
         self._current_items = []
         self._previous_items = []
@@ -1037,6 +1082,9 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._follow_group_helper_items = []
         self._clear_rotate_helpers()
         self._pending_preview_items = []
+        self._arrow_items = []
+        self._arrow_handle_items = []
+        self._arrow_draft_preview_items = []
         self._point_items_by_id = {}
         self._label_items_by_id = {}
 
@@ -1058,6 +1106,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         if previous_tool == "旋转" and tool_name != "旋转":
             self._rotate_dragging = False
             self._clear_rotate_helpers()
+        if previous_tool == "箭头" and tool_name != "箭头":
+            self._exit_arrow_mode()
             
         if tool_name in {"选择", "框选"}:
             self._selected_point_ids.clear()
@@ -1080,6 +1130,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self._enter_textbox_mode()
         if tool_name == "旋转" and self._selected_point_ids:
             self.begin_rotate()
+        if tool_name == "箭头":
+            self._enter_arrow_mode()
         self._render_points_for_active_node()   # 刷新点位显示
         if tool_name == "调整" and self._selected_point_ids:
             self.begin_adjustment()
@@ -1103,6 +1155,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._clear_draft()
         if self.active_tool == "文本":
             self._enter_textbox_mode()
+        if self.active_tool == "箭头":
+            self._enter_arrow_mode()
         self._render_points_for_active_node()
         self.drawingRematchStateChanged.emit()
 
@@ -1523,6 +1577,408 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self.removeItem(item)
         self._adjustment_preview_line_items = []
         self._render_points_for_active_node()
+
+    # ──────────────── 箭头工具 ────────────────
+
+    def _enter_arrow_mode(self):
+        """进入箭头编辑模式：复制当前节点的 node_arrows 到预览列表。"""
+        node_idx = self.active_node
+        src_arrows = self.node_arrows.get(node_idx, [])
+        self._arrow_preview = [
+            {
+                'type': a.get('type', 'line'),
+                'points': [tuple(p) for p in a.get('points', [])],
+                'style': dict(a.get('style', {'forward': True, 'backward': False, 'mid': False})),
+            }
+            for a in src_arrows
+        ]
+        self._arrow_editing_index = 0
+        self._arrow_pending_points = []
+        self._clear_arrow_items()
+        if self._arrow_preview:
+            self._new_arrow_from_current()
+
+    def _exit_arrow_mode(self):
+        """退出箭头编辑模式，清空临时状态。"""
+        # 若有未完成的草稿箭头，先完成它
+        self._finalize_arrow_draft()
+        self._arrow_preview = []
+        self._arrow_editing_index = 0
+        self._arrow_pending_points = []
+        self._clear_arrow_items()
+
+    def _clear_arrow_items(self):
+        """清除箭头相关图元。"""
+        for item in self._arrow_items + self._arrow_handle_items + self._arrow_draft_preview_items:
+            self.removeItem(item)
+        self._arrow_items = []
+        self._arrow_handle_items = []
+        self._arrow_draft_preview_items = []
+
+    def _clear_arrow_draft_preview_items(self):
+        """仅清除箭头草稿预览线（不触碰手柄）。"""
+        for item in self._arrow_draft_preview_items:
+            self.removeItem(item)
+        self._arrow_draft_preview_items = []
+
+    def _clear_arrow_draft_handles(self):
+        """仅清除箭头草稿手柄（不触碰预览线）。"""
+        for item in self._arrow_handle_items:
+            self.removeItem(item)
+        self._arrow_handle_items = []
+
+    def _current_arrow_entry(self) -> dict | None:
+        """获取当前编辑的箭头条目。"""
+        if 0 <= self._arrow_editing_index < len(self._arrow_preview):
+            return self._arrow_preview[self._arrow_editing_index]
+        return None
+
+    def _on_arrow_clicked(self, arrow_index: int):
+        """点击已有 ArrowItem 时切换到该箭头。"""
+        if self.active_tool != "箭头":
+            return
+        if 0 <= int(arrow_index) < len(self._arrow_preview):
+            self._arrow_editing_index = int(arrow_index)
+            self._arrow_pending_points = []
+            self._render_points_for_active_node()
+            self._sync_arrow_dock_state()
+
+    def _sync_arrow_dock_state(self):
+        """将当前箭头状态同步到控制台。"""
+        parent = self.parent()
+        dock = getattr(parent, "drawingControlDock", None)
+        if dock is None:
+            return
+        entry = self._current_arrow_entry()
+        # 同步箭头类型下拉框
+        type_map = {'line': 0, 'curve': 1, 'circle': 2}
+        arrow_type = entry.get('type', 'line') if entry else 'line'
+        dock.arrowTypeCombo.blockSignals(True)
+        dock.arrowTypeCombo.setCurrentIndex(type_map.get(arrow_type, 0))
+        dock.arrowTypeCombo.blockSignals(False)
+        # 同步勾选框
+        style = entry.get('style', {}) if entry else {}
+        dock.arrowForwardCheck.blockSignals(True)
+        dock.arrowForwardCheck.setChecked(bool(style.get('forward', True)))
+        dock.arrowForwardCheck.blockSignals(False)
+        
+        dock.arrowBackwardCheck.blockSignals(True)
+        dock.arrowBackwardCheck.setChecked(bool(style.get('backward', False)))
+        dock.arrowBackwardCheck.blockSignals(False)
+        
+        dock.arrowMidCheck.blockSignals(True)
+        dock.arrowMidCheck.setChecked(bool(style.get('mid', False)))
+        dock.arrowMidCheck.blockSignals(False)
+        # 删除按钮可用状态
+        dock.setDeleteArrowEnabled(entry is not None)
+        # 新箭头按钮：当前节点有已确认箭头，或当前预览箭头已绘制 ≥2 点时可用（已确认点数 + 草稿点数）
+        has_confirmed = bool(self.node_arrows.get(self.active_node))
+        total_points = (len(entry.get('points', [])) if entry else 0) + len(self._arrow_pending_points)
+        current_ready = entry is not None and total_points >= 2
+        dock.setNewArrowEnabled(has_confirmed or current_ready)
+
+    def _on_arrow_setting_changed(self):
+        """控制台中箭头类型或样式改变时，更新当前编辑箭头并刷新预览。"""
+        if self.active_tool != "箭头":
+            return
+        parent = self.parent()
+        dock = getattr(parent, "drawingControlDock", None)
+        if dock is None:
+            return
+
+        entry = self._current_arrow_entry()
+        if entry is None:
+            return
+
+        # 读取类型
+        type_text = dock.arrowTypeCombo.currentText()
+        type_map = {'折线': 'line', '曲线': 'curve', '圆': 'circle'}
+        entry['type'] = type_map.get(type_text, 'line')
+
+        # 读取样式
+        entry['style'] = {
+            'forward': dock.arrowForwardCheck.isChecked(),
+            'backward': dock.arrowBackwardCheck.isChecked(),
+            'mid': dock.arrowMidCheck.isChecked(),
+        }
+        
+        if entry['type'] == 'circle':
+            # 圆形强制取前两个点，超出部分丢弃（包括参考点）
+            entry['points'] = entry.get('points', [])[:2]
+            self._arrow_pending_points = self._arrow_pending_points[:2]
+
+        self._render_points_for_active_node()
+        # dataChanged 由调用方（主窗口）在需要持久化时单独触发，此处仅刷新预览。
+
+    def _delete_current_arrow(self):
+        """删除当前编辑的箭头。"""
+        if self.active_tool != "箭头":
+            return
+        if 0 <= self._arrow_editing_index < len(self._arrow_preview):
+            del self._arrow_preview[self._arrow_editing_index]
+            if self._arrow_editing_index >= len(self._arrow_preview):
+                self._arrow_editing_index = max(0, len(self._arrow_preview) - 1)
+            self._arrow_pending_points = []
+            self._render_points_for_active_node()
+            self._sync_arrow_dock_state()
+            self.dataChanged.emit()
+
+    def _new_arrow_from_current(self):
+        """暂存当前箭头（保留在预览中），开始绘制下一个新箭头。
+        若已存在 points 为空的箭头，则切换到该箭头而非新建。"""
+        if self.active_tool != "箭头":
+            return
+        # 先完成当前草稿
+        self._finalize_arrow_draft()
+        self._arrow_pending_points = []
+        # 先查找是否已存在 points 为空的箭头
+        for idx, entry in enumerate(self._arrow_preview):
+            if not entry.get('points') or len(entry['points']) == 0:
+                self._arrow_editing_index = idx
+                self._render_points_for_active_node()
+                self._sync_arrow_dock_state()
+                return
+        # 不存在空箭头时才新建
+        self._arrow_editing_index = len(self._arrow_preview)
+        self._arrow_preview.append({
+            'type': 'line',
+            'points': [],
+            'style': {'forward': True, 'backward': False, 'mid': False},
+        })
+        self._render_points_for_active_node()
+        self._sync_arrow_dock_state()
+
+    def _draw_arrow_items(self):
+        """在场景中绘制所有预览箭头。"""
+        self._clear_arrow_items()
+        if self.active_tool != "箭头":
+            return
+
+        for idx, entry in enumerate(self._arrow_preview):
+            pts = entry.get('points', [])
+            if not pts:
+                continue
+            # 将 field 坐标转为 scene 坐标
+            scene_pts = [(self._field_to_scene(x, y).x(), self._field_to_scene(x, y).y()) for x, y in pts]
+            arrow_item = ArrowItem(
+                arrow_index=idx,
+                arrow_type=entry.get('type', 'line'),
+                points=scene_pts,
+                style=entry.get('style', {}),
+                clicked_callback=self._on_arrow_clicked,
+                is_current=(idx == self._arrow_editing_index),
+            )
+            self.addItem(arrow_item)
+            self._arrow_items.append(arrow_item)
+
+        # 为当前编辑箭头的参考点绘制手柄
+        entry = self._current_arrow_entry()
+        if entry is not None:
+            for pi, (fx, fy) in enumerate(entry.get('points', [])):
+                scene_pos = self._field_to_scene(fx, fy)
+                handle = ReferenceHandleItem(
+                    index=pi,
+                    center_scene_pos=scene_pos,
+                    moved_callback=self._on_arrow_handle_moved,
+                )
+                self.addItem(handle)
+                self._arrow_handle_items.append(handle)
+
+    def _on_arrow_handle_moved(self, index: int, scene_pos: QPointF) -> QPointF:
+        """箭头参考点手柄拖动时更新当前箭头点位并直接刷新 ArrowItem 路径。"""
+        if self._updating_arrow:
+            return scene_pos
+        entry = self._current_arrow_entry()
+        if entry is None:
+            return scene_pos
+        x, y = self._scene_to_field(scene_pos)
+        x, y = self._snap_field_point(x, y)
+        pts = entry.get('points', [])
+        if 0 <= int(index) < len(pts):
+            pts[int(index)] = (float(x), float(y))
+        # 直接更新已有 ArrowItem 的路径，不重建
+        for item in self._arrow_items:
+            if isinstance(item, ArrowItem) and item.arrow_index == self._arrow_editing_index:
+                scene_pts = [(self._field_to_scene(px, py).x(), self._field_to_scene(px, py).y()) for px, py in pts]
+                item.set_arrow_data(entry.get('type', 'line'), scene_pts, entry.get('style', {}))
+                break
+        return self._field_to_scene(x, y)
+
+    def _draw_arrow_draft_preview_lines(self):
+        """仅绘制箭头草稿的预览线（不绘制手柄），供拖动时调用。"""
+        if self.active_tool != "箭头" or len(self._arrow_pending_points) < 2:
+            return
+
+        refs = self._arrow_pending_points
+        pen = QPen(QColor("#d35400"), 1.3, Qt.PenStyle.DashLine)
+        pen.setCosmetic(True)
+
+        arrow_type = 'line'
+        entry = self._current_arrow_entry()
+        if entry:
+            arrow_type = entry.get('type', 'line')
+
+        item = None
+        if arrow_type == 'line':
+            # 多段折线预览
+            path = QPainterPath()
+            path.moveTo(self._field_to_scene(*refs[0]))
+            for p in refs[1:]:
+                path.lineTo(self._field_to_scene(*p))
+            item = QGraphicsPathItem(path)
+            item.setPen(pen)
+            item.setZValue(890)
+        elif arrow_type == 'curve':
+            # 平滑曲线预览（≥3 点用 Catmull-Rom，2 点即直线）
+            path = QPainterPath()
+            path.moveTo(self._field_to_scene(*refs[0]))
+            if len(refs) == 2:
+                path.lineTo(self._field_to_scene(*refs[1]))
+            else:
+                n = len(refs)
+                for i in range(n - 1):
+                    p0 = refs[i - 1] if i - 1 >= 0 else refs[i]
+                    p1 = refs[i]
+                    p2 = refs[i + 1]
+                    p3 = refs[i + 2] if i + 2 < n else refs[i + 1]
+                    c1x = p1[0] + (p2[0] - p0[0]) / 6.0
+                    c1y = p1[1] + (p2[1] - p0[1]) / 6.0
+                    c2x = p2[0] - (p3[0] - p1[0]) / 6.0
+                    c2y = p2[1] - (p3[1] - p1[1]) / 6.0
+                    path.cubicTo(
+                        self._field_to_scene(c1x, c1y),
+                        self._field_to_scene(c2x, c2y),
+                        self._field_to_scene(*p2),
+                    )
+            item = QGraphicsPathItem(path)
+            item.setPen(pen)
+            item.setZValue(890)
+        elif arrow_type == 'circle' and len(refs) >= 2:
+            center = self._field_to_scene(*refs[0])
+            r = math.hypot(refs[0][0] - refs[1][0], refs[0][1] - refs[1][1]) * float(self.field_info.scale)
+            item = QGraphicsEllipseItem(center.x() - r, center.y() - r, r * 2, r * 2)
+            item.setPen(pen)
+            item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            item.setZValue(890)
+
+        if item is not None:
+            self.addItem(item)
+            self._arrow_draft_preview_items.append(item)
+
+        # 用 _arrow_pending_points 绘制临时箭头头预览（转换为 scene 坐标）
+        if len(refs) >= 2 and entry:
+            scene_pts = [(self._field_to_scene(x, y).x(), self._field_to_scene(x, y).y()) for x, y in refs]
+            from src.scene_items import ArrowItem
+            preview_arrow = ArrowItem(
+                arrow_index=-1,
+                arrow_type=arrow_type,
+                points=scene_pts,
+                style=entry.get('style', {'forward': True, 'backward': False, 'mid': False}),
+                is_current=False,
+            )
+            preview_arrow.setPen(QPen(QColor("#d35400"), 1.8))
+            preview_arrow.setZValue(895)
+            self.addItem(preview_arrow)
+            self._arrow_draft_preview_items.append(preview_arrow)
+
+    def _draw_arrow_draft_preview(self):
+        """绘制箭头工具下正在绘制中的箭头草稿预览（包含预览线和手柄）。"""
+        if self.active_tool != "箭头":
+            return
+
+        self._updating_arrow = True
+        # 绘制 pending points 的参考线预览
+        self._draw_arrow_draft_preview_lines()
+
+        # 为 pending points 绘制参考点手柄
+        for pi, (fx, fy) in enumerate(self._arrow_pending_points):
+            scene_pos = self._field_to_scene(fx, fy)
+            handle = ReferenceHandleItem(
+                index=pi,
+                center_scene_pos=scene_pos,
+                moved_callback=self._on_arrow_pending_handle_moved,
+            )
+            self.addItem(handle)
+            self._arrow_handle_items.append(handle)
+        self._updating_arrow = False
+
+    def _on_arrow_pending_handle_moved(self, index: int, scene_pos: QPointF) -> QPointF:
+        """箭头草稿参考点拖动回调（仅刷新预览线，不重建手柄避免递归）。"""
+        if self._updating_arrow:
+            return scene_pos
+        if 0 <= int(index) < len(self._arrow_pending_points):
+            x, y = self._scene_to_field(scene_pos)
+            x, y = self._snap_field_point(x, y)
+            self._arrow_pending_points[int(index)] = (float(x), float(y))
+            # 仅清除并重绘草稿预览线，不重建手柄
+            self._clear_arrow_draft_preview_items()
+            self._draw_arrow_draft_preview_lines()
+            self.update()
+        return self._field_to_scene(
+            *self._snap_field_point(*self._scene_to_field(scene_pos)))
+
+    def confirm_current_arrow(self):
+        """确认箭头编辑：将预览写回 node_arrows。"""
+        if self.active_tool != "箭头":
+            return False
+
+        # 若有正在绘制的草稿箭头，先完成它
+        self._finalize_arrow_draft()
+
+        # 清除空的箭头条目
+        self._arrow_preview = [
+            a for a in self._arrow_preview
+            if a.get('points') and len(a.get('points', [])) >= 2
+        ]
+
+        if self._arrow_preview:
+            self.node_arrows[self.active_node] = [
+                {
+                    'type': a['type'],
+                    'points': [list(p) for p in a['points']],
+                    'style': dict(a['style']),
+                }
+                for a in self._arrow_preview
+            ]
+        elif self.active_node in self.node_arrows:
+            del self.node_arrows[self.active_node]
+
+        self._mark_node_manual(self.active_node)
+        self._arrow_pending_points = []
+        # 从 node_arrows 重载 _arrow_preview，消除旧引用，确保后续渲染数据一致。
+        # 外部收到 dataChanged 后会调用 set_active_tool 切换工具，
+        # _exit_arrow_mode 清空 _arrow_preview，else 分支从 node_arrows 接管绘制。
+        src_arrows = self.node_arrows.get(self.active_node, [])
+        self._arrow_preview = [
+            {
+                'type': a.get('type', 'line'),
+                'points': [tuple(p) for p in a.get('points', [])],
+                'style': dict(a.get('style', {'forward': True, 'backward': False, 'mid': False})),
+            }
+            for a in src_arrows
+        ]
+        self._arrow_editing_index = 0
+        self.dataChanged.emit()
+        return True
+
+    def cancel_current_arrow(self):
+        """取消箭头编辑：丢弃所有未确认的修改，从 node_arrows 重新加载。"""
+        self._arrow_pending_points = []
+        # 从 node_arrows 重新加载预览，丢弃所有未确认的修改
+        self._clear_arrow_items()
+        self._enter_arrow_mode()
+        self._render_points_for_active_node()
+        self._sync_arrow_dock_state()
+
+    def _finalize_arrow_draft(self):
+        """若当前有未完成的箭头草稿，将其写入当前编辑箭头。"""
+        entry = self._current_arrow_entry()
+        if entry is not None and len(self._arrow_pending_points) >= 2:
+            pts = [tuple(p) for p in self._arrow_pending_points]
+            if entry.get('type') == 'circle':
+                pts = pts[:2]
+            entry['points'] = pts
+        self._arrow_pending_points = []
 
     def _draw_interval_helpers(self):
         """在间隔行进模式下增量更新所有选中点位的 helper 圆圈。"""
@@ -3679,6 +4135,10 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def confirm_current_drawing(self):
         """确认当前草稿并写入当前节点点位。"""
+        # 箭头工具单独处理
+        if self.active_tool == "箭头":
+            return self.confirm_current_arrow()
+
         tool_name = self._draft_tool_name
         refs = list(self._draft_reference_points)
         had_draft = bool(self._draft_tool_name or self._draft_reference_points)
@@ -3914,6 +4374,11 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def cancel_current_drawing(self):
         """取消当前草稿，不写入点位。"""
+        # 箭头工具单独处理
+        if self.active_tool == "箭头":
+            self.cancel_current_arrow()
+            return
+
         # 间隔行进：清理锚点状态和 helper
         if self.active_tool == "间隔行进":
             self._clear_interval_helpers()
@@ -4759,6 +5224,29 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         if self.active_tool == "旋转":
             self._draw_rotate_helpers()
             self._refresh_rotate_preview()
+        if self.active_tool == "箭头":
+            self._draw_arrow_items()
+            if self._arrow_pending_points:
+                self._draw_arrow_draft_preview()
+        else:
+            # 非箭头模式下，直接绘制 node_arrows 中已确认的箭头
+            self._clear_arrow_items()
+            arrows = self.node_arrows.get(self.active_node, [])
+            for idx, entry in enumerate(arrows):
+                pts = entry.get('points', [])
+                if not pts:
+                    continue
+                scene_pts = [(self._field_to_scene(x, y).x(), self._field_to_scene(x, y).y()) for x, y in pts]
+                arrow_item = ArrowItem(
+                    arrow_index=idx,
+                    arrow_type=entry.get('type', 'line'),
+                    points=scene_pts,
+                    style=entry.get('style', {}),
+                    is_current=False,
+                )
+                arrow_item.set_mouse_interactive(False)
+                self.addItem(arrow_item)
+                self._arrow_items.append(arrow_item)
         # 若存在临时分组信息，则绘制其连线与首尾 helper
         if getattr(self, "_temp_group_to_point", None):
             QTimer.singleShot(0, self._update_temp_group_visuals)
@@ -4995,6 +5483,57 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                     textbox_item = self._textbox_items_by_id.get(int(textbox["id"]))
                     if textbox_item is not None:
                         textbox_item.focus_editor()
+                event.accept()
+                return
+
+            if self.active_tool == "箭头":
+                if not self._is_current_beat_editable():
+                    event.accept()
+                    return
+                if isinstance(item, ReferenceHandleItem):
+                    super().mousePressEvent(event)
+                    return
+                if isinstance(item, ArrowItem):
+                    # ArrowItem 处理自己的 click
+                    super().mousePressEvent(event)
+                    return
+                # 点击空白区域：向当前箭头添加参考点。
+                entry = self._current_arrow_entry()
+                if entry is None:
+                    # 无当前箭头，新建一个（沿用控制台中的类型/样式设置）
+                    dock = getattr(self.parent(), "drawingControlDock", None)
+                    type_map = {'折线': 'line', '曲线': 'curve', '圆': 'circle'}
+                    arrow_type = 'line'
+                    if dock is not None:
+                        type_text = dock.arrowTypeCombo.currentText()
+                        arrow_type = type_map.get(type_text, 'line')
+                    self._arrow_editing_index = len(self._arrow_preview)
+                    self._arrow_preview.append({
+                        'type': arrow_type,
+                        'points': [],
+                        'style': {
+                            'forward': dock.arrowForwardCheck.isChecked() if dock else True,
+                            'backward': dock.arrowBackwardCheck.isChecked() if dock else False,
+                            'mid': dock.arrowMidCheck.isChecked() if dock else False,
+                        },
+                    })
+                    entry = self._arrow_preview[self._arrow_editing_index]
+
+                x, y = self._scene_to_field(event.scenePos())
+                x, y = self._snap_field_point(x, y)
+
+                # 若当前编辑箭头已有确认点位，则直接追加到 entry['points'] 并刷新
+                if entry is not None and entry.get('points'):
+                    entry['points'].append((float(x), float(y)))
+                    if entry.get('type') == 'circle':
+                        entry['points'] = entry['points'][:2]
+                else:
+                    self._arrow_pending_points.append((float(x), float(y)))
+                    if entry is not None and entry.get('type') == 'circle':
+                        self._arrow_pending_points = self._arrow_pending_points[:2]
+
+                self._render_points_for_active_node()
+                self._sync_arrow_dock_state()
                 event.accept()
                 return
 

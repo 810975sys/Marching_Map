@@ -104,7 +104,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         saveAs.setShortcut("Ctrl+Shift+S")
         saveAs.triggered.connect(self._save_scheme_as)
         fileMenu.addSeparator()
-        export_pdf = fileMenu.addAction("导出为PDF")
+        export_pdf = fileMenu.addAction("保存并导出为PDF")
         export_pdf.triggered.connect(self._export_pdf)
         fileMenu.addSeparator()
         fileMenu.addAction("设置")  # 设置字号、点位大小、颜色、拖动框等全局设置
@@ -513,6 +513,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             '路径': "确定路径的经过点，所选点位沿路径平移",
             '间隔行进': "拖动点位，组内其余点位以固定间隔移动",
             '旋转': "设置旋转角度，所选点位绕中心点旋转（点位轨迹为圆弧）",
+            '箭头': "绘制箭头标注",
         }
         self.drawingControlDock.statusLabel.setText(tool_text.get(tool_name, ""))
 
@@ -665,6 +666,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.drawingControlDock.setGroupSettingVisible(tool_name == "分组")
         self.drawingControlDock.setIntervalControlsVisible(tool_name == "间隔行进")
         self.drawingControlDock.setRotateControlsVisible(tool_name == "旋转")
+        self.drawingControlDock.setArrowControlsVisible(tool_name == "箭头")
         
         if tool_name == "调整":
             # self.drawingControlDock.setOperationLabels("确认调整 Enter", "取消调整 Esc")
@@ -711,6 +713,20 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self.drawingControlDock.setRotateAngle(float(getattr(self.scene, "_rotate_angle", 0.0)))
             self.drawingControlDock.confirmButton.setEnabled(True)
             self.drawingControlDock.cancelButton.setEnabled(True)
+            return
+
+        if tool_name == "箭头":
+            self.drawingControlDock.setSamplingToolVisible(None, False)
+            self.drawingControlDock.setCurveModeVisible(False)
+            self.drawingControlDock.setDraftActive(True)
+            self.drawingControlDock.confirmButton.setEnabled(True)
+            self.drawingControlDock.cancelButton.setEnabled(True)
+            self.drawingControlDock.setArrowControlsVisible(True)
+            self.drawingControlDock.setDeleteArrowEnabled(False)
+            self.drawingControlDock.setNewArrowEnabled(False)
+            # 同步场景状态到控制台
+            if hasattr(self.scene, '_sync_arrow_dock_state'):
+                self.scene._sync_arrow_dock_state()
             return
 
         # self.drawingControlDock.setOperationLabels("确认绘制 Enter", "取消绘制 Esc")
@@ -839,10 +855,15 @@ class MainWindow(MainWindowNotice, QMainWindow):
             btn = self.toolButtons.get(name)
             if btn is not None:
                 btn.setEnabled(beat_at_node and (is_p0 or has_selection))
-        for name in self._text_tools:
-            btn = self.toolButtons.get(name)
-            if btn is not None:
-                btn.setEnabled(bool(beat_at_node))
+        # for name in self._text_tools:
+        btn = self.toolButtons.get('文本')
+        if btn is not None:
+            btn.setEnabled(bool(beat_at_node))
+        # 箭头工具始终可用（只要在节点拍上）
+        # for name in ["箭头"]:
+        btn = self.toolButtons.get('箭头')
+        if btn is not None:
+            btn.setEnabled(bool(beat_at_node))
                 
     def updateConvertToolAvailability(self, beat: int, has_selection: bool = False):
         """根据当前节点和选中点位数量，控制变换工具可用性。"""
@@ -879,7 +900,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self._set_active_tool("框选")
         elif is_p0 and self.activeToolName in self._p0_forbidden_transform_tools:
             self._set_active_tool("框选")
-        elif self.timelineMainWidget.node_index_at_beat(beat) is None and self.activeToolName in self._text_tools:
+        elif self.timelineMainWidget.node_index_at_beat(beat) is None and self.activeToolName == '文本':
             self._set_active_tool("框选")
 
     def setupMainLayout(self):
@@ -1005,13 +1026,14 @@ class MainWindow(MainWindowNotice, QMainWindow):
         if self.activeToolName == "调整":
             self.scene.confirm_current_adjustment()
         elif self.activeToolName == "文本":
-            if self.scene.confirm_textbox_preview() is False:
-                return
+            self.scene.confirm_textbox_preview()
         elif self.activeToolName == "分组":
             # 将临时分组写回并退出分组模式
             self.scene.confirm_temp_groups()
         elif self.activeToolName == "旋转":
             self.scene.confirm_rotate()
+        elif self.activeToolName == "箭头":
+            self.scene.confirm_current_arrow()
         else:
             if self.scene.confirm_current_drawing() is False:
                 self._sync_drawing_rematch_controls()
@@ -1035,6 +1057,9 @@ class MainWindow(MainWindowNotice, QMainWindow):
             return
         if self.activeToolName == "旋转":
             self.scene.cancel_rotate()
+            return
+        if self.activeToolName == "箭头":
+            self.scene.cancel_current_arrow()
             return
         self.scene.cancel_current_drawing()
 
@@ -1143,6 +1168,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
     def onDraftStarted(self, tool_name: str):
         """场景进入草稿态时，启用确认/取消按钮。"""
+        if tool_name == "箭头":
+            return
         self.drawingControlDock.setDraftActive(True)
         self.drawingControlDock.setSamplingToolVisible(tool_name if tool_name in self._sampling_tools else None, tool_name in self._sampling_tools)
         self.drawingControlDock.setCurveModeVisible(tool_name in {"曲线/折线", "路径", "跟随"})
@@ -1159,6 +1186,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
     def onDraftFinished(self):
         """场景结束草稿态时，复位绘制控制台状态。"""
+        if self.activeToolName == "箭头":
+            return
         self.drawingControlDock.setDraftActive(False)
         self.drawingControlDock.setSamplingToolVisible(self.activeToolName if self.activeToolName in self._sampling_tools else None, self.activeToolName in self._sampling_tools)
         pending_count = len(getattr(self.scene, "_pending_points", []))

@@ -37,6 +37,17 @@ class SchemeSceneData:
             # "rotate_info": ((center_x, center_y), angle), # rotate 类型特有，表示旋转中心点和旋转角度（度数，正数为顺时针）
         # }, ...], ...] }
         self.node_paths = {}
+        
+        # 每个节点的箭头信息
+        # 格式：{
+        # node_index: # 节点索引
+        # [{
+        # 'type': str, # 箭头路径 {'line', 'curve', 'arc', 'circle'}，对应折线、曲线、弧线、圆四种
+        # 'points': [(x,y), ...], # 箭头路径点列表，line、curve 为两点，arc 为三点（起点、终点、弧顶），circle 为圆心和圆上任一点
+        # 'style': {'forward': T/F, 'backward': T/F, 'mid': T/F}    # 正向箭头、反向箭头、路径中间参考点处箭头
+        # }]
+        # }
+        self.node_arrows = {}
 
     def _find_point_in_node(self, node_index: int, point_id: int):
         """在指定节点中按点位ID查找点位字典。"""
@@ -126,6 +137,7 @@ class SchemeSceneData:
             "node_to_group": self.node_to_group,
             "group_to_point": self.group_to_point,
             "node_paths": self.node_paths,
+            "node_arrows": self.node_arrows,
             "_next_point_id": int(self._next_point_id),
             "_next_textbox_id": int(self._next_textbox_id),
         }
@@ -144,6 +156,8 @@ class SchemeSceneData:
         self.node_to_group = data.get("node_to_group", [[]])
         # load node_paths
         self.node_paths = {int(k): v for k, v in data.get("node_paths", {}).items()}
+        # load node_arrows
+        self.node_arrows = {int(k): v for k, v in data.get("node_arrows", {}).items()}
         
         self.group_to_point = data.get("group_to_point", [])
 

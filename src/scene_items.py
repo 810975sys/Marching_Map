@@ -1,5 +1,5 @@
 from PyQt6.QtCore import QPointF, Qt, QRectF
-from PyQt6.QtGui import QBrush, QColor, QPen, QPainter, QFont, QTextOption
+from PyQt6.QtGui import QBrush, QColor, QPen, QPainter, QFont, QTextOption, QPainterPath
 from PyQt6.QtWidgets import (
     QGraphicsEllipseItem,
     QGraphicsItem,
@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QGraphicsLineItem,
     QGraphicsRectItem,
     QGraphicsSimpleTextItem,
+    QGraphicsPathItem,
     QFrame,
     QPlainTextEdit,
 )
@@ -477,3 +478,205 @@ class PerformerPointItem(QGraphicsEllipseItem):
         """鼠标离开时恢复默认光标"""
         self.unsetCursor()
         super().hoverLeaveEvent(event)
+
+
+class ArrowItem(QGraphicsPathItem):
+    """箭头图元：在箭头模式下可点击切换当前编辑箭头，加粗显示当前编辑箭头。"""
+
+    def __init__(self, arrow_index: int, arrow_type: str, points: list[tuple[float, float]],
+                 style: dict, scene_to_field=None, field_to_scene=None,
+                 clicked_callback=None, is_current: bool = False, arrow_size: float = 8.0):
+        super().__init__()
+        self.arrow_index = int(arrow_index)
+        self.arrow_type = arrow_type  # 'line', 'curve', 'arc', 'circle'
+        self._points = [(float(x), float(y)) for x, y in points]
+        self._style = dict(style)  # {'forward': T/F, 'backward': T/F, 'mid': T/F}
+        self._is_current = bool(is_current)
+        self._arrow_size = max(2.0, float(arrow_size))
+        self._scene_to_field = scene_to_field
+        self._field_to_scene = field_to_scene
+        self._clicked_callback = clicked_callback
+        self._mouse_interactive = True
+        self.setAcceptHoverEvents(True)
+        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
+        self.setZValue(800)
+        self._rebuild_path()
+        self._update_pen()
+
+    def _rebuild_path(self):
+        """根据箭头的类型、点位、样式重建 QPainterPath。"""
+        path = QPainterPath()
+        import math
+
+        pts = [(float(x), float(y)) for x, y in self._points]
+        if not pts:
+            self.setPath(path)
+            return
+
+        # 构建主路径
+        if self.arrow_type == 'line' and len(pts) >= 2:
+            # 多段折线
+            path.moveTo(pts[0][0], pts[0][1])
+            for p in pts[1:]:
+                path.lineTo(p[0], p[1])
+        elif self.arrow_type == 'curve' and len(pts) >= 2:
+            if len(pts) == 2:
+                # 两点曲线即直线段
+                path.moveTo(pts[0][0], pts[0][1])
+                path.lineTo(pts[1][0], pts[1][1])
+            else:
+                # 多点平滑曲线（Catmull-Rom → Bezier）
+                path.moveTo(pts[0][0], pts[0][1])
+                n = len(pts)
+                for i in range(n - 1):
+                    p0 = pts[i - 1] if i - 1 >= 0 else pts[i]
+                    p1 = pts[i]
+                    p2 = pts[i + 1]
+                    p3 = pts[i + 2] if i + 2 < n else pts[i + 1]
+                    c1x = p1[0] + (p2[0] - p0[0]) / 6.0
+                    c1y = p1[1] + (p2[1] - p0[1]) / 6.0
+                    c2x = p2[0] - (p3[0] - p1[0]) / 6.0
+                    c2y = p2[1] - (p3[1] - p1[1]) / 6.0
+                    path.cubicTo(c1x, c1y, c2x, c2y, p2[0], p2[1])
+        elif self.arrow_type == 'circle' and len(pts) >= 2:
+            cx, cy = pts[0]
+            r = math.hypot(pts[1][0] - cx, pts[1][1] - cy)
+            path.addEllipse(cx - r, cy - r, r * 2, r * 2)
+        else:
+            if pts:
+                path.moveTo(pts[0][0], pts[0][1])
+
+        # 绘制箭头
+        arrow_size = self._arrow_size
+        arrow_angle = math.radians(25)
+
+        def _draw_arrowhead(at_pos, direction_vec):
+            """在 at_pos 处沿 direction_vec 方向绘制箭头。"""
+            dx, dy = direction_vec
+            length = math.hypot(dx, dy)
+            if length < 1e-9:
+                return
+            ux, uy = dx / length, dy / length
+            tip = (at_pos[0], at_pos[1])
+            left = (tip[0] - arrow_size * math.cos(arrow_angle) * ux - arrow_size * math.sin(arrow_angle) * uy,
+                    tip[1] - arrow_size * math.cos(arrow_angle) * uy + arrow_size * math.sin(arrow_angle) * ux)
+            right = (tip[0] - arrow_size * math.cos(arrow_angle) * ux + arrow_size * math.sin(arrow_angle) * uy,
+                     tip[1] - arrow_size * math.cos(arrow_angle) * uy - arrow_size * math.sin(arrow_angle) * ux)
+            path.moveTo(tip[0], tip[1])
+            path.lineTo(left[0], left[1])
+            path.moveTo(tip[0], tip[1])
+            path.lineTo(right[0], right[1])
+
+        if self.arrow_type in ('line', 'curve') and len(pts) >= 2:
+            first, last = pts[0], pts[-1]
+            is_curve = self.arrow_type == 'curve' and len(pts) >= 3
+            forward = self._style.get('forward')
+            backward = self._style.get('backward')
+            # 正向箭头（在终点，沿末段 / Catmull-Rom 末端切线方向）
+            if forward:
+                end_v = (last[0] - pts[-2][0], last[1] - pts[-2][1])
+                _draw_arrowhead(last, end_v)
+            # 反向箭头（在起始点，沿首段反方向 / Catmull-Rom 首端反切线方向）
+            if backward:
+                start_v = (first[0] - pts[1][0], first[1] - pts[1][1])
+                _draw_arrowhead(first, start_v)
+            # 中间箭头
+            if self._style.get('mid') and (forward or backward):
+                if is_curve:
+                    # 多点曲线：Catmull-Rom 切线 (P_{i+1} - P_{i-1})
+                    for i in range(1, len(pts) - 1):
+                        if forward or not backward:
+                            mid_dir = (pts[i + 1][0] - pts[i - 1][0], pts[i + 1][1] - pts[i - 1][1])
+                            _draw_arrowhead(pts[i], mid_dir)
+                        if backward:
+                            mid_dir = (pts[i + 1][0] - pts[i - 1][0], pts[i + 1][1] - pts[i - 1][1])
+                            _draw_arrowhead(pts[i], (-mid_dir[0], -mid_dir[1]))
+                elif len(pts) >= 3:
+                    # 折线 / 两点曲线：沿上一段方向
+                    for i in range(1, len(pts) - 1):
+                        if forward or not backward:
+                            mid_dir = (pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1])
+                            _draw_arrowhead(pts[i], mid_dir)
+                        if backward:
+                            # 反向：从下一个参考点指向当前参考点
+                            mid_dir = (pts[i][0] - pts[i + 1][0], pts[i][1] - pts[i + 1][1])
+                            _draw_arrowhead(pts[i], mid_dir)
+        elif self.arrow_type == 'circle' and len(pts) >= 2:
+            cx, cy = pts[0]
+            r = math.hypot(pts[1][0] - cx, pts[1][1] - cy)
+            if self._style.get('forward'):
+                ang = math.atan2(pts[1][1] - cy, pts[1][0] - cx)
+                tip = (cx + r * math.cos(ang), cy + r * math.sin(ang))
+                tangent = (-math.sin(ang), math.cos(ang))
+                _draw_arrowhead(tip, tangent)
+            if self._style.get('backward'):
+                ang = math.atan2(pts[1][1] - cy, pts[1][0] - cx)
+                tip = (cx + r * math.cos(ang), cy + r * math.sin(ang))
+                tangent = (math.sin(ang), -math.cos(ang))
+                _draw_arrowhead(tip, tangent)
+
+        self.setPath(path)
+
+    def paint(self, painter: QPainter, option, widget=None):
+        """重写 paint 以对箭头路径启用抗锯齿，消除斜线和箭头头部的锯齿感。"""
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        super().paint(painter, option, widget)
+        painter.restore()
+
+    def set_current(self, is_current: bool):
+        """设置是否为当前编辑箭头（加粗显示）。"""
+        if self._is_current == bool(is_current):
+            return
+        self._is_current = bool(is_current)
+        self._update_pen()
+
+    def _update_pen(self):
+        pen = QPen(QColor("#d35400") if self._is_current else QColor("#000000"),
+                   2.5 if self._is_current else 1.5)
+        pen.setCosmetic(True)
+        self.setPen(pen)
+
+    def is_current(self) -> bool:
+        return self._is_current
+
+    def set_mouse_interactive(self, interactive: bool):
+        """控制箭头是否响应鼠标事件（点击、悬停光标）。非交互时鼠标事件穿透到下层。"""
+        interactive = bool(interactive)
+        if interactive == self._mouse_interactive:
+            return
+        self._mouse_interactive = interactive
+        self.setAcceptHoverEvents(interactive)
+        self.setAcceptedMouseButtons(
+            Qt.MouseButton.LeftButton if interactive else Qt.MouseButton.NoButton
+        )
+        if not interactive:
+            self.unsetCursor()
+
+    def mousePressEvent(self, event):
+        if not self._mouse_interactive:
+            event.ignore()
+            return
+        if event.button() == Qt.MouseButton.LeftButton and callable(self._clicked_callback):
+            self._clicked_callback(self.arrow_index)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def hoverEnterEvent(self, event):
+        if self._mouse_interactive:
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+        super().hoverEnterEvent(event)
+
+    def hoverLeaveEvent(self, event):
+        if self._mouse_interactive:
+            self.unsetCursor()
+        super().hoverLeaveEvent(event)
+
+    def set_arrow_data(self, arrow_type: str, points: list, style: dict):
+        """更新箭头数据并重建路径。"""
+        self.arrow_type = arrow_type
+        self._points = [(float(x), float(y)) for x, y in points]
+        self._style = dict(style)
+        self._rebuild_path()
+        self._update_pen()

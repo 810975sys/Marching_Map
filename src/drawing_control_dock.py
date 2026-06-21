@@ -6,6 +6,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QButtonGroup,
     QDockWidget,
@@ -292,6 +293,53 @@ class DrawingControlDock(QDockWidget):
         layout.addWidget(self.rotateWidget)
         self.rotateWidget.setVisible(False)
 
+        # 箭头工具参数区域
+        self.arrowWidget = QWidget(content)
+        arrow_layout = QVBoxLayout(self.arrowWidget)
+        arrow_layout.setContentsMargins(0, 0, 0, 0)
+        arrow_layout.setSpacing(6)
+
+        # 箭头线型下拉框
+        arrow_type_row = QWidget(self.arrowWidget)
+        arrow_type_layout = QHBoxLayout(arrow_type_row)
+        arrow_type_layout.setContentsMargins(0, 0, 0, 0)
+        arrow_type_layout.setSpacing(6)
+        self.arrowTypeLabel = QLabel("线型", self.arrowWidget)
+        self.arrowTypeCombo = QComboBox(self.arrowWidget)
+        self.arrowTypeCombo.addItems(["折线", "曲线", "圆"])
+        arrow_type_layout.addWidget(self.arrowTypeLabel)
+        arrow_type_layout.addWidget(self.arrowTypeCombo)
+        arrow_layout.addWidget(arrow_type_row)
+
+        # 箭头方向勾选框
+        arrow_dir_row = QWidget(self.arrowWidget)
+        arrow_dir_layout = QHBoxLayout(arrow_dir_row)
+        arrow_dir_layout.setContentsMargins(0, 0, 0, 0)
+        arrow_dir_layout.setSpacing(6)
+        self.arrowForwardCheck = QCheckBox("正向", self.arrowWidget)
+        self.arrowForwardCheck.setChecked(True)
+        self.arrowBackwardCheck = QCheckBox("反向", self.arrowWidget)
+        self.arrowMidCheck = QCheckBox("中间点", self.arrowWidget)
+        arrow_dir_layout.addWidget(self.arrowForwardCheck)
+        arrow_dir_layout.addWidget(self.arrowBackwardCheck)
+        arrow_dir_layout.addWidget(self.arrowMidCheck)
+        arrow_layout.addWidget(arrow_dir_row)
+
+        # 删除/新建箭头按钮
+        arrow_btn_row = QWidget(self.arrowWidget)
+        arrow_btn_layout = QHBoxLayout(arrow_btn_row)
+        arrow_btn_layout.setContentsMargins(0, 0, 0, 0)
+        arrow_btn_layout.setSpacing(6)
+        self.deleteArrowButton = QPushButton("删除当前箭头 Del", self.arrowWidget)
+        self.deleteArrowButton.setEnabled(False)
+        self.newArrowButton = QPushButton("新箭头", self.arrowWidget)
+        arrow_btn_layout.addWidget(self.deleteArrowButton)
+        arrow_btn_layout.addWidget(self.newArrowButton)
+        arrow_layout.addWidget(arrow_btn_row)
+
+        layout.addWidget(self.arrowWidget)
+        self.arrowWidget.setVisible(False)
+
         # 确认/取消按钮区域
         button_layout = QHBoxLayout()
         button_layout.addWidget(self.confirmButton)
@@ -307,6 +355,7 @@ class DrawingControlDock(QDockWidget):
         self.setAdjustmentControlsVisible(False)
         self.setTextBoxControlsVisible(False)
         self.setDrawingRematchVisible(False)
+        self.setArrowControlsVisible(False)
         
         # 连接信号与槽函数
             # 线段工具参数控制
@@ -349,6 +398,40 @@ class DrawingControlDock(QDockWidget):
             scene.set_curve_mode(mode)
         self.curveModeCombo.currentIndexChanged.connect(_on_curve_mode_changed)
 
+        # 箭头控制信号连接
+        def _on_arrow_setting_changed():
+            parent = getattr(self, 'parent', lambda: None)()
+            if parent is None:
+                parent = self.parent()
+            scene = getattr(parent, 'scene', None)
+            if scene is None:
+                return
+            scene._on_arrow_setting_changed()
+        self.arrowTypeCombo.currentIndexChanged.connect(_on_arrow_setting_changed)
+        self.arrowForwardCheck.toggled.connect(_on_arrow_setting_changed)
+        self.arrowBackwardCheck.toggled.connect(_on_arrow_setting_changed)
+        self.arrowMidCheck.toggled.connect(_on_arrow_setting_changed)
+
+        def _on_delete_arrow_requested():
+            parent = getattr(self, 'parent', lambda: None)()
+            if parent is None:
+                parent = self.parent()
+            scene = getattr(parent, 'scene', None)
+            if scene is None:
+                return
+            scene._delete_current_arrow()
+        self.deleteArrowButton.clicked.connect(_on_delete_arrow_requested)
+
+        def _on_new_arrow_requested():
+            parent = getattr(self, 'parent', lambda: None)()
+            if parent is None:
+                parent = self.parent()
+            scene = getattr(parent, 'scene', None)
+            if scene is None:
+                return
+            scene._new_arrow_from_current()
+        self.newArrowButton.clicked.connect(_on_new_arrow_requested)
+
     def setAdjustmentControlsVisible(self, visible: bool):
         """设置调整模式控制的可见性"""
         self.adjustWidget.setVisible(bool(visible))
@@ -376,6 +459,18 @@ class DrawingControlDock(QDockWidget):
     def setRotateControlsVisible(self, visible: bool):
         """设置旋转控制区可见性：显示独立的旋转角度标签与输入框。"""
         self.rotateWidget.setVisible(bool(visible))
+
+    def setArrowControlsVisible(self, visible: bool):
+        """设置箭头控制区可见性。"""
+        self.arrowWidget.setVisible(bool(visible))
+
+    def setDeleteArrowEnabled(self, enabled: bool):
+        """设置删除箭头按钮可用状态。"""
+        self.deleteArrowButton.setEnabled(bool(enabled))
+
+    def setNewArrowEnabled(self, enabled: bool):
+        """设置新箭头按钮可用状态。"""
+        self.newArrowButton.setEnabled(bool(enabled))
 
     def setRotateAngle(self, angle: float):
         """设置旋转角度显示值（独立旋转控件）。"""
