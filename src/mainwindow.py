@@ -514,6 +514,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             '间隔行进': "拖动点位，组内其余点位以固定间隔移动",
             '旋转': "设置旋转角度，所选点位绕中心点旋转（点位轨迹为圆弧）",
             '箭头': "绘制箭头标注",
+            '标签': "设置选中点位的标签前缀与起始序号",
         }
         self.drawingControlDock.statusLabel.setText(tool_text.get(tool_name, ""))
 
@@ -524,6 +525,11 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
         if tool_name == "旋转" and not self.scene._selected_point_ids:
             self._show_menu_notice("请先选中点位，再进入旋转模式。", failed=True)
+            self._set_active_tool("框选")
+            return
+
+        if tool_name == "标签" and not self.scene._selected_point_ids:
+            self._show_menu_notice("请先选中点位，再进入标签设置。", failed=True)
             self._set_active_tool("框选")
             return
 
@@ -667,6 +673,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.drawingControlDock.setIntervalControlsVisible(tool_name == "间隔行进")
         self.drawingControlDock.setRotateControlsVisible(tool_name == "旋转")
         self.drawingControlDock.setArrowControlsVisible(tool_name == "箭头")
+        self.drawingControlDock.setLabelSettingsVisible(tool_name == "标签")
         
         if tool_name == "调整":
             # self.drawingControlDock.setOperationLabels("确认调整 Enter", "取消调整 Esc")
@@ -727,6 +734,16 @@ class MainWindow(MainWindowNotice, QMainWindow):
             # 同步场景状态到控制台
             if hasattr(self.scene, '_sync_arrow_dock_state'):
                 self.scene._sync_arrow_dock_state()
+            return
+
+        if tool_name == "标签":
+            self.drawingControlDock.setSamplingToolVisible(None, False)
+            self.drawingControlDock.setCurveModeVisible(False)
+            self.drawingControlDock.setDraftActive(True)
+            self.drawingControlDock.confirmButton.setEnabled(True)
+            self.drawingControlDock.cancelButton.setEnabled(True)
+            self.drawingControlDock.setLabelSettingsVisible(True)
+            self._init_label_settings_dock()
             return
 
         # self.drawingControlDock.setOperationLabels("确认绘制 Enter", "取消绘制 Esc")
@@ -1001,6 +1018,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.drawingControlDock.setCurveModeVisible(False)
         self.drawingControlDock.setTextBoxControlsVisible(False)
         self.drawingControlDock.setGroupSettingVisible(False)
+        self.drawingControlDock.setLabelSettingsVisible(False)
         self.drawingControlDock.confirmButton.clicked.connect(self._on_control_confirmed)
         self.drawingControlDock.cancelButton.clicked.connect(self._on_control_cancelled)
         self.drawingControlDock.deleteTextBoxButton.clicked.connect(self._on_delete_textbox_requested)
@@ -1034,6 +1052,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self.scene.confirm_rotate()
         elif self.activeToolName == "箭头":
             self.scene.confirm_current_arrow()
+        elif self.activeToolName == "标签":
+            self._on_label_apply()
         else:
             if self.scene.confirm_current_drawing() is False:
                 self._sync_drawing_rematch_controls()
@@ -1060,6 +1080,9 @@ class MainWindow(MainWindowNotice, QMainWindow):
             return
         if self.activeToolName == "箭头":
             self.scene.cancel_current_arrow()
+            return
+        if self.activeToolName == "标签":
+            self.onToolButtonClicked("框选")
             return
         self.scene.cancel_current_drawing()
 
@@ -1096,6 +1119,35 @@ class MainWindow(MainWindowNotice, QMainWindow):
         has_selection = textbox_id is not None and int(textbox_id) > 0
         self.drawingControlDock.setDeleteTextBoxEnabled(bool(has_selection))
         self.drawingControlDock.setTextBoxFontSize(int(self.scene.selected_textbox_font_size()))
+
+    def _init_label_settings_dock(self):
+        """同步标签设置面板：若最小id已有标签则以其为准，否则默认serial=id+1、prefix为空。"""
+        min_id = min(int(pid) for pid in self.scene._selected_point_ids)
+        lable = self.scene.point_lable
+        if 0 <= min_id < len(lable) and lable[min_id] is not None:
+            entry = lable[min_id]
+            self.drawingControlDock.labelPrefixEdit.setText(str(entry.get("prefix", "")))
+            self.drawingControlDock.labelSerialSpin.setValue(int(entry.get("serial", min_id + 1)))
+        else:
+            self.drawingControlDock.labelSerialSpin.setValue(int(min_id + 1))
+            self.drawingControlDock.labelPrefixEdit.setText("")
+
+    def _on_label_apply(self):
+        """应用标签设置：将前缀和序号应用到选中点位。"""
+        # if self.activeToolName != "标签":
+        #     return
+        # selected = sorted(int(pid) for pid in self.scene._selected_point_ids)
+        # if not selected:
+        #     self._show_menu_notice("请先选中点位再应用标签。", failed=True)
+        #     return
+        prefix = self.drawingControlDock.labelPrefixEdit.text()
+        serial_start = self.drawingControlDock.labelSerialSpin.value()
+        for i, pid in enumerate(self.scene._selected_point_ids):
+            self.scene._set_point_label_prefix(pid, prefix)
+            self.scene._set_point_label_serial(pid, serial_start + i)
+        self.scene._render_points_for_active_node()
+        self.scene.dataChanged.emit()
+        # self._show_menu_notice(f"已为 {len(selected)} 个点位设置标签。")
 
     def _on_delete_points_triggered(self):
         """响应菜单删除点位：弹出确认对话框，确认后调用场景删除方法。"""

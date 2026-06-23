@@ -35,6 +35,7 @@ class ReferenceHandleItem(QGraphicsRectItem):
         self._drag_finished_callback = drag_finished_callback
         self.setPen(QPen(QColor("#d35400"), 1.2))    # 橙色边框
         self.setBrush(QBrush(Qt.BrushStyle.NoBrush))   # 透明填充
+        self.setAcceptHoverEvents(True)
         self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton) # 仅响应左键拖动
         self.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable, False)    # 不可选中
         self.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsMovable, True)        # 可移动
@@ -84,6 +85,16 @@ class ReferenceHandleItem(QGraphicsRectItem):
                     value = adjusted
         return super().itemChange(change, value)
 
+    def hoverEnterEvent(self, event):
+        """鼠标进入参考点时显示四向箭头指针。"""
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
+        super().hoverEnterEvent(event)
+
+    def hoverLeaveEvent(self, event):
+        """鼠标离开参考点时恢复默认指针。"""
+        self.unsetCursor()
+        super().hoverLeaveEvent(event)
+
 
 class MovementControlHandleItem(QGraphicsEllipseItem):
     """双圈参考点手柄：外圈用于改变移动参考点，内圈用于实际移动选中点位。
@@ -106,6 +117,7 @@ class MovementControlHandleItem(QGraphicsEllipseItem):
         self._pressed_part = None  # 'inner' or 'outer' during drag
         self.setPen(QPen(QColor("#16a085"), 1.4))
         self.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        self.setAcceptHoverEvents(True)
         self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
         self.setFlag(QGraphicsEllipseItem.GraphicsItemFlag.ItemIsSelectable, False)
         self.setFlag(QGraphicsEllipseItem.GraphicsItemFlag.ItemIsMovable, True)
@@ -198,9 +210,20 @@ class MovementControlHandleItem(QGraphicsEllipseItem):
             value = target
         return super().itemChange(change, value)
 
+    def _update_hover_cursor(self, pos: QPointF):
+        """根据鼠标位置更新指针样式：外圈=小手，内圈=四向箭头。"""
+        if self._which_part_at(pos) == 'inner':
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+        else:
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+
     def hoverEnterEvent(self, event):
-        self.setCursor(Qt.CursorShape.SizeAllCursor)
+        self._update_hover_cursor(event.pos())
         super().hoverEnterEvent(event)
+
+    def hoverMoveEvent(self, event):
+        self._update_hover_cursor(event.pos())
+        super().hoverMoveEvent(event)
 
     def hoverLeaveEvent(self, event):
         self.unsetCursor()

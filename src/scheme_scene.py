@@ -200,7 +200,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self.label_color = QColor("#000000")
         self.label_size = 12    # label 字体大小
         self.label_offset = 15  # label 相对于点位的距离
-        self.label_pos = 6     # label 相对于点位的角度 以15°为单位，上限为24（360°），默认12（120° 下侧）
+        self.label_pos = 90     # label 相对于点位的角度，上限为360°，默认90°（下侧）
         
         #点位修改的参数
         self.helper_radius = 12
@@ -827,12 +827,12 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         dot.setZValue(960)
         scene.addItem(dot)
 
-        label = QGraphicsSimpleTextItem(str(int(point.get("id", 0))))
+        label = QGraphicsSimpleTextItem(self._get_point_label_text(int(point.get("id", 0))))
         font = QFont()
         font.setPointSizeF(float(self.label_size * self.export_ratio))
         label.setFont(font)
         label.setBrush(QBrush(self.label_color))
-        angle_deg = (int(self.label_pos) % 24) * 15
+        angle_deg = int(self.label_pos) % 360
         angle_rad = math.radians(angle_deg)
         dx = math.cos(angle_rad) * float(self.label_offset) * self.export_ratio
         dy = math.sin(angle_rad) * float(self.label_offset) * self.export_ratio
@@ -1474,7 +1474,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             label = self._label_items_by_id.get(pid)
             if label is not None:
                 pos = self._field_to_scene(rx, ry)
-                angle_label = (int(self.label_pos) % 24) * 15
+                angle_label = int(self.label_pos) % 360
                 angle_rad = math.radians(angle_label)
                 dx = math.cos(angle_rad) * float(self.label_offset)
                 dy = math.sin(angle_rad) * float(self.label_offset)
@@ -2878,7 +2878,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         if label is not None:
             pos = self._field_to_scene(x, y)
             # 使用与创建时相同的参数计算偏移（角度以15°为单位）
-            angle_deg = (int(self.label_pos) % 24) * 15
+            angle_deg = (int(self.label_pos) % 360)
             angle_rad = math.radians(angle_deg)
             dx = math.cos(angle_rad) * float(self.label_offset)
             dy = math.sin(angle_rad) * float(self.label_offset)
@@ -3239,7 +3239,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             label = self._label_items_by_id.get(point_id)
             if label is None:
                 continue
-            angle_deg = (int(self.label_pos) % 24) * 15
+            angle_deg = (int(self.label_pos) % 360)
             angle_rad = math.radians(angle_deg)
             dx = math.cos(angle_rad) * float(self.label_offset)
             dy = math.sin(angle_rad) * float(self.label_offset)
@@ -4349,6 +4349,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 current_points.append(point)
                 self._next_point_id += 1
                 new_point_ids.append(point_id)
+                # 初始化标签数据：serial=point_id, prefix=""
+                self.point_lable.append({"prefix": "", "serial": point_id + 1})
 
             if new_point_ids:
                 # 添加到分组中
@@ -5261,8 +5263,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         # 收集所有剩余点位 ID（跨所有节点），按旧 ID 升序排序以确定新 ID 分配顺序
         remaining_ids = sorted({int(p["id"]) for pts in self.node_points for p in pts if int(p["id"]) not in to_delete})
 
-        # 生成 old->new 映射
-        id_map = {old: new for new, old in enumerate(remaining_ids, start=1)}
+        # 生成 old->new 映射（point_id 从 0 开始）
+        id_map = {old: new for new, old in enumerate(remaining_ids, start=0)}
 
         # 重新构建每个节点的点位列表，移除被删点并重写 ID
         for node_idx in range(len(self.node_points)):
@@ -5290,6 +5292,18 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         # 更新自增计数器
         max_id = max(id_map.values()) if id_map else 0
         self._next_point_id = max_id + 1
+
+        # 更新点位标签数据（point_lable 以 point_id 为下标）
+        if self.point_lable:
+            new_point_lable = []
+            for old_id, new_id in sorted(id_map.items()):
+                while len(new_point_lable) <= new_id:
+                    new_point_lable.append(None)
+                old_idx = old_id
+                if 0 <= old_idx < len(self.point_lable) and self.point_lable[old_idx] is not None:
+                    new_point_lable[new_id] = dict(self.point_lable[old_idx])
+                    new_point_lable[new_id]["serial"] = new_id + 1
+            self.point_lable = new_point_lable
 
         # 清除当前选中集合并刷新显示与后续自动计算
         self._selected_point_ids = set()
@@ -5400,14 +5414,14 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
         if draw_label:
             # 绘制标签，使用场景参数控制字体大小、偏移与角度
-            label = QGraphicsSimpleTextItem(str(point["id"]))
+            label = QGraphicsSimpleTextItem(self._get_point_label_text(point["id"]))
             # 字体大小
             font = QFont()
             font.setPointSize(int(self.label_size))
             label.setFont(font)
             label.setBrush(QBrush(self.label_color))
             # 计算相对于点位的偏移（角度以 15° 为单位）并使标签中心位于该偏移点
-            angle_deg = (int(self.label_pos) % 24) * 15
+            angle_deg = (int(self.label_pos) % 360)
             angle_rad = math.radians(angle_deg)
             dx = math.cos(angle_rad) * float(self.label_offset)
             dy = math.sin(angle_rad) * float(self.label_offset)

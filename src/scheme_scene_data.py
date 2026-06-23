@@ -22,7 +22,7 @@ class SchemeSceneData:
         self.active_tool = "框选"   # 当前选中的工具，默认为框选
         self.preview_beat = 0   # 当前预览的拍位，用于非节点拍位的插值显示，默认为0
 
-        self._next_point_id = 1 # 点位ID自增计数器，确保每个新点位都有唯一ID
+        self._next_point_id = 0 # 点位ID自增计数器，确保每个新点位都有唯一ID（从0开始）
         self._next_textbox_id = 1 # 文本框ID自增计数器
         
         # node_paths: 每个节点下按参考点ID保存路径定义，路径定义包含 path（路径点列表）和 members（成员点位与路径偏移量的映射）。
@@ -48,6 +48,30 @@ class SchemeSceneData:
         # }]
         # }
         self.node_arrows = {}
+        
+        # 点位标签信息，以点位id为下标，存储{prefix, serial}
+        self.point_lable = []
+
+    def _get_point_label_text(self, point_id: int) -> str:
+        """获取点位的标签显示文本（prefix + serial）。point_lable 以 point_id 为下标。"""
+        pid = int(point_id)
+        idx = pid
+        if 0 <= idx < len(self.point_lable) and self.point_lable[idx] is not None:
+            entry = self.point_lable[idx]
+            return str(entry.get("prefix", "")) + str(entry.get("serial", pid + 1))
+        return str(pid + 1)
+
+    def _set_point_label_prefix(self, point_id: int, prefix: str):
+        """设置点位的标签前缀。"""
+        idx = int(point_id)
+        if 0 <= idx < len(self.point_lable) and self.point_lable[idx] is not None:
+            self.point_lable[idx]["prefix"] = str(prefix)
+
+    def _set_point_label_serial(self, point_id: int, serial: int):
+        """设置点位的标签序号。"""
+        idx = int(point_id)
+        if 0 <= idx < len(self.point_lable) and self.point_lable[idx] is not None:
+            self.point_lable[idx]["serial"] = int(serial)
 
     def _find_point_in_node(self, node_index: int, point_id: int):
         """在指定节点中按点位ID查找点位字典。"""
@@ -138,6 +162,7 @@ class SchemeSceneData:
             "group_to_point": self.group_to_point,
             "node_paths": self.node_paths,
             "node_arrows": self.node_arrows,
+            "point_lable": self.point_lable,
             "_next_point_id": int(self._next_point_id),
             "_next_textbox_id": int(self._next_textbox_id),
         }
@@ -160,6 +185,7 @@ class SchemeSceneData:
         self.node_arrows = {int(k): v for k, v in data.get("node_arrows", {}).items()}
         
         self.group_to_point = data.get("group_to_point", [])
+        self.point_lable = data.get("point_lable", [])
 
         max_point_id = 0
         for points in self.node_points:
@@ -178,7 +204,7 @@ class SchemeSceneData:
 
         saved_next_point_id = int(data.get("_next_point_id", max_point_id + 1))
         saved_next_textbox_id = int(data.get("_next_textbox_id", max_textbox_id + 1))
-        self._next_point_id = max(1, max_point_id + 1, saved_next_point_id)
+        self._next_point_id = max(0, max_point_id + 1, saved_next_point_id)
         self._next_textbox_id = max(1, max_textbox_id + 1, saved_next_textbox_id)
 
     def ensure_node_exists(self, node_index: int):

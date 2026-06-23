@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QToolButton,
@@ -29,7 +30,8 @@ class DrawingControlDock(QDockWidget):
         super().__init__("绘制控制台", parent)
         self.setObjectName("drawingControlDock")
         self.setAllowedAreas(Qt.DockWidgetArea.NoDockWidgetArea)    # 禁止停靠
-        self.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetClosable)  # 允许关闭
+        self.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable|
+            QDockWidget.DockWidgetFeature.DockWidgetFloatable)  # 屏蔽关闭按钮
 
         content = QWidget(self)
         layout = QVBoxLayout(content)
@@ -49,9 +51,11 @@ class DrawingControlDock(QDockWidget):
         # 支持显示采样设置的工具集合。新增 "路径" 但该工具仅显示曲线模式选择，不显示点位个数与间距控件。
         self._sampling_supported_tools = {"线段", "弧", "曲线/折线", "圆", "多边形", "填充四边形", "路径", "跟随"}
 
-        self.statusLabel = QLabel("", content)  # 当前绘制状态提示
+        # ——————————————————————————当前绘制状态提示——————————————————————————
+        self.statusLabel = QLabel("", content)
         layout.addWidget(self.statusLabel)
 
+        # ——————————————————————————调整功能——————————————————————————
         self.drawingRematchWidget = QWidget(content)
         drawing_rematch_layout = QHBoxLayout(self.drawingRematchWidget)
         drawing_rematch_layout.setContentsMargins(0, 0, 0, 0)
@@ -118,22 +122,7 @@ class DrawingControlDock(QDockWidget):
         adjust_layout.addWidget(rotation_row)
         layout.addWidget(self.adjustWidget)
 
-        self.textBoxWidget = QWidget(content)
-        textbox_layout = QHBoxLayout(self.textBoxWidget)
-        textbox_layout.setContentsMargins(0, 0, 0, 0)
-        textbox_layout.setSpacing(6)
-        self.textBoxFontSizeLabel = QLabel("文本字号", self.textBoxWidget)
-        self.textBoxFontSizeSpin = QSpinBox(self.textBoxWidget)
-        self.textBoxFontSizeSpin.setRange(1, 200)
-        self.textBoxFontSizeSpin.setValue(14)
-        self.deleteTextBoxButton = QPushButton("删除文本框 del", self.textBoxWidget)
-        self.deleteTextBoxButton.setShortcut('Delete')  # 设置快捷键为 Delete 键
-        self.deleteTextBoxButton.setEnabled(False)
-        textbox_layout.addWidget(self.textBoxFontSizeLabel)
-        textbox_layout.addWidget(self.textBoxFontSizeSpin)
-        textbox_layout.addWidget(self.deleteTextBoxButton)
-        layout.addWidget(self.textBoxWidget)
-
+        # ——————————————————————————分组设置功能——————————————————————————
         self.groupWidget = QWidget(content)
         group_layout = QVBoxLayout(self.groupWidget)
         group_layout.setContentsMargins(0, 0, 0, 0)
@@ -145,17 +134,7 @@ class DrawingControlDock(QDockWidget):
         # 将分组面板加入主布局，初始可见性由主窗口控制
         layout.addWidget(self.groupWidget)
 
-        self.confirmButton = QPushButton("确认 Enter", content)   # 确认按钮，完成绘制并清空草稿状态
-        self._confirm_shortcut_enter = QShortcut(QKeySequence(Qt.Key.Key_Return), self)  # 绑定快捷键
-        self._confirm_shortcut_enter.setContext(Qt.ShortcutContext.ApplicationShortcut) # 设置快捷方式上下文为应用程序级，确保在任何情况下按下 Enter 都能触发确认操作
-        self._confirm_shortcut_enter.activated.connect(self._trigger_confirm_shortcut)
-        
-        self.cancelButton = QPushButton("取消 Esc", content)    # 取消按钮，放弃草稿并清空草稿状态
-        self._cancel_shortcut_esc = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
-        self._cancel_shortcut_esc.setContext(Qt.ShortcutContext.ApplicationShortcut)
-        self._cancel_shortcut_esc.activated.connect(self._trigger_cancel_shortcut)
-
-        # 默认点位个数设置
+        # ——————————————————————————点位绘制——————————————————————————
         self.linePointCountLabel = QLabel("点位个数", content)
         self.linePointCountSpin = QSpinBox(content)
         self.linePointCountSpin.setRange(1, 99)
@@ -257,7 +236,24 @@ class DrawingControlDock(QDockWidget):
         line_layout.addWidget(self._polygon_row)
         line_layout.addWidget(self.curve_row)
 
-        # 间隔行进参数区域
+        # ——————————————————————————文本工具——————————————————————————
+        self.textBoxWidget = QWidget(content)
+        textbox_layout = QHBoxLayout(self.textBoxWidget)
+        textbox_layout.setContentsMargins(0, 0, 0, 0)
+        textbox_layout.setSpacing(6)
+        self.textBoxFontSizeLabel = QLabel("文本字号", self.textBoxWidget)
+        self.textBoxFontSizeSpin = QSpinBox(self.textBoxWidget)
+        self.textBoxFontSizeSpin.setRange(1, 200)
+        self.textBoxFontSizeSpin.setValue(14)
+        self.deleteTextBoxButton = QPushButton("删除文本框 del", self.textBoxWidget)
+        self.deleteTextBoxButton.setShortcut('Delete')  # 设置快捷键为 Delete 键
+        self.deleteTextBoxButton.setEnabled(False)
+        textbox_layout.addWidget(self.textBoxFontSizeLabel)
+        textbox_layout.addWidget(self.textBoxFontSizeSpin)
+        textbox_layout.addWidget(self.deleteTextBoxButton)
+        layout.addWidget(self.textBoxWidget)
+
+        # ——————————————————————————间隔行进参数区域——————————————————————————
         self.intervalWidget = QWidget(content)
         interval_layout = QHBoxLayout(self.intervalWidget)
         interval_layout.setContentsMargins(0, 0, 0, 0)
@@ -277,7 +273,7 @@ class DrawingControlDock(QDockWidget):
         layout.addWidget(self.intervalWidget)
         self.intervalWidget.setVisible(False)
 
-        # 旋转参数区域（独立于调整模式的旋转控件）
+        # ——————————————————————————旋转参数区域（独立于调整模式的旋转控件）——————————————————————————
         self.rotateWidget = QWidget(content)
         rotate_layout = QHBoxLayout(self.rotateWidget)
         rotate_layout.setContentsMargins(0, 0, 0, 0)
@@ -293,7 +289,7 @@ class DrawingControlDock(QDockWidget):
         layout.addWidget(self.rotateWidget)
         self.rotateWidget.setVisible(False)
 
-        # 箭头工具参数区域
+        # ——————————————————————————箭头工具参数区域——————————————————————————
         self.arrowWidget = QWidget(content)
         arrow_layout = QVBoxLayout(self.arrowWidget)
         arrow_layout.setContentsMargins(0, 0, 0, 0)
@@ -340,12 +336,57 @@ class DrawingControlDock(QDockWidget):
         layout.addWidget(self.arrowWidget)
         self.arrowWidget.setVisible(False)
 
-        # 确认/取消按钮区域
+        # ——————————————————————————确认/取消按钮区域——————————————————————————
+        self.confirmButton = QPushButton("确认 Enter", content)   # 确认按钮，完成绘制并清空草稿状态
+        self._confirm_shortcut_enter = QShortcut(QKeySequence(Qt.Key.Key_Return), self)  # 绑定快捷键
+        self._confirm_shortcut_enter.setContext(Qt.ShortcutContext.ApplicationShortcut) # 设置快捷方式上下文为应用程序级，确保在任何情况下按下 Enter 都能触发确认操作
+        self._confirm_shortcut_enter.activated.connect(self._trigger_confirm_shortcut)
+        
+        self.cancelButton = QPushButton("取消 Esc", content)    # 取消按钮，放弃草稿并清空草稿状态
+        self._cancel_shortcut_esc = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+        self._cancel_shortcut_esc.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._cancel_shortcut_esc.activated.connect(self._trigger_cancel_shortcut)
+
         button_layout = QHBoxLayout()
         button_layout.addWidget(self.confirmButton)
         button_layout.addWidget(self.cancelButton)
         layout.addLayout(button_layout)
         
+        # ——————————————————————————标签设置——————————————————————————
+        self.labelSettingsWidget = QWidget(content)
+        label_settings_layout = QVBoxLayout(self.labelSettingsWidget)
+        label_settings_layout.setContentsMargins(0, 0, 0, 0)
+        label_settings_layout.setSpacing(6)
+
+        # 前缀输入框
+        prefix_row = QWidget(self.labelSettingsWidget)
+        prefix_layout = QHBoxLayout(prefix_row)
+        prefix_layout.setContentsMargins(0, 0, 0, 0)
+        prefix_layout.setSpacing(6)
+        prefix_label = QLabel("前缀", self.labelSettingsWidget)
+        self.labelPrefixEdit = QLineEdit(self.labelSettingsWidget)
+        self.labelPrefixEdit.setPlaceholderText("输入前缀")
+        prefix_layout.addWidget(prefix_label)
+        prefix_layout.addWidget(self.labelPrefixEdit)
+        label_settings_layout.addWidget(prefix_row)
+
+        # 序号输入框
+        serial_row = QWidget(self.labelSettingsWidget)
+        serial_layout = QHBoxLayout(serial_row)
+        serial_layout.setContentsMargins(0, 0, 0, 0)
+        serial_layout.setSpacing(6)
+        serial_label = QLabel("起始序号", self.labelSettingsWidget)
+        self.labelSerialSpin = QSpinBox(self.labelSettingsWidget)
+        self.labelSerialSpin.setRange(0, 999)
+        self.labelSerialSpin.setValue(1)
+        serial_layout.addWidget(serial_label)
+        serial_layout.addWidget(self.labelSerialSpin)
+        label_settings_layout.addWidget(serial_row)
+
+        layout.addWidget(self.labelSettingsWidget)
+        self.labelSettingsWidget.setVisible(False)
+
+        # ——————————————————————————————————————————————————————————————————————————————
         layout.addStretch(1)    # 底部弹性空间
         self.setWidget(content) # 将内容设置为窗口的主体
         self.setMinimumWidth(240)   # 设置最小宽度，防止内容过于拥挤
@@ -463,6 +504,10 @@ class DrawingControlDock(QDockWidget):
     def setArrowControlsVisible(self, visible: bool):
         """设置箭头控制区可见性。"""
         self.arrowWidget.setVisible(bool(visible))
+
+    def setLabelSettingsVisible(self, visible: bool):
+        """设置标签设置控制区可见性。"""
+        self.labelSettingsWidget.setVisible(bool(visible))
 
     def setDeleteArrowEnabled(self, enabled: bool):
         """设置删除箭头按钮可用状态。"""
@@ -728,7 +773,8 @@ class DrawingControlDock(QDockWidget):
         """设置草图激活状态，控制确认/取消按钮的启用状态"""
         self._draft_active = active
         self.setAllowedAreas(Qt.DockWidgetArea.NoDockWidgetArea)
-        self.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetClosable)
+        self.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable|
+            QDockWidget.DockWidgetFeature.DockWidgetFloatable)  # 屏蔽关闭按钮
 
     def _trigger_confirm_shortcut(self):
         if QApplication.activeModalWidget() is not None:
