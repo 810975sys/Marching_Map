@@ -105,6 +105,11 @@ class TimelineWidget(QWidget):
         self.setMinimumHeight(58)
         # 使控件可接收键盘事件，便于实现快捷键
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+        # 字体大小（由 AppSettingsDock 统一管理）
+        self._node_font_size = 9
+        self._beat_font_size = 9
+
         self._recalculate_width()
         # 注册 '+' 和 '=' 快捷键为新增节点（对话/子控件也能响应）
         self.quick_add_node = QShortcut(QKeySequence('+'), self)
@@ -326,6 +331,11 @@ class TimelineWidget(QWidget):
             p.setPen(QPen(QColor("#aeaeae"), 1))
             p.drawLine(self._ruler_rect.left(), self._middle_bottom, self._ruler_rect.right(), self._middle_bottom)
 
+            # 拍数标签字体
+            beat_font = QFont(self.font())
+            beat_font.setPointSize(self._beat_font_size)
+            p.setFont(beat_font)
+
             long_every = max(1, int(self.long_tick_interval))
             max_beat_for_ticks = total if total > 0 else 0
             for beat in range(0, max_beat_for_ticks + 1):
@@ -344,12 +354,12 @@ class TimelineWidget(QWidget):
         p.drawLine(cursor_x, self._top_row_y - 1, cursor_x, self._middle_bottom + 1)
 
         font = QFont(self.font())
-        font.setPointSize(9)
+        font.setPointSize(self._node_font_size)
         p.setFont(font)
 
         # 绘制节点
         for i, rect in enumerate(self._node_rects):
-            # 节点圆点（选中节点高亮边框）
+            # 节点矩形（选中节点高亮边框）
             is_selected = i == self.selected_node
             fill = QColor("#ececec") if i == 0 else QColor("#ffffff")
             border = QColor("#f39c12") if is_selected else QColor("#1f5e9c")

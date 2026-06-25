@@ -48,6 +48,10 @@ class DrawingControlDock(QDockWidget):
         self._scene = None  # 场景引用
         self._syncing_line_segment_controls = False # 内部状态：是否正在同步线段工具控制状态，避免信号循环
         self._sampling_tool_name = "线段"   # 当前采样工具名称
+
+        # 字体大小（由 AppSettingsDock 统一管理）
+        self._font_size = 9
+
         # 支持显示采样设置的工具集合。新增 "路径" 但该工具仅显示曲线模式选择，不显示点位个数与间距控件。
         self._sampling_supported_tools = {"线段", "弧", "曲线/折线", "圆", "多边形", "填充四边形", "路径", "跟随"}
 
@@ -336,22 +340,6 @@ class DrawingControlDock(QDockWidget):
         layout.addWidget(self.arrowWidget)
         self.arrowWidget.setVisible(False)
 
-        # ——————————————————————————确认/取消按钮区域——————————————————————————
-        self.confirmButton = QPushButton("确认 Enter", content)   # 确认按钮，完成绘制并清空草稿状态
-        self._confirm_shortcut_enter = QShortcut(QKeySequence(Qt.Key.Key_Return), self)  # 绑定快捷键
-        self._confirm_shortcut_enter.setContext(Qt.ShortcutContext.ApplicationShortcut) # 设置快捷方式上下文为应用程序级，确保在任何情况下按下 Enter 都能触发确认操作
-        self._confirm_shortcut_enter.activated.connect(self._trigger_confirm_shortcut)
-        
-        self.cancelButton = QPushButton("取消 Esc", content)    # 取消按钮，放弃草稿并清空草稿状态
-        self._cancel_shortcut_esc = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
-        self._cancel_shortcut_esc.setContext(Qt.ShortcutContext.ApplicationShortcut)
-        self._cancel_shortcut_esc.activated.connect(self._trigger_cancel_shortcut)
-
-        button_layout = QHBoxLayout()
-        button_layout.addWidget(self.confirmButton)
-        button_layout.addWidget(self.cancelButton)
-        layout.addLayout(button_layout)
-        
         # ——————————————————————————标签设置——————————————————————————
         self.labelSettingsWidget = QWidget(content)
         label_settings_layout = QVBoxLayout(self.labelSettingsWidget)
@@ -386,6 +374,22 @@ class DrawingControlDock(QDockWidget):
         layout.addWidget(self.labelSettingsWidget)
         self.labelSettingsWidget.setVisible(False)
 
+        # ——————————————————————————确认/取消按钮区域——————————————————————————
+        self.confirmButton = QPushButton("确认 Enter", content)   # 确认按钮，完成绘制并清空草稿状态
+        self._confirm_shortcut_enter = QShortcut(QKeySequence(Qt.Key.Key_Return), self)  # 绑定快捷键
+        self._confirm_shortcut_enter.setContext(Qt.ShortcutContext.ApplicationShortcut) # 设置快捷方式上下文为应用程序级，确保在任何情况下按下 Enter 都能触发确认操作
+        self._confirm_shortcut_enter.activated.connect(self._trigger_confirm_shortcut)
+        
+        self.cancelButton = QPushButton("取消 Esc", content)    # 取消按钮，放弃草稿并清空草稿状态
+        self._cancel_shortcut_esc = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+        self._cancel_shortcut_esc.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._cancel_shortcut_esc.activated.connect(self._trigger_cancel_shortcut)
+
+        button_layout = QHBoxLayout()
+        button_layout.addWidget(self.confirmButton)
+        button_layout.addWidget(self.cancelButton)
+        layout.addLayout(button_layout)
+        
         # ——————————————————————————————————————————————————————————————————————————————
         layout.addStretch(1)    # 底部弹性空间
         self.setWidget(content) # 将内容设置为窗口的主体
@@ -472,6 +476,16 @@ class DrawingControlDock(QDockWidget):
                 return
             scene._new_arrow_from_current()
         self.newArrowButton.clicked.connect(_on_new_arrow_requested)
+
+    def apply_font_size(self, size: int):
+        """应用字号到本面板所有控件。"""
+        from PyQt6.QtGui import QFont
+        font = self.font()
+        font.setPointSize(size)
+        self.setFont(font)
+        w = self.widget()
+        if w:
+            w.setFont(font)
 
     def setAdjustmentControlsVisible(self, visible: bool):
         """设置调整模式控制的可见性"""

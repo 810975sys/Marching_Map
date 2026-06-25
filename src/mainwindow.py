@@ -28,6 +28,7 @@ from src.field_settings_dock import FieldSettingsDock
 from src.timeline_widget import TimelineWidget, TimelineScrollArea
 # from mainwindow_docks import DrawingControlDock, TimelineScrollArea, ToolOptionDock
 from src.drawing_control_dock import DrawingControlDock
+from src.app_settings_dock import AppSettingsDock
 from src.mainwindow_notice import MainWindowNotice
 from src.tip_window import TipWindow
 # from field_info import _field_default_dir
@@ -48,6 +49,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self._scheme_file_path: Path | None = None
         self._scheme_dirty = False
         self._scheme_dirty_suppressed = False
+        # 按钮字体大小（由 AppSettingsDock 统一管理）
+        self._font_size = 9
         # 播放演示状态
         self._playback_timer = QTimer(self)
         self._playback_timer.setTimerType(Qt.TimerType.PreciseTimer)
@@ -67,6 +70,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         # }
         self._drawing_tools = {"点", "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形", "路径", "跟随"}
         self._text_tools = {"文本"}
+        self._label_tools = {"标签"}
         self._group_tools = {"分组"}
         self._select_tools = {"选择", "框选"}
         self._transform_tools = {"调整", "跟随", "路径", "间隔行进", "旋转"}
@@ -79,6 +83,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.setupTimeline()    # 底部时间轴
         self.setupFieldSettingsDock()   # 场地设置浮动面板
         self.setupDrawingControlDock()  # 绘制控制浮动面板
+        self.setupAppSettingsDock()     # 应用设置浮动面板
         self.setupInteractions()    # 信号与槽绑定
         self.setupMainLayout()  # 主窗口整体布局
         # self.setupToolOptionDock()      # 工具选项浮动面板
@@ -107,15 +112,16 @@ class MainWindow(MainWindowNotice, QMainWindow):
         export_pdf = fileMenu.addAction("保存并导出为PDF")
         export_pdf.triggered.connect(self._export_pdf)
         fileMenu.addSeparator()
-        fileMenu.addAction("设置")  # 设置字号、点位大小、颜色、拖动框等全局设置
+        self.actionAppSettings = fileMenu.addAction("设置")  # 设置字号、点位大小、颜色、拖动框等全局设置
+        self.actionAppSettings.setCheckable(True)
 
         # 撤销和重做直接作为主菜单栏按钮，添加图标
-        undo_icon = QIcon.fromTheme("edit-undo")
-        redo_icon = QIcon.fromTheme("edit-redo")
-        undo = self.menuBar().addAction(undo_icon, "撤销")
-        undo.setShortcut("Ctrl+Z")
-        redo = self.menuBar().addAction(redo_icon, "重做")
-        redo.setShortcut("Ctrl+Y")
+        # undo_icon = QIcon.fromTheme("edit-undo")
+        # redo_icon = QIcon.fromTheme("edit-redo")
+        # undo = self.menuBar().addAction(undo_icon, "撤销")
+        # undo.setShortcut("Ctrl+Z")
+        # redo = self.menuBar().addAction(redo_icon, "重做")
+        # redo.setShortcut("Ctrl+Y")
 
         # 场地设置
         groundMenu = self.menuBar().addMenu("场地")
@@ -891,6 +897,17 @@ class MainWindow(MainWindowNotice, QMainWindow):
             if btn is not None:
                 btn.setEnabled(beat_at_node and has_selection and not (is_p0 and name in self._p0_forbidden_transform_tools))
 
+    def updateLabelToolAvailability(self, beat: int, selected_count: int):
+        """根据选中点位数量，控制标签工具可用性。"""
+        has_selection = int(selected_count) > 0
+        for name in self._label_tools:
+            btn = self.toolButtons.get(name)
+            if btn is not None:
+                btn.setEnabled(has_selection)
+        # 如果当前处于标签工具但没有选中点位，回退到框选
+        if self.activeToolName in self._label_tools and not has_selection:
+            self._set_active_tool("框选")
+
     def updateGroupToolAvailability(self, beat: int, selected_count: int):
         """根据当前节点和选中点位数量，控制分组工具可用性并在必要时回退工具。"""
         can_group = int(selected_count) >= 2
@@ -911,6 +928,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.updateDrawToolAvailability(beat, has_selection)
         self.updateConvertToolAvailability(beat, has_selection)
         self.updateGroupToolAvailability(beat, selected_count)
+        self.updateLabelToolAvailability(beat, selected_count)
 
         # 自动切换工具：如果当前工具不可用，且没有选中点位，则切换到框选；如果在P0且当前工具在P0禁止列表中，也切换到框选。
         if not (is_p0 or has_selection) and (self.activeToolName in self._drawing_tools | self._transform_tools):
@@ -1035,6 +1053,35 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.drawingControlDock.group_split_button.clicked.connect(self.scene.clear_temp_groups)
         self.drawingControlDock.group_set_next_button.clicked.connect(self.scene.set_next_temp_group)
 
+    def setupAppSettingsDock(self):
+        """创建应用全局设置面板。"""
+        self.appSettingsDock = AppSettingsDock(self)
+        self.appSettingsDock.bind(self.scene, self)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.appSettingsDock)
+        self.appSettingsDock.hide()
+        # 菜单 "设置" 联动
+        self.actionAppSettings.toggled.connect(self.appSettingsDock.setVisible)
+        self.appSettingsDock.visibilityChanged.connect(self.actionAppSettings.setChecked)
+        # 应用设置到各归属对象
+        self.appSettingsDock._apply_all_to_targets()
+
+    def _apply_button_fonts(self):
+        """将 _font_size 应用到主窗口各按钮，并调用 adjustSize() 自适应大小。"""
+        size = self._font_size
+        font = self.font()
+        font.setPointSize(size)
+        # 遍历工具栏中的按钮
+        if hasattr(self, "toolButtons"):
+            for btn in self.toolButtons.values():
+                btn.setFont(font)
+                btn.adjustSize()
+        # 播放/暂停按钮使用较大的字体
+        if hasattr(self, "btnPlayPause"):
+            play_font = self.btnPlayPause.font()
+            play_font.setPointSize(max(size, size + 2))
+            self.btnPlayPause.setFont(play_font)
+            self.btnPlayPause.adjustSize()
+
     def _on_adjustment_mode_toggled(self, mode_name: str, checked: bool):
         if not checked or self.activeToolName != "调整":
             return
@@ -1058,7 +1105,9 @@ class MainWindow(MainWindowNotice, QMainWindow):
             if self.scene.confirm_current_drawing() is False:
                 self._sync_drawing_rematch_controls()
                 # return
+        self.scene._selected_point_ids.clear()
         self.onToolButtonClicked("框选")  # 草稿完成后自动切回选择工具
+        self.updateContextToolAvailability(self.timelineMainWidget.current_beat, 0)
 
     def _on_control_cancelled(self):
         if self.activeToolName == "调整":
@@ -1273,7 +1322,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.drawingControlDock.setGroupSettingVisible(False)
 
     # ──────────────── 播放演示 ────────────────
-
     def _start_playback(self):
         """开始播放演示：从当前拍位启动定时器，按 BPM 推进。"""
         total_beats = sum(self.timelineMainWidget.graph_list[1:])

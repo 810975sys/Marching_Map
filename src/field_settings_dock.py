@@ -48,6 +48,9 @@ class FieldSettingsDock(QDockWidget):
         self._field = None   # 当前绑定的 `FieldInfo` 对象，直接从场景获取；仅在 `refresh_from_settings` 中更新值。
         self._updating = False  # 标志位：正在刷新控件时为 True，避免回写干扰；用户交互时为 False，允许回写生效。
 
+        # 字体大小（由 AppSettingsDock 统一管理）
+        self._font_size = 9
+
         self.content = QWidget(self)    # 面板容器，所有控件都放在这里；外层是一个 `QScrollArea`，以支持小屏幕时滚动查看。
         self.rootLayout = QVBoxLayout(self.content) # 布局容器，垂直排列所有分区，底部有弹性空间。
         self.rootLayout.setContentsMargins(8, 8, 8, 8)
@@ -60,6 +63,16 @@ class FieldSettingsDock(QDockWidget):
         scroll.setFrameShape(QFrame.Shape.NoFrame)  # 去掉滚动区域的边框，使界面更简洁。
         scroll.setWidget(self.content)  # 设置滚动区域的内容容器为 `content`，所有控件都放在 `content` 中。
         self.setWidget(scroll)
+
+    def apply_font_size(self, size: int):
+        """应用字号到本面板所有控件。"""
+        from PyQt6.QtGui import QFont
+        font = self.font()
+        font.setPointSize(size)
+        self.setFont(font)
+        w = self.widget()
+        if w:
+            w.setFont(font)
 
     def _build_ui(self):
         """组装面板分区：网格、坐标显示、0线位置。"""

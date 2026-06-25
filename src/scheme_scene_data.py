@@ -80,34 +80,6 @@ class SchemeSceneData:
                 return point
         return None
 
-    # def _normalize_node_path_entry(self, ref_entry: dict) -> dict | None:
-    #     """把 node_paths 记录整理成内部使用的列表结构。"""
-    #     if not isinstance(ref_entry, dict):
-    #         return None
-    #     path_type = str(ref_entry['type'])
-
-    #     anchor_id = int(ref_entry['anchor_id'])
-
-    #     path_raw = ref_entry['path']
-    #     path = []
-    #     if isinstance(path_raw, list):
-    #         for item in path_raw:
-    #             if isinstance(item, (list, tuple)) and len(item) >= 2:
-    #                 path.append((float(item[0]), float(item[1])))
-
-    #     members = [int(pid) for pid in ref_entry['members']]
-    #     # members = []
-    #     # for pid in members_raw:
-    #     #     members.append(int(pid))
-            
-    #     leaders = [int(pid) for pid in ref_entry['leaders']] if path_type == 'follow' else None
-    #     interval = (int(interval[0]), int(interval[1])) if path_type == 'interval' else None
-
-    #     # seen = set()
-    #     # members = [pid for pid in members if not (pid in seen or seen.add(pid))]
-
-    #     return {"type": path_type, "anchor_id": anchor_id, "path": path, "members": members, "leaders": leaders, "interval": interval}
-
     def _upsert_node_path_entry(self, node_index: int, path_type: str, anchor_id: int = 0, path: list[tuple[float, float]] | None = None, 
                                 members: list[int] | None = None, leaders: list[int] = None, interval: tuple[int, int] = None,
                                 rotate_info: tuple[tuple[float, float], float] = None):

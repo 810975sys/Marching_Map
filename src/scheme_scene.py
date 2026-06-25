@@ -823,7 +823,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         dot_radius = 5.0 * self.export_ratio
         dot = QGraphicsEllipseItem(pos.x() - dot_radius, pos.y() - dot_radius, dot_radius * 2.0, dot_radius * 2.0)
         dot.setPen(QPen(Qt.PenStyle.NoPen))
-        dot.setBrush(QBrush(QColor("#2aa6ff")))
+        dot.setBrush(QBrush(PerformerPointItem.dot_color))
         dot.setZValue(960)
         scene.addItem(dot)
 
@@ -843,7 +843,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def _add_pdf_export_textbox_items(self, scene: QGraphicsScene, textbox: dict, export_scale: float, export_offset: QPointF):
         """向临时导出场景添加一个文本框。"""
-        from scene_items import TextBoxItem
+        from src.scene_items import TextBoxItem
         # font_scale = self._pdf_export_font_scale_factor(export_scale)
         font_scale = export_scale
         p1 = QPointF(float(textbox.get("x1", 0.0)) * export_scale + float(export_offset.x()), float(textbox.get("y1", 0.0)) * export_scale + float(export_offset.y()))
@@ -882,8 +882,13 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             clicked_callback=None,
             is_current=False,
             # arrow_size=0.375 * export_scale,
-            arrow_size=24,
+            # arrow_size=24,
+            arrow_size=ArrowItem.arrow_size * self.export_ratio,
         )
+        # 导出时线条粗细同步放大
+        export_pen = QPen(ArrowItem.normal_color, ArrowItem.normal_width * self.export_ratio / 2.0)
+        export_pen.setCosmetic(True)
+        item.setPen(export_pen)
         item.set_mouse_interactive(False)
         item.setZValue(800)
         scene.addItem(item)
@@ -892,16 +897,16 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         """为单个方案图节点构建临时导出场景。"""
         export_scene = QGraphicsScene()
         # node_index = node_index
-        # if node_index > 0:
-        for point in self.node_points[node_index]:
-            pos = QPointF(float(point.get("x", 0.0)) * export_scale + float(export_offset.x()), float(point.get("y", 0.0)) * export_scale + float(export_offset.y()))
-            # pre_dot_radius = 2.0 * self._pdf_export_font_scale_factor(export_scale)
-            pre_dot_radius = self.pre_point_radius * self.export_ratio
-            pre_dot = QGraphicsEllipseItem(pos.x() - pre_dot_radius, pos.y() - pre_dot_radius, pre_dot_radius * 2.0, pre_dot_radius * 2.0)
-            pre_dot.setPen(QPen(Qt.PenStyle.NoPen))
-            pre_dot.setBrush(QBrush(self.pre_point_color))
-            pre_dot.setZValue(950)
-            export_scene.addItem(pre_dot)
+        if node_index >= 1:
+            for point in self.node_points[node_index - 1]:
+                pos = QPointF(float(point.get("x", 0.0)) * export_scale + float(export_offset.x()), float(point.get("y", 0.0)) * export_scale + float(export_offset.y()))
+                # pre_dot_radius = 2.0 * self._pdf_export_font_scale_factor(export_scale)
+                pre_dot_radius = self.pre_point_radius * self.export_ratio
+                pre_dot = QGraphicsEllipseItem(pos.x() - pre_dot_radius, pos.y() - pre_dot_radius, pre_dot_radius * 2.0, pre_dot_radius * 2.0)
+                pre_dot.setPen(QPen(Qt.PenStyle.NoPen))
+                pre_dot.setBrush(QBrush(self.pre_point_color))
+                pre_dot.setZValue(950)
+                export_scene.addItem(pre_dot)
         for point in self.node_points[node_index]:
             self._add_pdf_export_point_items(export_scene, point, export_scale, export_offset)
         for textbox in self.node_textboxes.get(node_index, []):
@@ -1002,16 +1007,17 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
             # 使用 _build_pdf_export_scene 的逻辑，但在使用点/文本框坐标时将 x,y 取负。
             export_scene = QGraphicsScene()
-            for point in self.node_points[node_index]:
-                px = -float(point.get("x", 0.0))
-                py = -float(point.get("y", 0.0))
-                pos = QPointF(px * export_scale + float(export_offset.x()), py * export_scale + float(export_offset.y()))
-                pre_dot_radius = self.pre_point_radius * self.export_ratio
-                pre_dot = QGraphicsEllipseItem(pos.x() - pre_dot_radius, pos.y() - pre_dot_radius, pre_dot_radius * 2.0, pre_dot_radius * 2.0)
-                pre_dot.setPen(QPen(Qt.PenStyle.NoPen))
-                pre_dot.setBrush(QBrush(self.pre_point_color))
-                pre_dot.setZValue(950)
-                export_scene.addItem(pre_dot)
+            if node_index >= 1:
+                for point in self.node_points[node_index - 1]:
+                    px = -float(point.get("x", 0.0))
+                    py = -float(point.get("y", 0.0))
+                    pos = QPointF(px * export_scale + float(export_offset.x()), py * export_scale + float(export_offset.y()))
+                    pre_dot_radius = self.pre_point_radius * self.export_ratio
+                    pre_dot = QGraphicsEllipseItem(pos.x() - pre_dot_radius, pos.y() - pre_dot_radius, pre_dot_radius * 2.0, pre_dot_radius * 2.0)
+                    pre_dot.setPen(QPen(Qt.PenStyle.NoPen))
+                    pre_dot.setBrush(QBrush(self.pre_point_color))
+                    pre_dot.setZValue(950)
+                    export_scene.addItem(pre_dot)
 
             # 为复用原有的添加函数，传入坐标取负的临时字典
             for point in self.node_points[node_index]:
@@ -2000,6 +2006,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             h = self._interval_helper_items.pop(pid)
             self.removeItem(h)
 
+        helper_radius = self.helper_radius
+
         # step 2: 为新增选中点创建 helper，已有则仅更新位置
         for pid in selected_ids:
             item = self._point_items_by_id.get(int(pid))
@@ -2010,9 +2018,10 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             existing = self._interval_helper_items.get(int(pid))
             if existing is not None:
                 existing.setPos(pos)
+                # 同步更新矩形尺寸以反映 helper_radius 的变化
+                existing.setRect(-helper_radius, -helper_radius, helper_radius * 2, helper_radius * 2)
                 continue
 
-            helper_radius = self.helper_radius
             helper = QGraphicsEllipseItem(
                 -helper_radius,
                 -helper_radius,
@@ -2351,6 +2360,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             pos = self._field_to_scene(float(anchor_point.get("x", 0.0)), float(anchor_point.get("y", 0.0)))
         self._on_interval_helper_moved(anchor_id, pos)
 
+    # ———————————————————————————————————————— 分组 ———————————————————————————————————————
     def _update_temp_group_visuals(self):
         """绘制临时分组的连线与首尾 helper（仅首尾响应鼠标事件）。"""
         if self.active_tool != "分组":
@@ -2433,8 +2443,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             helper.setData(2, "#sym:helper")
             self.addItem(helper)
             self._temp_group_helper_items.append(helper)
-            
-        self._render_points_for_active_node()
 
     def start_temp_group_edit_from_selection(self):
         """基于当前选中点初始化临时分组：仅包含选中点本身，不扩张到原组其余点。"""
@@ -2844,6 +2852,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 return group
         return []
 
+    # ———————————————————————————————————————— 拖拽点位 ———————————————————————————————————————
     def _can_drag_performer_point(self) -> bool:
         """
         查看功能允许在任意拍位浏览
@@ -3335,7 +3344,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 )
                 handle.setBrush(QBrush(QColor(210, 84, 0, 40)))
                 handle.setPen(QPen(QColor(210, 84, 0), 1.2))
-                handle.set_size(12.0)
+                handle.set_size(ReferenceHandleItem.default_size)
                 handle.setZValue(970)
                 self.addItem(handle)
                 self._adjustment_handle_items.append(handle)
@@ -3350,8 +3359,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             )
             center_handle.setBrush(QBrush(QColor(39, 174, 96, 70)))
             center_handle.setPen(QPen(QColor(39, 174, 96), 1.2))
-            center_handle.set_size(32.0)
-            center_handle.set_inner_ratio(0.45)
+            center_handle.set_size(MovementControlHandleItem.default_size)
+            center_handle.set_inner_ratio(MovementControlHandleItem.default_inner_ratio)
             center_handle.setZValue(975)
             self.addItem(center_handle)
             self._adjustment_handle_items.append(center_handle)
@@ -5364,7 +5373,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         if pre_view:
             # 绘制上一张图的点位
             item = QGraphicsEllipseItem(pos.x() - self.pre_point_radius, pos.y() - self.pre_point_radius, self.pre_point_radius * 2, self.pre_point_radius * 2)
-            # item.setPen(QPen(self.pre_point_color, 1))
+            item.setPen(QPen(Qt.PenStyle.NoPen))
             item.setBrush(QBrush(self.pre_point_color))
             # item.setPen(QPen(QColor(60, 60, 60, 110), 1))
             # item.setBrush(QBrush(QColor(80, 80, 80, 70)))

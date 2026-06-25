@@ -25,15 +25,20 @@ QGraphicsLineItem.paint = _qgraphicslineitem_paint_no_aa
 class ReferenceHandleItem(QGraphicsRectItem):
     """草稿参考点拖拽手柄，用于调整绘制控制点。"""
 
+    # 类级别共享的视觉属性，由 AppSettingsDock 统一管理
+    pen_color: QColor = QColor("#d35400")
+    default_size: float = 10.0
+
     def __init__(self, index: int, center_scene_pos: QPointF, moved_callback, drag_started_callback=None, drag_finished_callback=None):
-        self._size = 10.0
+        self._size = ReferenceHandleItem.default_size
         half = self._size / 2.0   # 以中心点为基准创建矩形
         super().__init__(-half, -half, self._size, self._size)
         self._index = index # 点位编号
         self._moved_callback = moved_callback   # 移动回调，返回调整后的场景坐标以实现吸附等功能。
         self._drag_started_callback = drag_started_callback
         self._drag_finished_callback = drag_finished_callback
-        self.setPen(QPen(QColor("#d35400"), 1.2))    # 橙色边框
+        # self._apply_pen()
+        self.setPen(QPen(ReferenceHandleItem.pen_color, 1.2))
         self.setBrush(QBrush(Qt.BrushStyle.NoBrush))   # 透明填充
         self.setAcceptHoverEvents(True)
         self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton) # 仅响应左键拖动
@@ -50,6 +55,15 @@ class ReferenceHandleItem(QGraphicsRectItem):
     @size.setter
     def size(self, value: float) -> None:
         self.set_size(value)
+
+    # def _apply_pen(self):
+    #     """应用类级别 pen_color 到当前实例。"""
+    #     self.setPen(QPen(ReferenceHandleItem.pen_color, 1.2))
+
+    @classmethod
+    def apply_pen_color(cls, color: QColor):
+        """统一更新所有 ReferenceHandleItem 的边框颜色。"""
+        cls.pen_color = QColor(color)
 
     def set_size(self, size: float) -> None:
         size = float(size)
@@ -103,9 +117,14 @@ class MovementControlHandleItem(QGraphicsEllipseItem):
     - 拖动内圈：触发 `inner_moved_callback(index, QPointF)`，用于移动选中点位（回调负责按参考点计算新位置并返回调整后的坐标）。
     """
 
+    # 类级别共享的视觉属性，由 AppSettingsDock 统一管理
+    pen_color: QColor = QColor("#16a085")
+    default_size: float = 32.0
+    default_inner_ratio: float = 0.45
+
     def __init__(self, index: int, center_scene_pos: QPointF, outer_moved_callback=None, inner_moved_callback=None, drag_started_callback=None, drag_finished_callback=None):
-        self._size = 32.0
-        self._inner_ratio = 0.45
+        self._size = MovementControlHandleItem.default_size
+        self._inner_ratio = MovementControlHandleItem.default_inner_ratio
         half = self._size / 2.0
         super().__init__(-half, -half, self._size, self._size)
         self._index = index
@@ -115,7 +134,8 @@ class MovementControlHandleItem(QGraphicsEllipseItem):
         self._drag_finished_callback = drag_finished_callback
         self._inner_radius = (self._size / 2.0) * self._inner_ratio
         self._pressed_part = None  # 'inner' or 'outer' during drag
-        self.setPen(QPen(QColor("#16a085"), 1.4))
+        # self._apply_pen()
+        self.setPen(QPen(MovementControlHandleItem.pen_color, 1.4))
         self.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         self.setAcceptHoverEvents(True)
         self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
@@ -150,6 +170,15 @@ class MovementControlHandleItem(QGraphicsEllipseItem):
         self.setRect(-half, -half, size, size)
         self._inner_radius = (self._size / 2.0) * self._inner_ratio
         self.update()
+
+    # def _apply_pen(self):
+    #     """应用类级别 pen_color 到当前实例。"""
+    #     self.setPen(QPen(MovementControlHandleItem.pen_color, 1.4))
+
+    @classmethod
+    def apply_pen_color(cls, color: QColor):
+        """统一更新所有 MovementControlHandleItem 的边框颜色。"""
+        cls.pen_color = QColor(color)
 
     def set_inner_ratio(self, inner_ratio: float) -> None:
         inner_ratio = float(inner_ratio)
@@ -425,7 +454,14 @@ class TextBoxItem(QGraphicsObject):
 class PerformerPointItem(QGraphicsEllipseItem):
     """可拖拽的表演者点位图元（仅在框选工具下生效）。"""
 
-    def __init__(self, point_id: int = 0, center_scene_pos: QPointF = QPointF(), moved_callback = None, released_callback = None, can_drag_callback = None, selected: bool = False, size: float = 10.0):
+    # 类级别共享的颜色对象，由 AppSettingsDock 统一管理
+    dot_color: QColor = QColor("#2aa6ff")
+    selected_pen_color: QColor = QColor("#f39c12")
+    default_size: float = 10.0
+
+    def __init__(self, point_id: int = 0, center_scene_pos: QPointF = QPointF(), moved_callback = None, released_callback = None, can_drag_callback = None, selected: bool = False, size: float | None = None):
+        if size is None:
+            size = PerformerPointItem.default_size
         self.radius = size / 2.0
         super().__init__(-self.radius, -self.radius, size, size)
         self.point_id = point_id   # 点位ID，用于定位
@@ -445,16 +481,14 @@ class PerformerPointItem(QGraphicsEllipseItem):
         self._suspend_position_change = False
         self.set_selected_visual(selected)
 
-        self.dot_color = QColor("#2aa6ff")
-
     def set_selected_visual(self, selected: bool):
         """设置选中时的视觉效果"""
         if selected:
-            self.setPen(QPen(QColor("#f39c12"), 1.8))
-            self.setBrush(QBrush(QColor("#2aa6ff")))
+            self.setPen(QPen(PerformerPointItem.selected_pen_color, 1.8))
+            self.setBrush(QBrush(PerformerPointItem.dot_color))
         else:
             self.setPen(QPen(Qt.PenStyle.NoPen))
-            self.setBrush(QBrush(QColor("#2aa6ff")))
+            self.setBrush(QBrush(PerformerPointItem.dot_color))
 
     def _can_drag(self) -> bool:
         return bool(callable(self._can_drag_callback) and self._can_drag_callback())
@@ -506,16 +540,25 @@ class PerformerPointItem(QGraphicsEllipseItem):
 class ArrowItem(QGraphicsPathItem):
     """箭头图元：在箭头模式下可点击切换当前编辑箭头，加粗显示当前编辑箭头。"""
 
+    # 类级别共享的视觉属性，由 AppSettingsDock 统一管理
+    current_color: QColor = QColor("#d35400")
+    current_width: float = 2.5
+    normal_color: QColor = QColor("#000000")
+    normal_width: float = 1.5
+    arrow_size: float = 8.0
+
     def __init__(self, arrow_index: int, arrow_type: str, points: list[tuple[float, float]],
                  style: dict, scene_to_field=None, field_to_scene=None,
-                 clicked_callback=None, is_current: bool = False, arrow_size: float = 8.0):
+                 clicked_callback=None, is_current: bool = False, arrow_size: float | None = None):
         super().__init__()
         self.arrow_index = int(arrow_index)
         self.arrow_type = arrow_type  # 'line', 'curve', 'arc', 'circle'
         self._points = [(float(x), float(y)) for x, y in points]
         self._style = dict(style)  # {'forward': T/F, 'backward': T/F, 'mid': T/F}
         self._is_current = bool(is_current)
-        self._arrow_size = max(2.0, float(arrow_size))
+        if arrow_size is None:
+            arrow_size = ArrowItem.arrow_size
+        self._arrow_size = float(arrow_size)
         self._scene_to_field = scene_to_field
         self._field_to_scene = field_to_scene
         self._clicked_callback = clicked_callback
@@ -655,8 +698,8 @@ class ArrowItem(QGraphicsPathItem):
         self._update_pen()
 
     def _update_pen(self):
-        pen = QPen(QColor("#d35400") if self._is_current else QColor("#000000"),
-                   2.5 if self._is_current else 1.5)
+        pen = QPen(ArrowItem.current_color if self._is_current else ArrowItem.normal_color,
+                   ArrowItem.current_width if self._is_current else ArrowItem.normal_width)
         pen.setCosmetic(True)
         self.setPen(pen)
 
