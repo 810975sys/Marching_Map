@@ -708,6 +708,8 @@ class AppSettingsDock(QDockWidget):
             QColor(self._get("arrow_normal_color", "#000000")),
         )
         self.arrowNormalWidthSpin.setValue(float(self._get("arrow_normal_width", 1.5)))
+        
+        self._updating = False
 
     def _apply_all_to_targets(self):
         """将当前设置同步到所有归属对象（程序启动时调用）。"""

@@ -1,0 +1,41 @@
+windows
+    一、在项目根目录（E:\Marching_Map\）打开终端，执行以下命令：
+        ```
+        pyinstaller --name MarchingMap --windowed --onedir run.py
+        ```
+        删除 build/ 和 dist/ 文件夹（避免干扰后续打包），然后用文本编辑器打开 MarchingMap.spec，修改 Analysis 部分的 datas 参数。
+
+        修改后的 .spec 示例（关键部分）：
+        python
+        # -*- mode: python ; coding: utf-8 -*-
+
+        a = Analysis(
+            ['run.py'],
+            ……
+            datas=[
+                ('fields', 'fields'),   # 将 fields 目录整个打包到程序根目录
+                ('saves', 'saves'),     # 将 saves 目录整个打包
+                # 如果你的程序还用了其他资源（如图标、样式表），也在这里添加
+            ],
+            ……
+        )
+        pyz = PYZ(a.pure)
+
+        exe = EXE(
+            ……
+            console=False,          # 不显示控制台（GUI程序）
+            ……
+            icon=None,              # 可指定图标，如 'icon.ico'
+        )
+        coll = COLLECT(……)
+        保存文件。
+
+    二、重新打包
+        修改完所有代码后，在项目根目录执行：
+        ```
+        pyinstaller MarchingMap.spec
+        ```
+        打包完成后，程序生成在 dist/MarchingMap/ 文件夹中。
+
+Mac
+    一、
