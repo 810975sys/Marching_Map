@@ -19,8 +19,8 @@
     
     (8) ArrowItem粗细、颜色、箭头大小
     
-2. 在用户修改控件时回写。
-3. 在修改操作触发时刷新 UI，保持同步。
+2. 在用户修改控件时刷新 UI，保持同步。(或许需要将origin备份，便于恢复)
+3. 用户确认后才进行回写，否则舍弃
 4. 恢复默认功能
 """
 
@@ -130,6 +130,7 @@ class AppSettingsDock(QDockWidget):
         self._load_settings()
         self._build_ui()
         self._apply_to_controls()
+        self._capture_original()
 
     # ────────────── 设置加载 / 保存 ──────────────
 
@@ -159,15 +160,35 @@ class AppSettingsDock(QDockWidget):
         return self._settings.get(key, self._defaults.get(key, default))
 
     def _set(self, key: str, value):
+        """更新内存中的设置（不写回）。"""
         self._settings[key] = value
+
+    def _save(self):
+        """将当前设置持久化到 JSON 文件。"""
         _save_json(_SETTINGS_PATH, self._settings)
+        # 重置原始设置快照
+        self._original_settings = dict(self._settings)
+
+    def _capture_original(self):
+        """捕获当前设置快照，用于取消修改时恢复。"""
+        self._original_settings = dict(self._settings)
+
+    def apply_settings(self):
+        """确认修改：将当前设置写回 JSON 并更新快照。"""
+        self._save()
+        self._capture_original()
+
+    def restore_original(self):
+        """取消修改：恢复到上次确认时的设置。"""
+        self._settings = dict(self._original_settings)
+        self._apply_to_controls()
+        self._apply_all_to_targets()
 
     def restore_defaults(self):
-        """恢复所有设置为默认值。"""
+        """恢复所有设置为默认值（预览，需确认后才会保存）。"""
         self._settings = dict(self._defaults)
         self._apply_to_controls()
         self._apply_all_to_targets()
-        _save_json(_SETTINGS_PATH, self._settings)
 
     # ────────────── 绑定外部对象 ──────────────
 
@@ -179,7 +200,14 @@ class AppSettingsDock(QDockWidget):
     # ────────────── UI 构建 ──────────────
 
     def _build_ui(self):
-        content = QWidget(self)
+        # ── 外层容器：滚动区 + 底部按钮栏 ──
+        outer = QWidget(self)
+        outer_layout = QVBoxLayout(outer)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        # ── 滚动区域 ──
+        content = QWidget()
         root = QVBoxLayout(content)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(10)
@@ -191,24 +219,37 @@ class AppSettingsDock(QDockWidget):
         self._build_handle_group(root)
         # self._build_helper_group(root)
         self._build_arrow_group(root)
+        root.addStretch(1)
 
-        # 恢复默认按钮
-        btn_row = QWidget(content)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(content)
+        outer_layout.addWidget(scroll, 1)
+
+        # ── 分割线 ──
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        outer_layout.addWidget(sep)
+
+        # ── 底部按钮栏（固定在滚动区外）──
+        btn_row = QWidget()
         btn_layout = QHBoxLayout(btn_row)
-        btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.setContentsMargins(8, 4, 8, 4)
+        comfirm_btn = QPushButton("确认修改", btn_row)
+        comfirm_btn.clicked.connect(self.apply_settings)
+        btn_layout.addWidget(comfirm_btn)
+        cancel_btn = QPushButton("取消修改", btn_row)
+        cancel_btn.clicked.connect(self.restore_original)
+        btn_layout.addWidget(cancel_btn)
         restore_btn = QPushButton("恢复默认值", btn_row)
         restore_btn.clicked.connect(self.restore_defaults)
         btn_layout.addStretch(1)
         btn_layout.addWidget(restore_btn)
-        root.addWidget(btn_row)
+        outer_layout.addWidget(btn_row)
 
-        root.addStretch(1)
-
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setWidget(content)
-        self.setWidget(scroll)
+        self.setWidget(outer)
 
     def _make_group(self, title: str, parent: QWidget) -> QFormLayout:
         group = QGroupBox(title, parent)
