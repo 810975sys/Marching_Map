@@ -243,7 +243,7 @@ class AppSettingsDock(QDockWidget):
         cancel_btn = QPushButton("取消修改", btn_row)
         cancel_btn.clicked.connect(self.restore_original)
         btn_layout.addWidget(cancel_btn)
-        restore_btn = QPushButton("恢复默认值", btn_row)
+        restore_btn = QPushButton("恢复默认值（需要确认）", btn_row)
         restore_btn.clicked.connect(self.restore_defaults)
         btn_layout.addStretch(1)
         btn_layout.addWidget(restore_btn)
