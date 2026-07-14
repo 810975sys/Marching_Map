@@ -38,4 +38,4 @@ windows
         打包完成后，程序生成在 dist/MarchingMap/ 文件夹中。
 
 Mac
-    一、
+    问 ai 罢，需要构建action，然后把代码粘过去，最后运行就可以了
