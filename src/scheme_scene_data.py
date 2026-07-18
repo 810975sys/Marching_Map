@@ -332,22 +332,26 @@ class SchemeSceneData:
         # 新节点点位初始化
         left_idx = inserted_index - 1
         right_idx = inserted_index + 1
-        self.node_paths[right_idx] = self.node_paths[inserted_index]
+        
+        # 根据 node_paths 中是否有 inserted_index 的路径定义分别处理
+        if inserted_index in self.node_paths:
+            self.node_paths[right_idx] = self.node_paths[inserted_index]
         
         if left_idx < len(self.node_points) and right_idx <= len(self.node_points):  # 如果左右节点都存在则插值
             # 插值新节点点位
             self.node_points.insert(inserted_index, self.node_points[left_idx])  # 先复制左节点，修复follow插值的点位丢失问题
             self.node_points[inserted_index] = self._interpolate_points_at_beat(left_idx, right_idx, self._node_start_beat(inserted_index))
             
-            # 更新路径设置
-            left_paths = []
-            split_right_paths = []
-            for path_info in self.node_paths[right_idx]:
-                left_entry, right_entry = self._split_node_path_entry_at_midpoint(path_info)
-                left_paths.append(left_entry)
-                split_right_paths.append(right_entry)
-            self.node_paths[inserted_index] = left_paths
-            self.node_paths[right_idx] = split_right_paths
+            # 更新路径设置（仅当 inserted_index 原有路径定义时才拆分）
+            if inserted_index in self.node_paths:
+                left_paths = []
+                split_right_paths = []
+                for path_info in self.node_paths[right_idx]:
+                    left_entry, right_entry = self._split_node_path_entry_at_midpoint(path_info)
+                    left_paths.append(left_entry)
+                    split_right_paths.append(right_entry)
+                self.node_paths[inserted_index] = left_paths
+                self.node_paths[right_idx] = split_right_paths
         else:   # 复制左节点（如果存在）
             self.node_points.insert(inserted_index, self._copy_points(left_idx))
 

@@ -16,8 +16,6 @@ __pycache__/
 fields/
 saves/
 test.py
-文件结构.txt
-架构.txt
 
 # 忽略打包文件
 dist/
