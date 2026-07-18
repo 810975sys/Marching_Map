@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QLabel, QLineEdit, QSlider, QButtonGroup, QDialog, QSpinBox,
 )
 from PyQt6.QtCore import Qt, QTimer, QElapsedTimer
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import QIcon, QShortcut, QKeySequence
 from pathlib import Path
 import time
 
@@ -581,7 +581,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         bpmLayout.addWidget(self.bpmSpinBox)
         animLayout.addLayout(bpmLayout)
 
-        # 预留播放、暂停按钮
+        # 播放、暂停按钮
         self.btnPlayPause = QPushButton("▶", self.animControlWidget)
         self.btnPlayPause.setFixedSize(48, 32)  # 加宽主播放按钮
 
@@ -598,6 +598,10 @@ class MainWindow(MainWindowNotice, QMainWindow):
             else:
                 self._start_playback()
         self.btnPlayPause.clicked.connect(toggle_play_pause)    # 绑定按钮点击事件
+        # 全局空格键绑定播放/暂停（ApplicationShortcut 在任何焦点下均响应）
+        self._playback_shortcut = QShortcut(QKeySequence("Space"), self)
+        self._playback_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._playback_shortcut.activated.connect(toggle_play_pause)
         self.animControlWidget.setLayout(animLayout)    # 设置布局
         self.animControlWidget.setFixedWidth(120)       # 设置固定宽度，确保播放控制区大小稳定
         self.animControlWidget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)    # 水平固定，垂直扩展

@@ -23,6 +23,7 @@ class TipWindow(QDialog):
                               "- “选择”功能：按 Shift 反转组内选择；按 Ctrl 可进行单点选择\n"+
                               "  “框选”功能：按 Ctrl 可保持选择点位\n\n"+
                               "- 场地坐标：旋转角度为负则不显示\n\n" + 
+                              "- 导出 PDF 会直接在当前方案的保存路径下生成\n\n" + 
                               "❗撤回功能暂未实现，敬请期待❤"), self)
         self.tip_content.setWordWrap(True)
         self.tip_content.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
