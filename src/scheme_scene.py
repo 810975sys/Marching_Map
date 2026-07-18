@@ -5325,9 +5325,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         """将当前选中的点位恢复到前一节点对应点位的位置。
 
         - 仅在 active_node > 0 时可用。
-        - 对每个被选中的点，如果前一节点存在相同 id 的点位，则将 x,y 恢复到前一节点的值。
-        - 如果实际发生了任何变更，则标记当前节点为手动编辑并触发后续自动计算；
-          否则将 node_manual_edited[current_node] 置为 False。
+        - 对每个被选中的点，将 x,y 恢复到前一节点对应的值，并同步后续所有未修改节点的对应点位。
+        - 若所有点位均与前一节点一致，则将 node_manual_edited[current_node] 置为 False。（即为未修改过）
         """
         if not getattr(self, "_selected_point_ids", None):
             return
@@ -5340,22 +5339,30 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             return
 
         current_points = self.node_points[self.active_node]
-        changed = False
         for p in current_points:
             pid = int(p.get("id", -1))
             if pid in self._selected_point_ids and pid in prev_points:
+                p["x"] = prev_points[pid][0]
+                p["y"] = prev_points[pid][1]
+
+        self._mark_node_manual(self.active_node)
+        self._recalculate_following_auto_nodes(self.active_node, include_manual_nodes=False)
+        self.dataChanged.emit()
+
+        # 若所有点位均与前一节点一致，则标记为未修改
+        all_match = True
+        for p in self.node_points[self.active_node]:
+            pid = int(p.get("id", -1))
+            if pid in prev_points:
                 px, py = prev_points[pid]
                 if abs(float(p.get("x", 0.0)) - px) > 1e-9 or abs(float(p.get("y", 0.0)) - py) > 1e-9:
-                    p["x"] = px
-                    p["y"] = py
-                    changed = True
+                    all_match = False
+                    break
+            else:
+                all_match = False
+                break
 
-        if changed:
-            self._mark_node_manual(self.active_node)
-            self._recalculate_following_auto_nodes(self.active_node, include_manual_nodes=True)
-            self.dataChanged.emit()
-        else:
-            # 若没有实际变更，则认为当前节点未被手动编辑过
+        if all_match:
             self.node_manual_edited[self.active_node] = False
 
         self._render_points_for_active_node()

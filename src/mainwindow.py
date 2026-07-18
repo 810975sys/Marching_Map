@@ -1247,7 +1247,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         btn_layout.addWidget(del_point)
         layout.addLayout(btn_layout)
         dlg.setLayout(layout)
-        # p0 仅允许删除表演者点位，禁用恢复按钮
+        # p0 仅允许删除表演者点位，禁用转换点删除按钮
         if getattr(self.scene, "active_node", 0) == 0:
             del_switch.setEnabled(False)
 
