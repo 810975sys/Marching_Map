@@ -144,7 +144,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         # 临时分组编辑状态（由 DrawingControlDock 驱动）
         self._temp_group_to_point: list[list[int]] = [[]]  # 临时分组点位列表
         # self._temp_2_saving: list[list[int]] = []   # 修改分组涉及的原组值，写回时需要修改 node_to_group
-        self._temp_group_original_snapshot = None  # 原始 group_to_point/node_to_group 快照
+        # self._temp_group_original_snapshot = None  # 原始 group_to_point/node_to_group 快照
         self._temp_group_current_index = 0
         self._temp_group_mark_head: bool = True  # True=默认在 tail 之后插入（用户偏好标记）
         self._temp_group_line_items = []  # 临时分组连线图元
@@ -1315,10 +1315,12 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def _get_anchor(self) -> int:
         groups = self.node_to_group[self.active_node]
-        active_groups = [
-            gid for gid in groups
-            if set(self.group_to_point[gid]['point_ids']) & self._selected_point_ids
-        ]
+        cur_node_points = self.node_points[self.active_node]
+        active_groups = list({cur_node_points[id]['group_id'] for id in self._selected_point_ids})
+        # active_groups = [
+        #     gid for gid in groups
+        #     if set(self.group_to_point[gid]['point_ids']) & self._selected_point_ids
+        # ]
         min_gid = min(active_groups)
         min_group = self.group_to_point[min_gid]
         ordered_ids = self._follow_group_point_ids_for_group(min_group)
@@ -2450,7 +2452,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         if not selected:
             return
         # 保存原始快照
-        self._temp_group_original_snapshot = (list(self.group_to_point), [set(s) for s in self.node_to_group])
+        # self._temp_group_original_snapshot = (list(self.group_to_point), [set(s) for s in self.node_to_group])
         selected_in_scene_order = [int(point.get("id", -1)) for point in self.node_points[self.active_node] if int(point.get("id", -1)) in selected]
         temp_groups: list[list[int]] = []
         grouped_selected_ids: set[int] = set()
@@ -2474,7 +2476,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         """清空临时分组（由 dock 的重新分组按钮触发）。"""
         self._temp_group_to_point = [[]]
         self._temp_group_current_index = 0
-        self._temp_group_original_snapshot = None
+        # self._temp_group_original_snapshot = None
         self._temp_group_mark_head = True
         self._clear_selection_rect()
         self._clear_temp_group_items()
@@ -4104,10 +4106,12 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                     else:
                         # 参考 _get_anchor 的查找规则：从 new_member 中按组排序选择 anchor
                         groups = self.node_to_group[self.active_node]
-                        active_groups = [
-                            gid for gid in groups
-                            if set(self.group_to_point[gid]['point_ids']) & set(new_member)
-                        ]
+                        cur_node_points = self.node_points[self.active_node]
+                        active_groups = list({cur_node_points[id]['group_id'] for id in new_member})
+                        # active_groups = [
+                        #     gid for gid in groups
+                        #     if set(self.group_to_point[gid]['point_ids']) & set(new_member)
+                        # ]
                         if active_groups:
                             min_gid = min(active_groups)
                             min_group = self.group_to_point[min_gid]
