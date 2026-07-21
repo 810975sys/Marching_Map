@@ -1139,9 +1139,43 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         if tool_name == "箭头":
             self._enter_arrow_mode()
         self._render_points_for_active_node()   # 刷新点位显示
+        # 点位修改时：将选中点位预览重置到上一张图的位置（仅视觉，不修改 node_points）
+        if tool_name in {"路径", "跟随", "间隔行进"} and self._selected_point_ids and self.active_node > 0:
+            self._reset_selected_points_to_prev_visual()
         if tool_name == "调整" and self._selected_point_ids:
             self.begin_adjustment()
         self.drawingRematchStateChanged.emit()
+
+    def _reset_selected_points_to_prev_visual(self):
+        """将选中点位图元视觉移动到上一张图位置（不修改 node_points）。"""
+        prev_node = self.active_node - 1
+        for point in self.node_points[prev_node]:
+            pid = int(point.get("id", -1))
+            if pid not in self._selected_point_ids:
+                continue
+            item = self._point_items_by_id.get(pid)
+            if item is None:
+                continue
+            prev_x, prev_y = float(point["x"]), float(point["y"])
+            new_pos = self._field_to_scene(prev_x, prev_y)
+            item.setPos(new_pos)
+            # 同步标签位置
+            label = self._label_items_by_id.get(pid)
+            if label is not None:
+                angle_deg = int(self.label_pos) % 360
+                angle_rad = math.radians(angle_deg)
+                dx_val = math.cos(angle_rad) * float(self.label_offset)
+                dy_val = math.sin(angle_rad) * float(self.label_offset)
+                br = label.boundingRect()
+                label.setPos(new_pos.x() + dx_val - br.width() / 2.0, new_pos.y() + dy_val - br.height() / 2.0)
+        # 刷新组内连线
+        self._refresh_selected_group_links()
+        # 间隔行进：同步 helper 圆圈到移动后的点位位置
+        if self.active_tool == "间隔行进":
+            for _pid, h in self._interval_helper_items.items():
+                p_item = self._point_items_by_id.get(_pid)
+                if p_item is not None:
+                    h.setPos(p_item.scenePos())
 
     def set_active_node(self, node_index: int):
         """切换当前时间轴节点并刷新显示。"""
@@ -1237,7 +1271,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
     def _draw_temp_group_links(self, groups: list[list[int]]):
         """在当前场景中临时绘制点位组内连线（不修改 _selection_link_items）。"""
         self._temp_group_line_items = []
-        pen = QPen(QColor("#f39c12"), 2, Qt.PenStyle.SolidLine)
+        pen = QPen(QColor("#f39c12"), 4, Qt.PenStyle.SolidLine)
         pen.setCosmetic(True)
 
         for idx, group in enumerate(groups):
@@ -1245,10 +1279,10 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 continue
             if idx == self._temp_group_current_index:
                 pen.setColor(QColor("#00cc00"))
-                pen.setWidth(3)
+                pen.setWidth(4)
             else:
                 pen.setColor(QColor("#f39c12"))
-                pen.setWidth(2)
+                pen.setWidth(4)
             previous_point_id = group[0]
             for current_point_id in group[1:]:
                 previous_item = self._point_items_by_id.get(previous_point_id)
@@ -1285,7 +1319,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def _follow_group_point_ids_for_group(self, group_info: dict) -> list[int]:
         """返回跟随模式下该组的点位顺序；leader 始终排在第一位。"""
-        point_ids = group_info['point_ids']
+        point_ids = [int(pid) for pid in group_info['point_ids'] if pid in self._selected_point_ids]
         if not point_ids:
             return []
         if group_info["leader"]:
@@ -1326,7 +1360,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         ordered_ids = self._follow_group_point_ids_for_group(min_group)
         anchor_point_id = next(
             pid for pid in ordered_ids
-            if pid in self._selected_point_ids
         )
         return anchor_point_id
 
@@ -1341,7 +1374,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             if group_id < 0 or group_id >= len(self.group_to_point):
                 continue
             group_info = self.group_to_point[group_id]
-            point_ids = [int(pid) for pid in group_info.get("point_ids", [])]
+            point_ids = [int(pid) for pid in group_info['point_ids'] if pid in self._selected_point_ids]
             if len(point_ids) < 2:
                 continue
             leader_first_ids = self._follow_group_point_ids_for_group(group_info)
@@ -1584,7 +1617,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         for item in getattr(self, "_adjustment_preview_line_items", []):
             self.removeItem(item)
         self._adjustment_preview_line_items = []
-        self._render_points_for_active_node()
+        self._reset_selected_points_to_prev_visual()
 
     # ──────────────── 箭头工具 ────────────────
 
@@ -2067,6 +2100,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             pid = int(p.get("id", -1))
             self._interval_original_positions[pid] = (float(p.get("x", 0.0)), float(p.get("y", 0.0)))
         self._clear_draft_items()
+        # 将选中点位视觉重置到上一张图位置
+        self._reset_selected_points_to_prev_visual()
 
     def _on_interval_helper_moved(self, point_id: int, scene_pos: QPointF) -> QPointF:
         """间隔行进 helper 拖动中：计算锚点偏移并预览全组移动。"""
@@ -2220,7 +2255,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         members_union = list(self._selected_point_ids)
         if group_id is not None and int(group_id) < len(self.group_to_point):
             group_info = self.group_to_point[int(group_id)]
-            members_union = [int(pid) for pid in group_info.get("point_ids", [])]
+            members_union = [int(pid) for pid in group_info.get("point_ids", []) if int(pid) in self._selected_point_ids]
         else:
             members_union = [int(pid) for pid in self._selected_point_ids]
 
@@ -2778,7 +2813,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             return
 
         # 连接同一组内被选中的点位，使用不透明线条。
-        pen = QPen(QColor("#f39c12"), 2, Qt.PenStyle.SolidLine)
+        pen = QPen(QColor("#f39c12"), 4, Qt.PenStyle.SolidLine)
         pen.setCosmetic(True)
         
         node_groups = self.node_to_group[self.active_node]
@@ -4098,6 +4133,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             new_paths = []
             for path_info in paths:
                 members = path_info['members']
+                # 不在 selected_point_ids 中的点位才保留在原 path 中
                 new_member = [id for id in members if id not in self._selected_point_ids]
                 if new_member:
                     path_info['members'] = new_member
@@ -4110,7 +4146,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                         active_groups = list({cur_node_points[id]['group_id'] for id in new_member})
                         # active_groups = [
                         #     gid for gid in groups
-                        #     if set(self.group_to_point[gid]['point_ids']) & set(new_member)
+                        #     if set(self.group_to_point[gid]) & set(new_member)
                         # ]
                         if active_groups:
                             min_gid = min(active_groups)
@@ -4258,20 +4294,24 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                         members_union = []
                         leaders_union = []
                         for lid in selected_ids:
-                            lid = int(lid)
-                            found_group = None
-                            for group in self.group_to_point:
-                                pids = [int(x) for x in group.get("point_ids", [])]
-                                if lid in pids:
-                                    found_group = group
-                                    ordered_group = self._follow_group_point_ids_for_group(group)
-                                    for pid in ordered_group:
-                                        if int(pid) not in members_union:
-                                            members_union.append(int(pid))
-                                    leader_id = int(ordered_group[0]) if ordered_group else lid
-                                    if leader_id not in leaders_union:
-                                        leaders_union.append(leader_id)
-                                    break
+                            if lid in members_union:
+                                # 跳过已处理过的点位，避免重复添加同组成员
+                                continue
+                            leader_point = self._find_previous_point_by_id(lid)
+                            found_group = self.group_to_point[leader_point["group_id"]]
+                            # for group in self.group_to_point:
+                            #     pids = [int(x) for x in group.get("point_ids", [])]
+                            #     if lid in pids:
+                            #         found_group = group
+                            if found_group is not None:
+                                ordered_group = self._follow_group_point_ids_for_group(found_group)
+                                for pid in ordered_group:
+                                    if int(pid) not in members_union:
+                                        members_union.append(int(pid))
+                                leader_id = int(ordered_group[0]) if ordered_group else lid
+                                if leader_id not in leaders_union:
+                                    leaders_union.append(leader_id)
+                                    # break
                             if found_group is None:
                                 if lid not in members_union:
                                     members_union.append(lid)
@@ -4283,7 +4323,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                             self.active_node,
                             'follow',
                             anchor_id,
-                            [[float(px), float(py)] for px, py in path_points],
+                            path_points,
                             members_union,
                             leaders=leaders_union,
                         )
@@ -5224,9 +5264,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self._clear_draft_items()
             self._draw_pending_reference_preview()
             self._draw_pending_reference_points()
-        if self._draft_tool_name == "跟随":
-            self._draw_follow_group_helpers()
-            self.update()
         if self.active_tool == "间隔行进":
             self._draw_interval_helpers()
             if self._interval_anchor_id is not None and self._interval_drag_position is not None:
@@ -5265,7 +5302,13 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         # 若存在临时分组信息，则绘制其连线与首尾 helper
         if getattr(self, "_temp_group_to_point", None):
             QTimer.singleShot(0, self._update_temp_group_visuals)
-
+        # "跟随"/"路径"/"间隔行进"：将选中点位视觉重置到上一张图位置
+        if self.active_tool in {"跟随", "路径", "间隔行进"} and self._selected_point_ids and self.active_node > 0:
+            self._reset_selected_points_to_prev_visual()
+        # 跟随工具的 helper 需在预览点位移动后绘制，以保证 helper 位置与预览点位一致
+        if self._draft_tool_name == "跟随":
+            self._draw_follow_group_helpers()
+            self.update()
 
     def delete_selected_points(self):
         """删除当前选中的点位：在所有节点中移除对应点位 ID，重排剩余点位 ID 并同步 group_to_point 与 _next_point_id。"""
@@ -5297,10 +5340,10 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self.node_points[node_idx] = new_points
 
         # 更新分组信息：移除被删的点位并将其余 point_ids 映射为新 ID
-        for group in self.group_to_point:
-            old_list = [int(pid) for pid in group.get("point_ids", [])]
+        for idx, group in enumerate(self.group_to_point):
+            old_list = [int(pid) for pid in group["point_ids"]]
             new_list = [id_map[pid] for pid in old_list if pid not in to_delete and pid in id_map]
-            group["point_ids"] = new_list
+            self.group_to_point[idx] = new_list
 
         # 更新自增计数器
         max_id = max(id_map.values()) if id_map else 0

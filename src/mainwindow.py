@@ -73,8 +73,9 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self._label_tools = {"标签"}
         self._group_tools = {"分组"}
         self._select_tools = {"选择", "框选"}
-        self._transform_tools = {"调整", "跟随", "路径", "间隔行进", "旋转"}
+        self._transform_tools = {"调整", "路径", "旋转"}
         self._p0_forbidden_transform_tools = {"跟随", "路径", "间隔行进", "旋转"}
+        self._multi_select_tools = {"跟随", "间隔行进"}
         
         self.setupMenus()   # 菜单栏
         self.setupToolBar()    # 工具栏
@@ -524,18 +525,12 @@ class MainWindow(MainWindowNotice, QMainWindow):
         }
         self.drawingControlDock.statusLabel.setText(tool_text.get(tool_name, ""))
 
-        if tool_name == "调整" and not self.scene._selected_point_ids:
-            self._show_menu_notice("请先选中点位，再进入调整模式。", failed=True)
+        if tool_name in {"调整", "分组", "旋转", "跟随", "标签"} and not self.scene._selected_point_ids:
+            self._show_menu_notice("请先选中点位。", failed=True)
             self._set_active_tool("框选")
             return
-
-        if tool_name == "旋转" and not self.scene._selected_point_ids:
-            self._show_menu_notice("请先选中点位，再进入旋转模式。", failed=True)
-            self._set_active_tool("框选")
-            return
-
-        if tool_name == "标签" and not self.scene._selected_point_ids:
-            self._show_menu_notice("请先选中点位，再进入标签设置。", failed=True)
+        if tool_name in {"路径", "间隔行进"} and len(getattr(self.scene, "_selected_point_ids", set())) < 2:
+            self._show_menu_notice("请至少选中2个点位。", failed=True)
             self._set_active_tool("框选")
             return
 
@@ -637,6 +632,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.timelineMainWidget.currentBeatChanged.connect(self.scene.set_preview_beat)
         self.timelineMainWidget.currentBeatChanged.connect(self.updateDrawToolAvailability)
         self.timelineMainWidget.currentBeatChanged.connect(self.updateConvertToolAvailability)
+        self.timelineMainWidget.currentBeatChanged.connect(self.updateMultiSelectToolAvailability)
 
         self.timelineMainWidget.nodeAdded.connect(self.scene.on_node_added)
         self.timelineMainWidget.nodeInserted.connect(self.scene.on_node_inserted)
@@ -901,6 +897,16 @@ class MainWindow(MainWindowNotice, QMainWindow):
             if btn is not None:
                 btn.setEnabled(beat_at_node and has_selection and not (is_p0 and name in self._p0_forbidden_transform_tools))
 
+    def updateMultiSelectToolAvailability(self, beat: int, selected_count: int = 0):
+        """控制需要至少2个选中点位的工具（路径、间隔行进）的可用性。"""
+        is_p0 = int(beat) == 0
+        beat_at_node = self.timelineMainWidget.node_index_at_beat(beat) is not None
+        has_enough = int(selected_count) >= 2
+        for name in self._multi_select_tools:
+            btn = self.toolButtons.get(name)
+            if btn is not None:
+                btn.setEnabled(beat_at_node and has_enough and not (is_p0 and name in self._p0_forbidden_transform_tools))
+
     def updateLabelToolAvailability(self, beat: int, selected_count: int):
         """根据选中点位数量，控制标签工具可用性。"""
         has_selection = int(selected_count) > 0
@@ -931,11 +937,14 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
         self.updateDrawToolAvailability(beat, has_selection)
         self.updateConvertToolAvailability(beat, has_selection)
+        self.updateMultiSelectToolAvailability(beat, selected_count)
         self.updateGroupToolAvailability(beat, selected_count)
         self.updateLabelToolAvailability(beat, selected_count)
 
         # 自动切换工具：如果当前工具不可用，且没有选中点位，则切换到框选；如果在P0且当前工具在P0禁止列表中，也切换到框选。
-        if not (is_p0 or has_selection) and (self.activeToolName in self._drawing_tools | self._transform_tools):
+        if not (is_p0 or has_selection) and (self.activeToolName in self._drawing_tools | self._transform_tools | self._multi_select_tools):
+            self._set_active_tool("框选")
+        elif self.activeToolName in self._multi_select_tools and int(selected_count) < 2:
             self._set_active_tool("框选")
         elif is_p0 and self.activeToolName in self._p0_forbidden_transform_tools:
             self._set_active_tool("框选")

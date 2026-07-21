@@ -88,15 +88,15 @@ class SchemeSceneData:
         entry = {
             'type': path_type, 
             "anchor_id": int(anchor_id),
-            "members": [int(point_id) for point_id in members],
+            "members": members,
         }
         if path_type == 'forward':
-            entry["path"] = [(float(x), float(y)) for x, y in path]
+            entry["path"] = path
         if path_type == 'follow':
-            entry["path"] = [(float(x), float(y)) for x, y in path]
-            entry["leaders"] = [int(point_id) for point_id in leaders]
+            entry["path"] = path
+            entry["leaders"] = leaders
         elif path_type == 'interval':
-            entry["path"] = [(float(x), float(y)) for x, y in path]
+            entry["path"] = path
             entry["interval"] = (int(interval[0]), int(interval[1]))
         elif path_type == 'rotate':
             center, angle = rotate_info
@@ -471,7 +471,7 @@ class SchemeSceneData:
         node_paths = self.node_paths[node_index]
         for ref_entry in node_paths:
             members = ref_entry.get("members", [])
-            if int(point_id) not in {int(pid) for pid in members}:
+            if int(point_id) not in members:
                 continue
             
             if ref_entry.get("type") == 'follow':
@@ -486,16 +486,16 @@ class SchemeSceneData:
                     ax, ay = path[idx]
                     bx, by = path[idx + 1]
                     total_length += math.hypot(bx - ax, by - ay)
-                group_info = None
-                group_members = None
-                for group in self.group_to_point:
-                    pids = [int(x) for x in group.get("point_ids", [])]
-                    if int(point_id) in pids:
-                        group_info = group
-                        group_members = pids if group["leader"] else list(reversed(pids))
-                        break
+                group_info = self.group_to_point[self.node_points[node_index][point_id]['group_id']]
+                # group_members = ref_entry["members"]
+                # for group in self.group_to_point:
+                #     pids = [int(x) for x in group.get("point_ids", [])]
+                #     if int(point_id) in pids:
+                #         group_info = group
+                #         group_members = pids if group["leader"] else list(reversed(pids))
+                #         break
 
-                if group_info is None or not group_members:
+                if group_info is None or not members:
                     offset = self._node_path_member_offset(node_index, ref_entry, int(point_id))
                     leader0_sample = self._sample_position_along_path(path, progress)
                     if leader0_sample is None:
@@ -505,7 +505,7 @@ class SchemeSceneData:
                 id_to_orig = {int(p.get("id", -1)): p for p in self.node_points[node_index - 1]}
                 leader_distance = progress * total_length
 
-                if int(point_id) == int(group_members[0]):
+                if int(point_id) == int(members[0]):
                     anchor_id = ref_entry.get("anchor_id")
                     # 仅 anchor 沿绝对路径行进
                     if int(point_id) == int(anchor_id):
@@ -525,7 +525,7 @@ class SchemeSceneData:
                     return (float(pos[0]), float(pos[1])) if pos else None
 
                 try:
-                    idx = group_members.index(int(point_id))
+                    idx = members.index(int(point_id))
                 except ValueError:
                     offset = self._node_path_member_offset(node_index, ref_entry, int(point_id))
                     leader0_sample = self._sample_position_along_path(path, progress)
@@ -535,10 +535,10 @@ class SchemeSceneData:
 
                 # 非 anchor 组的跟随点应沿该组 leader 的相对路径行进
                 anchor_id = ref_entry.get("anchor_id")
-                leader_is_anchor = int(group_members[0]) == int(anchor_id)
+                leader_is_anchor = int(members[0]) == int(anchor_id)
                 if not leader_is_anchor:
                     anchor_orig2 = id_to_orig.get(int(anchor_id))
-                    leader_orig2 = id_to_orig.get(int(group_members[0]))
+                    leader_orig2 = id_to_orig.get(int(members[0]))
                     if anchor_orig2 is not None and leader_orig2 is not None:
                         loff_x = float(leader_orig2.get("x", 0.0)) - float(anchor_orig2.get("x", 0.0))
                         loff_y = float(leader_orig2.get("y", 0.0)) - float(anchor_orig2.get("y", 0.0))
@@ -550,7 +550,7 @@ class SchemeSceneData:
 
                 forward_points = []
                 for j in range(idx, -1, -1):
-                    pid = group_members[j]
+                    pid = members[j]
                     orig = id_to_orig.get(int(pid))
                     # if orig is None:
                     #     offset = self._node_path_member_offset(node_index, ref_entry, int(point_id))
