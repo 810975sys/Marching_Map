@@ -1454,7 +1454,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
         # 十字准线标记旋转中心
         cross_size = helper_radius * 0.5
-        pen_cross = QPen(QColor("#e74c3c"), 1.0, Qt.PenStyle.DashLine)
+        pen_cross = QPen(QColor("#e74c3c"), 2.0, Qt.PenStyle.DashLine)
         pen_cross.setCosmetic(True)
         h_line = QGraphicsLineItem(scene_pos.x() - cross_size, scene_pos.y(), scene_pos.x() + cross_size, scene_pos.y())
         h_line.setPen(pen_cross)
@@ -1608,16 +1608,38 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self.dataChanged.emit()
 
     def cancel_rotate(self):
-        """取消旋转：恢复原始点位位置并清理状态。"""
-        self._clear_rotate_helpers()
+        """取消旋转：恢复原始点位位置，保留原始快照供后续编辑。"""
         self._rotate_dragging = False
-        self._rotate_source_points = []
         self._rotate_angle = 0.0
+        # 同步界面上旋转角度旋钮置 0
+        parent = self.parent()
+        dock = getattr(parent, "drawingControlDock", None) if parent is not None else None
+        if dock is not None:
+            dock.setRotateAngle(0.0)
         # 清理预览连线
         for item in getattr(self, "_adjustment_preview_line_items", []):
             self.removeItem(item)
         self._adjustment_preview_line_items = []
-        self._reset_selected_points_to_prev_visual()
+        # 使用原始点位快照恢复视觉位置（不写回 node_points，不清除 _rotate_source_points）
+        for src in self._rotate_source_points:
+            pid = int(src.get("id", -1))
+            item = self._point_items_by_id.get(pid)
+            if item is None:
+                continue
+            item.setPos(self._field_to_scene(float(src["x"]), float(src["y"])))
+            # 同步标签位置
+            label = self._label_items_by_id.get(pid)
+            if label is not None:
+                pos = self._field_to_scene(float(src["x"]), float(src["y"]))
+                angle_deg = int(self.label_pos) % 360
+                angle_rad = math.radians(angle_deg)
+                dx = math.cos(angle_rad) * float(self.label_offset)
+                dy = math.sin(angle_rad) * float(self.label_offset)
+                br = label.boundingRect()
+                label.setPos(pos.x() + dx - br.width() / 2.0, pos.y() + dy - br.height() / 2.0)
+        self._refresh_selected_group_links()
+        # 重新绘制 helper，保持可继续编辑的状态
+        self._draw_rotate_helpers()
 
     # ──────────────── 箭头工具 ────────────────
 
