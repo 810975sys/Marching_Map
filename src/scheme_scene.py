@@ -5362,10 +5362,37 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self.node_points[node_idx] = new_points
 
         # 更新分组信息：移除被删的点位并将其余 point_ids 映射为新 ID
-        for idx, group in enumerate(self.group_to_point):
+        for group in self.group_to_point:
             old_list = [int(pid) for pid in group["point_ids"]]
             new_list = [id_map[pid] for pid in old_list if pid not in to_delete and pid in id_map]
-            self.group_to_point[idx] = new_list
+            group["point_ids"] = new_list
+
+        # 更新 node_paths：移除与删除点位相关的路径定义，并重映射剩余点位 ID
+        new_node_paths = {}
+        for node_idx, paths in self.node_paths.items():
+            cleaned = []
+            for entry in paths:
+                anchor_id = entry.get("anchor_id")
+                # 若 anchor 是被删除的点，整条路径作废
+                if anchor_id is not None and int(anchor_id) in to_delete:
+                    continue
+                # 从 members 中剔除被删除的点
+                members = entry.get("members", [])
+                new_members = [pid for pid in members if int(pid) not in to_delete]
+                if not new_members:
+                    continue  # 无剩余成员，整条路径移除
+                # 重映射剩余成员的 ID
+                entry["members"] = [id_map.get(int(pid), int(pid)) for pid in new_members]
+                # 重映射 anchor_id
+                if anchor_id is not None:
+                    entry["anchor_id"] = id_map.get(int(anchor_id), int(anchor_id))
+                # follow 类型清理并重映射 leaders
+                if entry.get("type") == "follow" and "leaders" in entry:
+                    entry["leaders"] = [id_map.get(int(lid), int(lid)) for lid in entry["leaders"] if int(lid) not in to_delete]
+                cleaned.append(entry)
+            if cleaned:
+                new_node_paths[node_idx] = cleaned
+        self.node_paths = new_node_paths
 
         # 更新自增计数器
         max_id = max(id_map.values()) if id_map else 0
@@ -5413,6 +5440,27 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             if pid in self._selected_point_ids and pid in prev_points:
                 p["x"] = prev_points[pid][0]
                 p["y"] = prev_points[pid][1]
+
+        # 从 active_node 的 node_paths 中移除与选中点位相关的路径定义
+        selected_ids = set(int(pid) for pid in self._selected_point_ids)
+        if self.active_node in self.node_paths:
+            cleaned = []
+            for entry in self.node_paths[self.active_node]:
+                anchor_id = entry.get("anchor_id")
+                # 若 anchor 是选中点位，整条路径定义作废
+                if anchor_id is not None and int(anchor_id) in selected_ids:
+                    continue
+                # 从 members 中剔除选中点位
+                members = entry.get("members", [])
+                new_members = [pid for pid in members if int(pid) not in selected_ids]
+                if not new_members:
+                    continue  # 无剩余成员，整条路径移除
+                entry["members"] = new_members
+                # follow 类型还需清理 leaders
+                if entry.get("type") == "follow" and "leaders" in entry:
+                    entry["leaders"] = [lid for lid in entry["leaders"] if int(lid) not in selected_ids]
+                cleaned.append(entry)
+            self.node_paths[self.active_node] = cleaned
 
         self._mark_node_manual(self.active_node)
         self._recalculate_following_auto_nodes(self.active_node, include_manual_nodes=False)
