@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QWidget, QFileDialog, 
     QHBoxLayout, QPushButton, QSizePolicy, QToolButton, QGridLayout, QFrame,
     QLabel, QLineEdit, QSlider, QButtonGroup, QDialog, QSpinBox,
+    QMessageBox,
 )
 from PyQt6.QtCore import Qt, QTimer, QElapsedTimer
 from PyQt6.QtGui import QIcon, QShortcut, QKeySequence
@@ -40,6 +41,9 @@ def scheme_default_dir() -> Path:
     directory = project_root / "saves"
     directory.mkdir(parents=True, exist_ok=True)
     return directory
+
+# 历史文件：记录最后保存的方案文件路径
+LAST_SCHEME_PATH_FILE = Path(__file__).resolve().parent / "last_scheme_path.json"
 
 class MainWindow(MainWindowNotice, QMainWindow):
     """主窗口：组织菜单、场景、时间轴与各类控制台。"""
@@ -88,6 +92,9 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.setupInteractions()    # 信号与槽绑定
         self.setupMainLayout()  # 主窗口整体布局
         # self.setupToolOptionDock()      # 工具选项浮动面板
+
+        # 启动时从历史文件恢复上次编辑的方案
+        self._restore_last_scheme()
         
         self.setWindowTitle("Marching Map Editor")
         self.resize(1200, 800)
@@ -276,6 +283,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         with open(target, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         self._scheme_file_path = target
+        self._save_last_scheme_path()
         self._set_scheme_dirty(False)
         self._show_menu_notice(f"已保存：{target.name}")
         return True
@@ -330,6 +338,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             payload = json.load(f)
         self._apply_scheme_payload(payload)
         self._scheme_file_path = Path(file_path)
+        self._save_last_scheme_path()
         self._show_menu_notice(f"已打开：{Path(file_path).name}")
         return True
         # except Exception as e:
@@ -396,6 +405,59 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self._set_scheme_dirty(False)
         self._show_menu_notice("已新建空白方案")
         return True
+
+    # ──────────────── 历史文件管理 ────────────────
+    def _save_last_scheme_path(self):
+        """将当前方案文件路径保存到历史文件。"""
+        path = self._scheme_file_path
+        data = {"last_scheme_path": str(path) if path else ""}
+        LAST_SCHEME_PATH_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(LAST_SCHEME_PATH_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def _restore_last_scheme(self):
+        """启动时从历史文件恢复上次编辑的方案。"""
+        if not LAST_SCHEME_PATH_FILE.exists():
+            return
+
+        try:
+            with open(LAST_SCHEME_PATH_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return
+        last_path = data.get("last_scheme_path", "")
+        if not last_path:
+            return
+
+        target = Path(last_path)
+        if not target.exists():
+            QMessageBox.warning(
+                self,
+                "文件未找到",
+                "上次编辑的文件已移动或删除，请重新打开方案文件。",
+                QMessageBox.StandardButton.Ok,
+            )
+            # 清空历史文件
+            with open(LAST_SCHEME_PATH_FILE, "w", encoding="utf-8") as f:
+                json.dump({"last_scheme_path": ""}, f, ensure_ascii=False, indent=2)
+            return
+
+        try:
+            with open(target, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            self._apply_scheme_payload(payload)
+            self._scheme_file_path = target
+            self._show_menu_notice(f"已恢复：{target.name}")
+        except Exception:
+            QMessageBox.warning(
+                self,
+                "文件读取失败",
+                f"上次编辑的文件 {target.name} 无法读取或格式无效，请重新打开方案文件。",
+                QMessageBox.StandardButton.Ok,
+            )
+            # 清空历史文件
+            with open(LAST_SCHEME_PATH_FILE, "w", encoding="utf-8") as f:
+                json.dump({"last_scheme_path": ""}, f, ensure_ascii=False, indent=2)
 
     def closeEvent(self, event):
         """关闭窗口前处理未保存修改。"""
