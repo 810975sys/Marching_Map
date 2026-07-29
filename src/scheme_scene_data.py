@@ -403,10 +403,11 @@ class SchemeSceneData:
         self.node_arrows = new_arrows
 
         # 重排节点手动编辑状态
-        if removed_index < len(self.node_manual_edited):
-            self.node_manual_edited.pop(removed_index)
-        if not self.node_manual_edited:
-            self.node_manual_edited = [False]
+        # if removed_index < len(self.node_manual_edited):
+        #     self.node_manual_edited.pop(removed_index)
+        # if not self.node_manual_edited:
+        #     self.node_manual_edited = [False]
+        self._recalculate_manual_edited_states()
 
         # 调整当前选中节点索引
         if self.active_node >= removed_index:
@@ -854,3 +855,31 @@ class SchemeSceneData:
                 self.node_points[next_manual] = self._interpolate_points_at_beat(segment_start, next_manual, self._node_start_beat(next_manual))
 
             segment_start = next_manual
+
+    def _recalculate_manual_edited_states(self):
+        """根据点位数据重新计算所有节点的手动编辑状态。
+        
+        若 node_points[0] 为空，则所有节点视为未手动编辑；
+        否则从节点 1 开始，逐个比对每个点位与前一节点的位置，
+        若所有点位均一致，则将该节点的手动编辑状态置为 False。
+        """
+        if not self.node_points or not self.node_points[0]:
+            self.node_manual_edited = [False] * len(self.node_points)
+            return
+
+        for node_idx in range(1, len(self.node_points)):
+            if not self.node_manual_edited[node_idx]:
+                continue
+            all_match = True
+            for p in self.node_points[node_idx]:
+                pid = int(p.get("id", -1))
+                prev_point = self._find_point_in_node(node_idx - 1, pid)
+                if prev_point is None:
+                    all_match = False
+                    break
+                if (abs(float(p.get("x", 0.0)) - float(prev_point.get("x", 0.0))) > 1e-9 or
+                    abs(float(p.get("y", 0.0)) - float(prev_point.get("y", 0.0))) > 1e-9):
+                    all_match = False
+                    break
+            if all_match:
+                self.node_manual_edited[node_idx] = False
