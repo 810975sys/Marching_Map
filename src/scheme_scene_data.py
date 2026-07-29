@@ -183,10 +183,10 @@ class SchemeSceneData:
                 max_textbox_id = max(max_textbox_id, int(textbox.get("id", 0)))
 
 
-        saved_next_point_id = int(data.get("_next_point_id", max_point_id + 1))
-        saved_next_textbox_id = int(data.get("_next_textbox_id", max_textbox_id + 1))
-        self._next_point_id = max(0, max_point_id + 1, saved_next_point_id)
-        self._next_textbox_id = max(1, max_textbox_id + 1, saved_next_textbox_id)
+        saved_next_point_id = int(data.get("_next_point_id", max_point_id))
+        saved_next_textbox_id = int(data.get("_next_textbox_id", max_textbox_id))
+        self._next_point_id = max(0, max_point_id, saved_next_point_id)
+        self._next_textbox_id = max(1, max_textbox_id, saved_next_textbox_id)
 
     def ensure_node_exists(self, node_index: int):
         """确保目标节点存在；新节点默认复制前一节点点位。"""

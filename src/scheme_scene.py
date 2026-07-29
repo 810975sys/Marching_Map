@@ -5384,24 +5384,36 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             group["point_ids"] = new_list
 
         # 更新 node_paths：移除与删除点位相关的路径定义，并重映射剩余点位 ID
-        for node_idx in self.node_paths.keys():
+        for node_idx in list(self.node_paths.keys()):
             self.clear_selected_point_in_path(node_idx)
 
         # 更新自增计数器
-        max_id = max(id_map.values()) if id_map else 0
-        self._next_point_id = max_id + 1
+        self._next_point_id = len(self.node_points[0])
 
         # 更新点位标签数据（point_lable 以 point_id 为下标）
         if self.point_lable:
             new_point_lable = []
+            # 按 prefix 分组收集标签
+            prefix_groups = {}
             for old_id, new_id in sorted(id_map.items()):
                 while len(new_point_lable) <= new_id:
                     new_point_lable.append(None)
                 old_idx = old_id
                 if 0 <= old_idx < len(self.point_lable) and self.point_lable[old_idx] is not None:
-                    new_point_lable[new_id] = dict(self.point_lable[old_idx])
-                    new_point_lable[new_id]["serial"] = new_id + 1
+                    label = dict(self.point_lable[old_idx])
+                    prefix = label.get("prefix", "")
+                    prefix_groups.setdefault(prefix, []).append((new_id, label))
+            # 在每个 prefix 组内按 new_id 顺序重新分配 serial
+            for entries in prefix_groups.values():
+                entries.sort(key=lambda e: e[0])
+                for idx, (new_id, label) in enumerate(entries):
+                    label["serial"] = idx + 1
+                    new_point_lable[new_id] = label
             self.point_lable = new_point_lable
+
+        # 若删除后所有节点的点位列表均为空，则将 node_manual_edited 全部置为 False
+        if all(len(pts) == 0 for pts in self.node_points):
+            self.node_manual_edited = [False] * len(self.node_points)
 
         # 清除当前选中集合并刷新显示与后续自动计算
         self._selected_point_ids = set()

@@ -1248,12 +1248,12 @@ class MainWindow(MainWindowNotice, QMainWindow):
         """同步标签设置面板：若最小id已有标签则以其为准，否则默认serial=id+1、prefix为空。"""
         min_id = min(int(pid) for pid in self.scene._selected_point_ids)
         lable = self.scene.point_lable
+        self.drawingControlDock.labelSerialSpin.setValue(int(1))
         if 0 <= min_id < len(lable) and lable[min_id] is not None:
             entry = lable[min_id]
             self.drawingControlDock.labelPrefixEdit.setText(str(entry.get("prefix", "")))
-            self.drawingControlDock.labelSerialSpin.setValue(int(entry.get("serial", min_id + 1)))
+            # self.drawingControlDock.labelSerialSpin.setValue(int(entry.get("serial", min_id + 1)))
         else:
-            self.drawingControlDock.labelSerialSpin.setValue(int(min_id + 1))
             self.drawingControlDock.labelPrefixEdit.setText("")
 
     def _on_label_apply(self):
@@ -1266,7 +1266,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         #     return
         prefix = self.drawingControlDock.labelPrefixEdit.text()
         serial_start = self.drawingControlDock.labelSerialSpin.value()
-        for i, pid in enumerate(self.scene._selected_point_ids):
+        for i, pid in enumerate(sorted(list(self.scene._selected_point_ids))):
             self.scene._set_point_label_prefix(pid, prefix)
             self.scene._set_point_label_serial(pid, serial_start + i)
         self.scene._render_points_for_active_node()
