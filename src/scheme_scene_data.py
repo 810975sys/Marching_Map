@@ -303,8 +303,8 @@ class SchemeSceneData:
             left_entry["leaders"] = path_info['leaders']
             right_entry["leaders"] = path_info['leaders']
         elif path_info['type'] == 'interval':
-            left_entry["interval"] = path_info['interval']
-            right_entry["interval"] = path_info['interval']
+            left_entry["interval"] = (path_info['interval'][0], 0)
+            right_entry["interval"] = (0, path_info['interval'][1])
         # if path_info['type'] == 'rotate' and 'rotate_info' in path_info:
         #     center, angle = path_info['rotate_info']
         #     half_angle = float(angle) / 2.0
@@ -392,6 +392,15 @@ class SchemeSceneData:
             elif idx > removed_index + 1:
                 new_paths[idx - 1] = self.node_paths[idx]
         self.node_paths = new_paths
+
+        # 直接舍弃被删除节点的箭头数据
+        new_arrows = {}
+        for idx in sorted(self.node_arrows.keys()):
+            if idx < removed_index:
+                new_arrows[idx] = self.node_arrows[idx]
+            elif idx > removed_index + 1:
+                new_arrows[idx - 1] = self.node_arrows[idx]
+        self.node_arrows = new_arrows
 
         # 重排节点手动编辑状态
         if removed_index < len(self.node_manual_edited):

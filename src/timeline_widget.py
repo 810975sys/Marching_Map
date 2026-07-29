@@ -471,6 +471,7 @@ class TimelineWidget(QWidget):
                         self._recalculate_width()
                         self.timelineChanged.emit()
                         self.update()
+                        self._switch_next()
                 return
 
         super().contextMenuEvent(event)
