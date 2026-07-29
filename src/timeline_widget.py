@@ -121,6 +121,15 @@ class TimelineWidget(QWidget):
         self.quick_add_node2.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self.quick_add_node2.activated.connect(lambda: self.add_node(8))
 
+        # 全局左右方向键切换节点
+        self._shortcut_left = QShortcut(QKeySequence(Qt.Key.Key_Left), self)
+        self._shortcut_left.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._shortcut_left.activated.connect(self._switch_prev)
+
+        self._shortcut_right = QShortcut(QKeySequence(Qt.Key.Key_Right), self)
+        self._shortcut_right.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._shortcut_right.activated.connect(self._switch_next)
+
     def set_graph_list(self, graph_list: list[int], selected_node: int = 0, current_beat: int | None = None, emit_signals: bool = True):
         """整体恢复时间轴间隔列表。"""
         values = [int(interval) for interval in graph_list] if graph_list else [0]
@@ -465,6 +474,57 @@ class TimelineWidget(QWidget):
                 return
 
         super().contextMenuEvent(event)
+
+    def _switch_prev(self):
+        """左方向键：若当前拍位在节点上，跳转到上一个节点（循环）；否则跳转到左侧最近的节点。"""
+        total = sum(self.graph_list[1:])
+        if total <= 0:
+            return
+        node_idx = self.node_index_at_beat(self.current_beat)
+        if node_idx is not None:
+            new_idx = node_idx - 1
+            if new_idx < 0:
+                new_idx = len(self.graph_list) - 1
+            self.selected_node = new_idx
+            self.current_beat = self.start_beat_of(new_idx)
+        else:
+            starts = self.node_start_beats()
+            target = self.current_beat
+            nearest = 0
+            for i, s in enumerate(starts):
+                if s < target:
+                    nearest = i
+            self.selected_node = nearest
+            self.current_beat = self.start_beat_of(nearest)
+        self.nodeSelected.emit(self.selected_node)
+        self.currentBeatChanged.emit(self.current_beat)
+        self.update()
+
+    def _switch_next(self):
+        """右方向键：若当前拍位在节点上，跳转到下一个节点（循环）；否则跳转到右侧最近的节点。"""
+        total = sum(self.graph_list[1:])
+        if total <= 0:
+            return
+        node_idx = self.node_index_at_beat(self.current_beat)
+        if node_idx is not None:
+            new_idx = node_idx + 1
+            if new_idx >= len(self.graph_list):
+                new_idx = 0
+            self.selected_node = new_idx
+            self.current_beat = self.start_beat_of(new_idx)
+        else:
+            starts = self.node_start_beats()
+            target = self.current_beat
+            nearest = len(starts) - 1
+            for i, s in enumerate(starts):
+                if s > target:
+                    nearest = i
+                    break
+            self.selected_node = nearest
+            self.current_beat = self.start_beat_of(nearest)
+        self.nodeSelected.emit(self.selected_node)
+        self.currentBeatChanged.emit(self.current_beat)
+        self.update()
 
     def wheelEvent(self, event):
         """按住 Ctrl 时用滚轮缩放时间轴，每次调整每拍像素宽度。"""
