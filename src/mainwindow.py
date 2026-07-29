@@ -1421,6 +1421,10 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self._playback_timer.stop()
         self._playback_active = False
         self.btnPlayPause.setText("▶")
+        # 若当前拍位与选中节点不在同一节点才切换
+        node_idx = self.timelineMainWidget.node_index_at_beat(self.timelineMainWidget.current_beat)
+        if node_idx is None or node_idx != self.timelineMainWidget.selected_node:
+            self.timelineMainWidget._switch_next()
         # 恢复编辑态渲染
         self.scene.set_preview_beat(int(self.timelineMainWidget.current_beat))
 
@@ -1439,22 +1443,10 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self._stop_playback()
             return
 
-        # 到达或超过末尾：从头开始循环播放
+        # 到达或超过末尾：停止播放，切换当前编辑节点到尾节点
         if beat_float >= float(total_beats):
-            self.timelineMainWidget.current_beat = total_beats
-            self.timelineMainWidget.update()
-            self.scene.set_preview_sub_beat(float(total_beats))
             self._stop_playback()
             return
-        # if beat_float >= float(total_beats):
-        #     self._playback_start_beat = 0.0
-        #     self._playback_elapsed.restart()
-        #     beat_float = 0.0
-        #     # 更新游标到第 0 拍
-        #     self.timelineMainWidget.current_beat = 0
-        #     self.timelineMainWidget.update()
-        #     self.scene.set_preview_sub_beat(0.0)
-        #     return
 
         int_beat = int(beat_float)
 

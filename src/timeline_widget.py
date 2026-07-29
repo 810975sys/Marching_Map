@@ -476,15 +476,21 @@ class TimelineWidget(QWidget):
         super().contextMenuEvent(event)
 
     def _switch_prev(self):
-        """左方向键：若当前拍位在节点上，跳转到上一个节点（循环）；否则跳转到左侧最近的节点。"""
+        """左方向键：若当前拍位在节点上，跳转到上一个节点（循环）；否则跳转到左侧最近的节点。
+        优化：若当前编辑节点与 beat 所在节点不同，先跳转到 beat 所在节点。
+        """
         total = sum(self.graph_list[1:])
         if total <= 0:
             return
         node_idx = self.node_index_at_beat(self.current_beat)
         if node_idx is not None:
-            new_idx = node_idx - 1
-            if new_idx < 0:
-                new_idx = len(self.graph_list) - 1
+            # 若当前编辑节点与 beat 所在节点不同，先切换至 beat 所在节点
+            if node_idx != self.selected_node:
+                new_idx = node_idx
+            else:
+                new_idx = node_idx - 1
+                if new_idx < 0:
+                    new_idx = len(self.graph_list) - 1
             self.selected_node = new_idx
             self.current_beat = self.start_beat_of(new_idx)
         else:
@@ -501,15 +507,21 @@ class TimelineWidget(QWidget):
         self.update()
 
     def _switch_next(self):
-        """右方向键：若当前拍位在节点上，跳转到下一个节点（循环）；否则跳转到右侧最近的节点。"""
+        """右方向键：若当前拍位在节点上，跳转到下一个节点（循环）；否则跳转到右侧最近的节点。
+        优化：若当前编辑节点与 beat 所在节点不同，先跳转到 beat 所在节点。
+        """
         total = sum(self.graph_list[1:])
         if total <= 0:
             return
         node_idx = self.node_index_at_beat(self.current_beat)
         if node_idx is not None:
-            new_idx = node_idx + 1
-            if new_idx >= len(self.graph_list):
-                new_idx = 0
+            # 若当前编辑节点与 beat 所在节点不同，先切换至 beat 所在节点
+            if node_idx != self.selected_node:
+                new_idx = node_idx
+            else:
+                new_idx = node_idx + 1
+                if new_idx >= len(self.graph_list):
+                    new_idx = 0
             self.selected_node = new_idx
             self.current_beat = self.start_beat_of(new_idx)
         else:
