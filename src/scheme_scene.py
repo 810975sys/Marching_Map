@@ -1341,7 +1341,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         return True
 
     def _get_anchor(self) -> int:
-        groups = self.node_to_group[self.active_node]
+        # groups = self.node_to_group[self.active_node]
         cur_node_points = self.node_points[self.active_node]
         active_groups = list({cur_node_points[id]['group_id'] for id in self._selected_point_ids})
         # active_groups = [
@@ -4437,6 +4437,11 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             if new_point_ids:
                 # 添加到分组中
                 self.node_to_group[self.active_node].append(group_id)
+                if self.active_node + 1 < len(self.node_to_group):
+                    for idx in range(len(self.node_to_group))[self.active_node + 1:]:
+                        if self.node_manual_edited[idx]:
+                            break
+                        self.node_to_group[idx].append(group_id)
                 self.group_to_point.append({
                     "point_ids": new_point_ids, # 组内点位 ID 列表
                     "leader": True,  # leader 点位为正向第一个

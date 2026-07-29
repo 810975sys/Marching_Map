@@ -203,7 +203,7 @@ class SchemeSceneData:
         
         prev_points = self.node_points[idx - 1] if idx - 1 < len(self.node_points) else []
         self.node_points.append(copy.deepcopy(prev_points))
-        self.node_paths.setdefault(idx, [])
+        # self.node_paths.setdefault(idx, [])
 
     def on_node_added(self, node_index: int):
         """在时间轴末尾添加新节点后，确保节点数据结构完整并切换到新节点。"""
