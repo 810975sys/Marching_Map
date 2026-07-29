@@ -408,7 +408,7 @@ class SchemeSceneData:
         # if not self.node_manual_edited:
         #     self.node_manual_edited = [False]
         self._recalculate_manual_edited_states()
-
+        self.clear_empty_group()
         # 调整当前选中节点索引
         if self.active_node >= removed_index:
             self.active_node = max(0, self.active_node - 1)
@@ -883,3 +883,38 @@ class SchemeSceneData:
                     break
             if all_match:
                 self.node_manual_edited[node_idx] = False
+                
+    def clear_empty_group(self):
+        """清理所有节点中空的分组信息。"""
+        # 构建旧 group_id → 新 group_id 的映射（None 表示该分组已被移除）
+        old_to_new = {}
+        new_group_to_point = []
+        for gid, group in enumerate(self.group_to_point):
+            if group.get("point_ids"):
+                old_to_new[gid] = len(new_group_to_point)
+                new_group_to_point.append(group)
+            else:
+                old_to_new[gid] = None
+        if len(new_group_to_point) == len(self.group_to_point):
+            return
+        self.group_to_point = new_group_to_point
+
+        # 更新 node_to_group：移除对已删除分组的引用
+        for idx, group_ids in enumerate(self.node_to_group):
+            new_ids = []
+            for gid in group_ids:
+                new_gid = old_to_new.get(gid)
+                if new_gid is not None:
+                    new_ids.append(new_gid)
+            self.node_to_group[idx] = new_ids
+
+        # 更新 node_points：移除对已删除分组的引用
+        for points in self.node_points:
+            for p in points:
+                gid = p.get("group_id")
+                if gid is not None:
+                    new_gid = old_to_new.get(gid)
+                    if new_gid is not None:
+                        p["group_id"] = new_gid
+                    else:
+                        p["group_id"] = None

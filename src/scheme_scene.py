@@ -2823,6 +2823,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                         
         # ========== 7. 清理临时状态并刷新界面 ==========
         self.clear_temp_groups()
+        self.clear_empty_group()    # 清理空组
         self.dataChanged.emit()
         self._render_points_for_active_node()
 
@@ -4326,6 +4327,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                                 continue
                             # leader_point = self._find_previous_point_by_id(lid)
                             leader_point = self._find_point_in_node(self.active_node - 1, lid)
+                            if leader_point.get("group_id") is None:
+                                continue
                             found_group = self.group_to_point[leader_point["group_id"]]
                             # for group in self.group_to_point:
                             #     pids = [int(x) for x in group.get("point_ids", [])]
@@ -5423,6 +5426,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         # 清除当前选中集合并刷新显示与后续自动计算
         self._selected_point_ids = set()
         self._mark_node_manual(self.active_node)
+        self.clear_empty_group()
         self._recalculate_following_auto_nodes(self.active_node, include_manual_nodes=True)
         self._render_points_for_active_node()
         self.dataChanged.emit()
