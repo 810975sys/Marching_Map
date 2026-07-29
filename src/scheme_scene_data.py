@@ -415,11 +415,6 @@ class SchemeSceneData:
         self._clear_draft()
         self._render_points_for_active_node()
 
-    def _mark_node_manual(self, node_index: int):
-        """标记节点为手动编辑过，用于后续自动插值时判断是否覆盖。"""
-        idx = max(0, int(node_index))
-        self.node_manual_edited[idx] = True
-
     def _node_start_beat(self, node_index: int) -> int:
         """返回节点起始拍位，默认为节点索引对应的整数拍。"""
         parent = self.parent()

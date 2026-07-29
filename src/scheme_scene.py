@@ -1596,7 +1596,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._rotate_dragging = False
         self._rotate_source_points = []
         self._rotate_angle = 0.0
-        self._mark_node_manual(self.active_node)
+        self.node_manual_edited[self.active_node] = True
         self._recalculate_following_auto_nodes(self.active_node, include_manual_nodes=True)
         self._render_points_for_active_node()
         self.dataChanged.emit()
@@ -2000,7 +2000,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         elif self.active_node in self.node_arrows:
             del self.node_arrows[self.active_node]
 
-        self._mark_node_manual(self.active_node)
+        self.node_manual_edited[self.active_node] = True
         self._arrow_pending_points = []
         # 从 node_arrows 重载 _arrow_preview，消除旧引用，确保后续渲染数据一致。
         # 外部收到 dataChanged 后会调用 set_active_tool 切换工具，
@@ -2359,7 +2359,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._pending_points = []
         self._draft_reference_points = []
         self._reset_drawing_rematch_state(active=False)
-        self._mark_node_manual(self.active_node)
+        self.node_manual_edited[self.active_node] = True
         self._recalculate_following_auto_nodes(self.active_node, include_manual_nodes=True)
         self._clear_draft()
         self._clear_interval_helpers()
@@ -2972,7 +2972,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         # 若拖拽过程中点位确实发生过移动，从当前节点的路径定义中清除该选中点位
         self.clear_selected_point_in_path(self.active_node)
 
-        self._mark_node_manual(self.active_node)
+        self.node_manual_edited[self.active_node] = True
         self._recalculate_following_auto_nodes(self.active_node)
         self.dataChanged.emit()
 
@@ -3108,7 +3108,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 for point in self._adjustment_preview_points
             ]
             self._adjustment_source_points = [dict(point) for point in self._adjustment_preview_points]
-        self._mark_node_manual(self.active_node)
+        self.node_manual_edited[self.active_node] = True
         self._recalculate_following_auto_nodes(self.active_node, include_manual_nodes=True)
         self._render_points_for_active_node()
         self.dataChanged.emit()
@@ -4299,7 +4299,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                         self._pending_points = []
                         self._draft_reference_points = []
                         self._reset_drawing_rematch_state(active=False)
-                        self._mark_node_manual(self.active_node)
+                        self.node_manual_edited[self.active_node] = True
                         self._recalculate_following_auto_nodes(self.active_node, include_manual_nodes=True)
                         self._clear_draft()
                         if not had_draft:
@@ -4376,7 +4376,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                         self._pending_points = []
                         self._draft_reference_points = []
                         self._reset_drawing_rematch_state(active=False)
-                        self._mark_node_manual(self.active_node)
+                        self.node_manual_edited[self.active_node] = True
                         self._recalculate_following_auto_nodes(self.active_node, include_manual_nodes=True)
                         self._clear_draft()
                         if not had_draft:
@@ -4454,7 +4454,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._pending_points = []
         self._draft_reference_points = []
         self._reset_drawing_rematch_state(active=False)
-        self._mark_node_manual(self.active_node)
+        self.node_manual_edited[self.active_node] = True
         self._recalculate_following_auto_nodes(self.active_node, include_manual_nodes=True)
         self._clear_draft()
         if not had_draft:
@@ -5352,7 +5352,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         if self.active_tool in {"跟随", "路径", "间隔行进"} and self._selected_point_ids and self.active_node > 0:
             self._reset_selected_points_to_prev_visual()
         # 跟随工具的 helper 需在预览点位移动后绘制，以保证 helper 位置与预览点位一致
-        if self._draft_tool_name == "跟随":
+        if self.active_tool == "跟随":
             self._draw_follow_group_helpers()
             self.update()
 
@@ -5425,7 +5425,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
         # 清除当前选中集合并刷新显示与后续自动计算
         self._selected_point_ids = set()
-        self._mark_node_manual(self.active_node)
         self.clear_empty_group()
         self._recalculate_following_auto_nodes(self.active_node, include_manual_nodes=True)
         self._render_points_for_active_node()
@@ -5481,7 +5480,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         #         cleaned.append(entry)
         #     self.node_paths[self.active_node] = cleaned
 
-        self._mark_node_manual(self.active_node)
+        self.node_manual_edited[self.active_node] = True
         self._recalculate_following_auto_nodes(self.active_node, include_manual_nodes=False)
         self.dataChanged.emit()
 

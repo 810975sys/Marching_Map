@@ -1208,6 +1208,18 @@ class MainWindow(MainWindowNotice, QMainWindow):
         if self.activeToolName == "标签":
             self.onToolButtonClicked("框选")
             return
+        if self.activeToolName in {"路径", "跟随"}:
+            # 路径/跟随模式下取消：仅清除场景草稿状态，保留绘制控制台内容与可见性
+            self.scene._pending_points = []
+            self.scene._draft_tool_name = None
+            self.scene._draft_reference_points = []
+            self.scene._reset_drawing_rematch_state(active=False)
+            self.scene._clear_draft_items()
+            self.scene._clear_pending_preview_items()
+            self.scene._clear_draft_preview_items()
+            self.scene._render_points_for_active_node()
+            self.scene.drawingRematchStateChanged.emit()
+            return
         self.scene.cancel_current_drawing()
 
     def _on_drawing_rematch_requested(self):
