@@ -530,8 +530,8 @@ class SchemeSceneData:
                     # 其余组 leader 相对于 anchor 行进：保持与 anchor 的初始偏移量
                     # anchor_orig = id_to_orig.get(int(anchor_id))
                     # member_orig = id_to_orig.get(int(point_id))
-                    anchor_orig = self._find_point_in_node(self, node_index - 1, int(anchor_id))
-                    member_orig = self._find_point_in_node(self, node_index - 1, int(point_id))
+                    anchor_orig = self._find_point_in_node(node_index - 1, int(anchor_id))
+                    member_orig = self._find_point_in_node(node_index - 1, int(point_id))
                     if anchor_orig is not None and member_orig is not None:
                         offset_x = float(member_orig.get("x", 0.0)) - float(anchor_orig.get("x", 0.0))
                         offset_y = float(member_orig.get("y", 0.0)) - float(anchor_orig.get("y", 0.0))
@@ -557,8 +557,8 @@ class SchemeSceneData:
                 if not leader_is_anchor:
                     # anchor_orig2 = id_to_orig.get(int(anchor_id))
                     # leader_orig2 = id_to_orig.get(int(group_members[0]))
-                    anchor_orig2 = self._find_point_in_node(self, node_index - 1, int(anchor_id))
-                    leader_orig2 = self._find_point_in_node(self, node_index - 1, int(group_members[0]))
+                    anchor_orig2 = self._find_point_in_node(node_index - 1, int(anchor_id))
+                    leader_orig2 = self._find_point_in_node(node_index - 1, int(group_members[0]))
                     if anchor_orig2 is not None and leader_orig2 is not None:
                         loff_x = float(leader_orig2.get("x", 0.0)) - float(anchor_orig2.get("x", 0.0))
                         loff_y = float(leader_orig2.get("y", 0.0)) - float(anchor_orig2.get("y", 0.0))
