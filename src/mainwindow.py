@@ -69,7 +69,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self._sampling_tools = {"线段", "弧", "曲线/折线", "圆", "多边形", "填充四边形", "路径", "跟随"}    # 需要在绘制控制台显示采样设置的工具（"路径" 为特例，仅显示曲线模式）
         # self._dialog_required_tools = {
         #     "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形",
-        #     "调整", "跟随", "路径", "间隔行进",
+        #     "调整", "跟随", "路径", "间隔",
         #     "标签", "文本", "箭头",
         # }
         self._drawing_tools = {"点", "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形", "路径", "跟随"}
@@ -78,8 +78,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self._group_tools = {"分组"}
         self._select_tools = {"选择", "框选"}
         self._transform_tools = {"调整", "路径", "旋转"}
-        self._p0_forbidden_transform_tools = {"跟随", "路径", "间隔行进", "旋转"}
-        self._multi_select_tools = {"跟随", "间隔行进"}
+        self._p0_forbidden_transform_tools = {"跟随", "路径", "间隔", "旋转"}
+        self._multi_select_tools = {"跟随", "间隔"}
         
         self.setupMenus()   # 菜单栏
         self.setupToolBar()    # 工具栏
@@ -507,7 +507,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             ['选择', '框选'],   # 选择工具
             ['点', '线段', '弧', '曲线/折线', '填充四边形', '圆', '多边形'],    # 绘制工具
             ['调整', '分组'],   # 调整工具
-            ['跟随', '路径', '间隔行进', '旋转'],   # 变换工具
+            ['跟随', '路径', "间隔", '旋转'],   # 变换工具
             ['标签', '文本', '箭头']    # 标注工具
         ]
         
@@ -580,7 +580,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             '分组': "对点位分组进行连接、分割", 
             '跟随': "确定路径的经过点，所选点位跟随组leader沿路径移动",
             '路径': "确定路径的经过点，所选点位沿路径平移",
-            '间隔行进': "拖动点位，组内其余点位以固定间隔移动",
+            "间隔": "拖动点位，组内其余点位以固定间隔移动",
             '旋转': "设置旋转角度，所选点位绕中心点旋转（点位轨迹为圆弧）",
             '箭头': "绘制箭头标注",
             '标签': "设置选中点位的标签前缀与起始序号",
@@ -591,7 +591,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self._show_menu_notice("请先选中点位。", failed=True)
             self._set_active_tool("框选")
             return
-        if tool_name in {"路径", "间隔行进"} and len(getattr(self.scene, "_selected_point_ids", set())) < 2:
+        if tool_name in {"路径", "间隔"} and len(getattr(self.scene, "_selected_point_ids", set())) < 2:
             self._show_menu_notice("请至少选中2个点位。", failed=True)
             self._set_active_tool("框选")
             return
@@ -738,7 +738,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.drawingControlDock.setDrawingRematchVisible(False)
         self.drawingControlDock.setTextBoxControlsVisible(tool_name == "文本")
         self.drawingControlDock.setGroupSettingVisible(tool_name == "分组")
-        self.drawingControlDock.setIntervalControlsVisible(tool_name == "间隔行进")
+        self.drawingControlDock.setIntervalControlsVisible(tool_name == "间隔")
         self.drawingControlDock.setRotateControlsVisible(tool_name == "旋转")
         self.drawingControlDock.setArrowControlsVisible(tool_name == "箭头")
         self.drawingControlDock.setLabelSettingsVisible(tool_name == "标签")
@@ -773,7 +773,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self.drawingControlDock.cancelButton.setEnabled(True)
             return
 
-        if tool_name == "间隔行进":
+        if tool_name == "间隔":
             self.drawingControlDock.setSamplingToolVisible(None, False)
             self.drawingControlDock.setCurveModeVisible(False)
             self.drawingControlDock.setDraftActive(False)
@@ -960,7 +960,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
                 btn.setEnabled(beat_at_node and has_selection and not (is_p0 and name in self._p0_forbidden_transform_tools))
 
     def updateMultiSelectToolAvailability(self, beat: int, selected_count: int = 0):
-        """控制需要至少2个选中点位的工具（路径、间隔行进）的可用性。"""
+        """控制需要至少2个选中点位的工具（路径、间隔）的可用性。"""
         is_p0 = int(beat) == 0
         beat_at_node = self.timelineMainWidget.node_index_at_beat(beat) is not None
         has_enough = int(selected_count) >= 2

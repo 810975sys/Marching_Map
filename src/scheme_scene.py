@@ -151,7 +151,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._temp_group_line_items = []  # 临时分组连线图元
         self._temp_group_helper_items = []  # 临时分组用的 helper 圆圈图元
         self._follow_group_helper_items = []  # 跟随工具用的 group 首尾 helper 圆圈图元
-        self._interval_helper_items = {}    # 间隔行进工具用的 helper 拖拽手柄图元 {point_id: QGraphicsEllipseItem}
+        self._interval_helper_items = {}    # 间隔工具用的 helper 拖拽手柄图元 {point_id: QGraphicsEllipseItem}
         self._interval_anchor_id = None     # 间隔行进锚点 ID
         self._interval_original_positions = {}  # 间隔行进锚点拖动前的原始位置快照 {point_id: (x, y)}
         self._interval_drag_position = None  # 当前拖拽中锚点的 field 坐标 (x, y)，仅拖拽中有效，不写入 node_points
@@ -1098,7 +1098,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self.clear_temp_groups()
         if previous_tool == "跟随" and tool_name != "跟随":
             self._clear_follow_group_helper_items()
-        if previous_tool == "间隔行进" and tool_name != "间隔行进":
+        if previous_tool == "间隔" and tool_name != "间隔":
             self._interval_dragging = False
             self._clear_interval_helpers()
         if previous_tool == "旋转" and tool_name != "旋转":
@@ -1132,7 +1132,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self._enter_arrow_mode()
         self._render_points_for_active_node()   # 刷新点位显示
         # 点位修改时：将选中点位预览重置到上一张图的位置（仅视觉，不修改 node_points）
-        if tool_name in {"路径", "跟随", "间隔行进"} and self._selected_point_ids and self.active_node > 0:
+        if tool_name in {"路径", "跟随", "间隔"} and self._selected_point_ids and self.active_node > 0:
             self._reset_selected_points_to_prev_visual()
         if tool_name == "调整" and self._selected_point_ids:
             self.begin_adjustment()
@@ -1163,7 +1163,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         # 刷新组内连线
         self._refresh_selected_group_links()
         # 间隔行进：同步 helper 圆圈到移动后的点位位置
-        if self.active_tool == "间隔行进":
+        if self.active_tool == "间隔":
             for _pid, h in self._interval_helper_items.items():
                 p_item = self._point_items_by_id.get(_pid)
                 if p_item is not None:
@@ -2039,7 +2039,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def _draw_interval_helpers(self):
         """在间隔行进模式下增量更新所有选中点位的 helper 圆圈。"""
-        if self.active_tool != "间隔行进":
+        if self.active_tool != "间隔":
             self._clear_interval_helpers(full_reset=False)
             return
         if not self._selected_point_ids:
@@ -2354,8 +2354,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             point["x"] = p_orig[0] + dx * move_count
             point["y"] = p_orig[1] + dy * move_count
 
-        self.sync_sampling_values_from_selection("间隔行进")
-        self.reset_sampling_defaults("间隔行进")
+        self.sync_sampling_values_from_selection("间隔")
+        self.reset_sampling_defaults("间隔")
         self._pending_points = []
         self._draft_reference_points = []
         self._reset_drawing_rematch_state(active=False)
@@ -2403,7 +2403,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
     def _refresh_interval_preview(self):
         """刷新预览。"""
-        if self.active_tool != "间隔行进" or self._interval_anchor_id is None:
+        if self.active_tool != "间隔" or self._interval_anchor_id is None:
             return
         anchor_id = self._interval_anchor_id
         # 优先使用 _interval_drag_position（node_points 未写入拖拽位置）
@@ -4220,7 +4220,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             tool_name = "曲线/折线"
             refs = list(self._pending_points)
 
-        if (not tool_name or not refs) and self.active_tool != '间隔行进':
+        if (not tool_name or not refs) and self.active_tool != "间隔":
             self._clear_draft()
             self._pending_points = []
             if not had_draft:
@@ -4386,7 +4386,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                         self.dataChanged.emit()
                         return True
             
-            elif  self.active_tool == "间隔行进" and self._interval_anchor_id is not None and self._interval_original_positions:
+            elif  self.active_tool == "间隔" and self._interval_anchor_id is not None and self._interval_original_positions:
                 return self._confirm_interval_marching(had_draft)
 
             rematch_snapshot = self._drawing_rematch_snapshot()
@@ -4472,7 +4472,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             return
 
         # 间隔行进：清理锚点状态和 helper
-        if self.active_tool == "间隔行进":
+        if self.active_tool == "间隔":
             self._clear_interval_helpers()
             self._render_points_for_active_node()
             self.drawingRematchStateChanged.emit()
@@ -5310,7 +5310,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             self._clear_draft_items()
             self._draw_pending_reference_preview()
             self._draw_pending_reference_points()
-        if self.active_tool == "间隔行进":
+        if self.active_tool == "间隔":
             self._draw_interval_helpers()
             if self._interval_anchor_id is not None and self._interval_drag_position is not None:
                 # 将锚点的 PerformerPointItem 移到拖拽位置（node_points 未修改）
@@ -5348,8 +5348,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         # 若存在临时分组信息，则绘制其连线与首尾 helper
         if getattr(self, "_temp_group_to_point", None):
             QTimer.singleShot(0, self._update_temp_group_visuals)
-        # "跟随"/"路径"/"间隔行进"：将选中点位视觉重置到上一张图位置
-        if self.active_tool in {"跟随", "路径", "间隔行进"} and self._selected_point_ids and self.active_node > 0:
+        # "跟随"/"路径"/"间隔"：将选中点位视觉重置到上一张图位置
+        if self.active_tool in {"跟随", "路径", "间隔"} and self._selected_point_ids and self.active_node > 0:
             self._reset_selected_points_to_prev_visual()
         # 跟随工具的 helper 需在预览点位移动后绘制，以保证 helper 位置与预览点位一致
         if self.active_tool == "跟随":
@@ -5718,7 +5718,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 return
 
             # 间隔行进工具：点击 helper 圆圈启动拖拽
-            if self.active_tool == "间隔行进" and item is not None and item.data(0) == "interval_helper":
+            if self.active_tool == "间隔" and item is not None and item.data(0) == "interval_helper":
                 point_id = int(item.data(1))
                 self._on_interval_drag_started(point_id, event.scenePos())
                 self._interval_dragging = True

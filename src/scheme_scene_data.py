@@ -29,7 +29,7 @@ class SchemeSceneData:
         # node_paths: 每个节点下按参考点ID保存路径定义，路径定义包含 path（路径点列表）和 members（成员点位与路径偏移量的映射）。
         # 格式: { node_index: # 节点索引
         # [{
-        # "type": str, # 路径类型 {'forward', 'follow', 'interval', 'rotate'}，对应平移、跟随、间隔行进、旋转四种
+        # "type": str, # 路径类型 {'forward', 'follow', 'interval', 'rotate'}，对应平移、跟随、间隔、旋转四种
         # "path": [(x,y), ...], # 路径点列表
         # "anchor_id": int, # 锚点 ID，用于计算路径偏移量的参考点（rotate不需要）
         # "members": [point_ids] # 成员点位 ID 列表
