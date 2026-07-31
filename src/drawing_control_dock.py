@@ -608,7 +608,6 @@ class DrawingControlDock(QDockWidget):
             self.linePointCountAutoButton.blockSignals(True)
             self.linePointCountAutoButton.setChecked(False)
             self.linePointCountAutoButton.blockSignals(False)
-        # if hasattr(self._scene, "set_sampling_point_count"):
         self._scene.set_sampling_point_count(self._sampling_tool_name, int(value))
 
     def setLinePointCount(self, value: int):
@@ -627,7 +626,6 @@ class DrawingControlDock(QDockWidget):
             self.lineSpacingAutoButton.blockSignals(True)
             self.lineSpacingAutoButton.setChecked(False)
             self.lineSpacingAutoButton.blockSignals(False)
-        # if hasattr(self._scene, "set_sampling_spacing"):
         self._scene.set_sampling_spacing(self._sampling_tool_name, float(value))
 
     def _on_line_count_auto_toggled(self, checked: bool):
@@ -640,9 +638,7 @@ class DrawingControlDock(QDockWidget):
                 self.lineSpacingAutoButton.setChecked(False)
             finally:
                 self._syncing_line_segment_controls = False
-            # if hasattr(self._scene, "set_sampling_spacing_auto_enabled"):
             self._scene.set_sampling_spacing_auto_enabled(self._sampling_tool_name, False)
-        # if hasattr(self._scene, "set_sampling_point_count_auto_enabled"):
         self._scene.set_sampling_point_count_auto_enabled(self._sampling_tool_name, bool(checked))
         self.sync_sampling_settings(self._sampling_tool_name)
 
@@ -656,9 +652,7 @@ class DrawingControlDock(QDockWidget):
                 self.linePointCountAutoButton.setChecked(False)
             finally:
                 self._syncing_line_segment_controls = False
-            # if hasattr(self._scene, "set_sampling_point_count_auto_enabled"):
             self._scene.set_sampling_point_count_auto_enabled(self._sampling_tool_name, False)
-        # if hasattr(self._scene, "set_sampling_spacing_auto_enabled"):
         self._scene.set_sampling_spacing_auto_enabled(self._sampling_tool_name, bool(checked))
         self.sync_sampling_settings(self._sampling_tool_name)
 
@@ -672,9 +666,7 @@ class DrawingControlDock(QDockWidget):
                 self.lineShiftPointCountAutoButton.setChecked(False)
             finally:
                 self._syncing_line_segment_controls = False
-            # if hasattr(self._scene, "set_sampling_point_count_shift_auto_enabled"):
             self._scene.set_sampling_point_count_shift_auto_enabled(self._sampling_tool_name, False)
-        # if hasattr(self._scene, "set_sampling_shift_auto_enabled"):
         self._scene.set_sampling_shift_auto_enabled(self._sampling_tool_name, bool(checked))
         self.sync_sampling_settings(self._sampling_tool_name)
 
@@ -685,7 +677,6 @@ class DrawingControlDock(QDockWidget):
             self.lineShiftSpacingAutoButton.blockSignals(True)
             self.lineShiftSpacingAutoButton.setChecked(False)
             self.lineShiftSpacingAutoButton.blockSignals(False)
-        # if hasattr(self._scene, "set_sampling_spacing_shift"):
         self._scene.set_sampling_spacing_shift(self._sampling_tool_name, float(value))
 
     def _on_line_spacing_auto_toggled2(self, checked: bool):
@@ -697,9 +688,7 @@ class DrawingControlDock(QDockWidget):
                 self.lineShiftSpacingAutoButton.setChecked(False)
             finally:
                 self._syncing_line_segment_controls = False
-            # if hasattr(self._scene, "set_sampling_shift_auto_enabled"):
             self._scene.set_sampling_shift_auto_enabled(self._sampling_tool_name, False)
-        # if hasattr(self._scene, "set_sampling_point_count_shift_auto_enabled"):
         self._scene.set_sampling_point_count_shift_auto_enabled(self._sampling_tool_name, bool(checked))
         self.sync_sampling_settings(self._sampling_tool_name)
 
@@ -710,14 +699,12 @@ class DrawingControlDock(QDockWidget):
             self.lineShiftPointCountAutoButton.blockSignals(True)
             self.lineShiftPointCountAutoButton.setChecked(False)
             self.lineShiftPointCountAutoButton.blockSignals(False)
-        # if hasattr(self._scene, "set_sampling_point_count_shift"):
         self._scene.set_sampling_point_count_shift(self._sampling_tool_name, int(value))
 
     def _on_polygon_side_count_changed(self, value: int):
         """当多边形边数变化时同步到场景。"""
         if self._syncing_line_segment_controls or self._scene is None:
             return
-        # if hasattr(self._scene, "set_polygon_side_count"):
         self._scene.set_polygon_side_count(self._sampling_tool_name, int(value))
 
     def sync_sampling_settings(self, tool_name: str | None = None):

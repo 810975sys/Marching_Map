@@ -136,11 +136,6 @@ class AppSettingsDock(QDockWidget):
 
     def _load_settings(self):
         """加载用户设置与默认值；若任一 JSON 文件不存在则自动创建。"""
-        # 确保默认设置文件存在
-        # if not _DEFAULTS_PATH.exists():
-        #     _save_json(_DEFAULTS_PATH, _BUILTIN_DEFAULTS)
-        # self._defaults = _load_json(_DEFAULTS_PATH)
-
         # 确保用户设置文件存在
         if not _SETTINGS_PATH.exists():
             self._create_default_settings()

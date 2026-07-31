@@ -89,7 +89,6 @@ class TimelineWidget(QWidget):
         self._middle_bottom = 38    # 标尺下边Y坐标（同时也是当前拍位游标的下边Y坐标）
         self._bottom_row_y = 39     # 节点下方标签Y坐标（当前关闭，保留代码便于后续启用）
         self._pixels_per_beat = 32  # 每拍像素间距，控制时间轴的缩放程度；总拍数增长时控件变宽，由外层滚动区域处理溢出。
-        # self._min_ruler_width = 220
         
         # 缩放范围：控制每拍显示宽度，避免过小或过大。
         self._min_pixels_per_beat = 8   # 最小每拍像素间距，过小会导致节点重叠，影响交互。

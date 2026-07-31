@@ -171,7 +171,6 @@ class GridRenderer:
                 text_width = metrics.horizontalAdvance(text)
                 text_height = metrics.height()
                 ascent = metrics.ascent()
-                # descent = metrics.descent()  # 未参与计算，保留注释便于后续排版调整。
                 # 左侧
                 if s.left_display != -1:
                     painter.save()

@@ -27,12 +27,10 @@ from src.field_move import FieldMove
 from src.scheme_scene import SchemeScene
 from src.field_settings_dock import FieldSettingsDock
 from src.timeline_widget import TimelineWidget, TimelineScrollArea
-# from mainwindow_docks import DrawingControlDock, TimelineScrollArea, ToolOptionDock
 from src.drawing_control_dock import DrawingControlDock
 from src.app_settings_dock import AppSettingsDock
 from src.mainwindow_notice import MainWindowNotice
 from src.tip_window import TipWindow
-# from field_info import _field_default_dir
 
 
 def scheme_default_dir() -> Path:
@@ -65,13 +63,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         # 工具栏按钮映射：工具名 -> QToolButton
         self.toolButtons = {}   # 保存工具按钮引用，便于根据工具名更新按钮状态
         self.activeToolName = "框选"
-        # self.pendingToolName = None
         self._sampling_tools = {"线段", "弧", "曲线/折线", "圆", "多边形", "填充四边形", "路径", "跟随"}    # 需要在绘制控制台显示采样设置的工具（"路径" 为特例，仅显示曲线模式）
-        # self._dialog_required_tools = {
-        #     "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形",
-        #     "调整", "跟随", "路径", "间隔",
-        #     "标签", "文本", "箭头",
-        # }
         self._drawing_tools = {"点", "线段", "弧", "曲线/折线", "填充四边形", "圆", "多边形", "路径", "跟随"}
         self._text_tools = {"文本"}
         self._label_tools = {"标签"}
@@ -83,7 +75,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
         
         self.setupMenus()   # 菜单栏
         self.setupToolBar()    # 工具栏
-        # self.setupDockWidgets()
         self.setupCentralView() # 主场景视图
         self.setupTimeline()    # 底部时间轴
         self.setupFieldSettingsDock()   # 场地设置浮动面板
@@ -91,7 +82,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.setupAppSettingsDock()     # 应用设置浮动面板
         self.setupInteractions()    # 信号与槽绑定
         self.setupMainLayout()  # 主窗口整体布局
-        # self.setupToolOptionDock()      # 工具选项浮动面板
 
         # 启动时从历史文件恢复上次编辑的方案
         self._restore_last_scheme()
@@ -216,7 +206,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
         return True
         
     def _save_field_info(self):
-        # try:
         default_path = field_default_dir() / "field_settings.json"
         file_path, _ = QFileDialog.getSaveFileName(
             self,
@@ -229,9 +218,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
         saveFieldInfo(self.scene.field_info, file_path)
         self._show_menu_notice("保存成功！")
-        # except Exception as e:
-        #     print(e)
-        #     self._show_menu_notice(f"保存失败：{e}", failed=True)
 
     def _build_scheme_payload(self) -> dict:
         """收集当前方案的已确认数据。"""
@@ -267,8 +253,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
             field_info_data = payload.get("field_info", {})
             self.scene.field_info.load_from_dict(field_info_data)
-
-            # self._scheme_file_path = None
             
             self.bpmSpinBox.setValue(payload.get("bpm", 120))
         finally:
@@ -299,25 +283,15 @@ class MainWindow(MainWindowNotice, QMainWindow):
         )
         if not file_path:
             return False
-        # try:
         self._save_scheme_to_path(file_path)
         return True
-        # except Exception as e:
-        #     print(e)
-        #     self._show_menu_notice(f"另存为失败：{e}", failed=True)
-        #     return False
 
     def _save_scheme(self, checked=False):
         """保存当前方案；若尚未指定文件则转为另存为。"""
         if self._scheme_file_path is None:
             return self._save_scheme_as()
-        # try:
         self._save_scheme_to_path(self._scheme_file_path)
         return True
-        # except Exception as e:
-        #     print(e)
-        #     self._show_menu_notice(f"保存失败：{e}", failed=True)
-        #     return False
 
     def _open_scheme(self, checked=False):
         """打开方案文件并恢复到当前窗口。"""
@@ -333,7 +307,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
         )
         if not file_path:
             return False
-        # try:
         with open(file_path, "r", encoding="utf-8") as f:
             payload = json.load(f)
         self._apply_scheme_payload(payload)
@@ -341,10 +314,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self._save_last_scheme_path()
         self._show_menu_notice(f"已打开：{Path(file_path).name}")
         return True
-        # except Exception as e:
-        #     print(e)
-        #     self._show_menu_notice(f"打开失败：{e}", failed=True)
-        #     return False
 
     def _export_pdf(self, checked=False):
         """将每个方案图节点导出为一页 A4 PDF。"""
@@ -352,24 +321,9 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self._save_scheme_as()
             if self._scheme_file_path is None:
                 return False
-        # try:
         else:
             self._save_scheme_to_path(self._scheme_file_path)
         
-        # default_name = "marching_map_export.pdf"
-        # default_path = (
-        #     (self._scheme_file_path.with_suffix(".pdf") if self._scheme_file_path is not None else (scheme_default_dir() / default_name))
-        # )
-        # file_path, _ = QFileDialog.getSaveFileName(
-        #     self,
-        #     "导出为 PDF",
-        #     str(default_path),
-        #     "PDF 文件 (*.pdf)",
-        # )
-        # if not file_path:
-        #     return False
-
-        # try:
         pdf_path = self._scheme_file_path
         stem = pdf_path.stem
         conductor = pdf_path.with_name(f"{stem}_指挥视角.pdf")
@@ -379,10 +333,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
         self._show_menu_notice(f"已导出 pdf 到 {stem}")
         return True
-        # except Exception as e:
-        #     self._show_menu_notice(f"导出失败：{e}", failed=True)
-        #     print(e)
-        #     return False
 
     def _new_scheme(self, checked=False):
         """新建一个空白方案。"""
@@ -477,7 +427,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
         event.accept()
 
     def _load_field_info(self):
-        # try:
         default_path = field_default_dir() / "field_settings.json"
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -489,12 +438,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             return
 
         loadFieldInfo(self.scene.field_info, Path(file_path))
-        # self.scene.set_field_info(field_info)
         self._show_menu_notice("导入成功！")
-        # except Exception as e:
-        #     print(e)
-        #     self._show_menu_notice(f"导入失败：{e}", failed=True)
-            # print(f"Error loading field info: {e}")
     
     def setupToolBar(self):
         """
@@ -563,10 +507,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
         # 播放演示中点击任何工具按钮都停止播放
         if self._playback_active:
             self._stop_playback()
-        # if not checked:
-        #     if self.activeToolName == tool_name and tool_name in self.toolButtons:
-        #         self.toolButtons[tool_name].setChecked(True)
-        #     return
         tool_text = {
             '点': "点击绘制参考点；拖动空心矩形可对单点进行修正。",
             '线段': "确定线段起止点；拖动空心矩形可对单点进行修正。",
@@ -610,7 +550,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
         """创建场景与视图。"""
         self.scene = SchemeScene(self)
         self.view = FieldMove(self.scene, self)
-        # self.view.setScene(self.scene)
         # setCentralWidget 在 setupTimeline 里统一设置
 
     def setupTimeline(self):
@@ -707,8 +646,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.scene.field_info.changed.connect(self._mark_scheme_dirty)
         self.scene.draftStarted.connect(self.onDraftStarted)
         self.scene.draftFinished.connect(self.onDraftFinished)
-        # self.scene.lineSegmentPointCountChanged.connect(self.onLineSegmentPointCountChanged)
-        # self.scene.lineSegmentSpacingChanged.connect(self.onLineSegmentSpacingChanged)
         self.scene.samplingPointCountChanged.connect(self.onSamplingPointCountChanged)
         self.scene.samplingSpacingChanged.connect(self.onSamplingSpacingChanged)
         self.scene.samplingShiftSpacingChanged.connect(self.onSampling2ndSpacingChanged)
@@ -744,7 +681,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.drawingControlDock.setLabelSettingsVisible(tool_name == "标签")
         
         if tool_name == "调整":
-            # self.drawingControlDock.setOperationLabels("确认调整 Enter", "取消调整 Esc")
             self.drawingControlDock.setSamplingToolVisible(None, False)
             self.drawingControlDock.setCurveModeVisible(False)
             self.drawingControlDock.setDraftActive(True)
@@ -814,7 +750,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self._init_label_settings_dock()
             return
 
-        # self.drawingControlDock.setOperationLabels("确认绘制 Enter", "取消绘制 Esc")
         self.drawingControlDock.setSamplingToolVisible(tool_name if tool_name in self._sampling_tools else None, tool_name in self._sampling_tools)
         self.drawingControlDock.setCurveModeVisible(tool_name in {"曲线/折线", "路径", "跟随"})
         self.drawingControlDock.setDraftActive(tool_name == "点")
@@ -876,8 +811,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
     def onSamplingPointCountChanged(self, tool_name: str, point_count: int):
         """采样点数自动变化时，同步控制台显示。"""
-        # if not hasattr(self, "drawingControlDock"):
-        #     return
         if tool_name not in self._sampling_tools or tool_name != self.activeToolName:
             return
         if getattr(self.drawingControlDock, "linePointCountAutoButton", None) is not None and self.drawingControlDock.linePointCountAutoButton.isChecked():
@@ -888,8 +821,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
     def onSamplingSpacingChanged(self, tool_name: str, spacing: float):
         """圆、弧、多边形等采样间隔自动变化时，同步控制台显示。"""
-        # if not hasattr(self, "drawingControlDock"):
-        #     return
         if tool_name not in self._sampling_tools or tool_name != self.activeToolName:
             return
         self.drawingControlDock.setSamplingTool(tool_name)
@@ -899,8 +830,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
     def onSampling2ndPointCountChanged(self, tool_name: str, point_count: int):
         """填充四边形的 P0-P2 点位个数变化时，同步控制台显示。"""
-        # if not hasattr(self, "drawingControlDock"):
-        #     return
         if self.activeToolName != tool_name:
             return
         if tool_name != "填充四边形":
@@ -914,8 +843,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
     def onSampling2ndSpacingChanged(self, tool_name: str, spacing: float):
         """填充四边形的第二方向间隔变化时，同步控制台显示。"""
-        # if not hasattr(self, "drawingControlDock"):
-        #     return
         if self.activeToolName != tool_name:
             return
         # 仅在填充四边形工具时生效
@@ -940,12 +867,10 @@ class MainWindow(MainWindowNotice, QMainWindow):
             btn = self.toolButtons.get(name)
             if btn is not None:
                 btn.setEnabled(beat_at_node and (is_p0 or has_selection))
-        # for name in self._text_tools:
         btn = self.toolButtons.get('文本')
         if btn is not None:
             btn.setEnabled(bool(beat_at_node))
         # 箭头工具始终可用（只要在节点拍上）
-        # for name in ["箭头"]:
         btn = self.toolButtons.get('箭头')
         if btn is not None:
             btn.setEnabled(bool(beat_at_node))
@@ -1270,12 +1195,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
     def _on_label_apply(self):
         """应用标签设置：将前缀和序号应用到选中点位。"""
-        # if self.activeToolName != "标签":
-        #     return
-        # selected = sorted(int(pid) for pid in self.scene._selected_point_ids)
-        # if not selected:
-        #     self._show_menu_notice("请先选中点位再应用标签。", failed=True)
-        #     return
         prefix = self.drawingControlDock.labelPrefixEdit.text()
         serial_start = self.drawingControlDock.labelSerialSpin.value()
         for i, pid in enumerate(sorted(list(self.scene._selected_point_ids))):
@@ -1283,14 +1202,12 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self.scene._set_point_label_serial(pid, serial_start + i)
         self.scene._render_points_for_active_node()
         self.scene.dataChanged.emit()
-        # self._show_menu_notice(f"已为 {len(selected)} 个点位设置标签。")
 
     def _on_delete_points_triggered(self):
         """响应菜单删除点位：弹出确认对话框，确认后调用场景删除方法。"""
         action = self._confirm_delete_points_dialog(len(self.scene._selected_point_ids))
         if not action:
             return
-        # try:
         if action == "delete":
             self.scene.delete_selected_points()
             self._show_menu_notice("删除成功！")
@@ -1299,9 +1216,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self._show_menu_notice("已恢复转换点位置。")
         else:
             return
-        # except Exception as e:
-        #     print(e)
-        #     self._show_menu_notice(f"操作失败：{e}", failed=True)
 
     def _confirm_delete_points_dialog(self, count: int) -> str | None:
         """显示确认对话框，返回动作字符串：'delete'、'restore' 或 None（取消）。"""
@@ -1339,10 +1253,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
     def _positionDrawingControlDock(self):
         """将绘制控制台放到绘图区左上角。"""
-        # if not hasattr(self, "drawingControlDock"):
-        #     return
-        # if not hasattr(self, "view"):
-        #     return
         dock = self.drawingControlDock
         if not dock.isFloating():
             dock.setFloating(True)

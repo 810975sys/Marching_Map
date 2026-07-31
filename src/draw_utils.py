@@ -9,18 +9,6 @@ from PyQt6.QtGui import QPainterPath
 def _distance(p1: tuple[float, float], p2: tuple[float, float]) -> float:
     return math.hypot(p2[0] - p1[0], p2[1] - p1[1])
 
-# def _dedupe_points(points: List[tuple[float, float]]) -> List[tuple[float, float]]:
-#     """根据坐标值去重，避免重复点位导致的图元重叠与性能问题。"""
-#     unique: List[tuple[float, float]] = []
-#     seen = set()
-#     for x, y in points:
-#         key = (round(x, 6), round(y, 6))
-#         if key in seen:
-#             continue
-#         seen.add(key)
-#         unique.append((x, y))
-#     return unique
-
 def _sample_line_points_with_count(p1: tuple[float, float], p2: tuple[float, float], spacing: float, point_count: int) -> List[tuple[float, float]]:
     """在线段上以固定间距和点位数量采样点位，包含起点但不包含终点；当点位数量过少时优先保证间距。"""
     count = max(1, int(point_count))
@@ -290,15 +278,6 @@ def _circle_from_two_points(center: tuple[float, float], radius_point: tuple[flo
     rx, ry = radius_point
     radius = math.hypot(rx - cx, ry - cy)
     return cx, cy, radius
-
-# def _rectangle_from_three_points(a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]) -> List[tuple[float, float]]:
-#     """根据三个点的坐标，计算矩形的四个顶点坐标。"""
-#     ax, ay = a
-#     bx, by = b
-#     cx, cy = c
-#     dx = bx + (cx - ax)
-#     dy = by + (cy - ay)
-#     return [a, b, (dx, dy), c]
 
 def _circumcenter(p1: tuple[float, float], p2: tuple[float, float], p3: tuple[float, float]) -> tuple[float, float] | None:
     """计算三角形的外心坐标。外心是三角形三个顶点的垂直平分线的交点，也是通过这三个点的圆的圆心。返回一个包含外心坐标的元组，如果三个点共线则返回 None。"""

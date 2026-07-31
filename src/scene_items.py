@@ -37,7 +37,6 @@ class ReferenceHandleItem(QGraphicsRectItem):
         self._moved_callback = moved_callback   # 移动回调，返回调整后的场景坐标以实现吸附等功能。
         self._drag_started_callback = drag_started_callback
         self._drag_finished_callback = drag_finished_callback
-        # self._apply_pen()
         self.setPen(QPen(ReferenceHandleItem.pen_color, 1.2))
         self.setBrush(QBrush(Qt.BrushStyle.NoBrush))   # 透明填充
         self.setAcceptHoverEvents(True)
@@ -55,10 +54,6 @@ class ReferenceHandleItem(QGraphicsRectItem):
     @size.setter
     def size(self, value: float) -> None:
         self.set_size(value)
-
-    # def _apply_pen(self):
-    #     """应用类级别 pen_color 到当前实例。"""
-    #     self.setPen(QPen(ReferenceHandleItem.pen_color, 1.2))
 
     @classmethod
     def apply_pen_color(cls, color: QColor):
@@ -134,7 +129,6 @@ class MovementControlHandleItem(QGraphicsEllipseItem):
         self._drag_finished_callback = drag_finished_callback
         self._inner_radius = (self._size / 2.0) * self._inner_ratio
         self._pressed_part = None  # 'inner' or 'outer' during drag
-        # self._apply_pen()
         self.setPen(QPen(MovementControlHandleItem.pen_color, 1.4))
         self.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         self.setAcceptHoverEvents(True)
@@ -170,10 +164,6 @@ class MovementControlHandleItem(QGraphicsEllipseItem):
         self.setRect(-half, -half, size, size)
         self._inner_radius = (self._size / 2.0) * self._inner_ratio
         self.update()
-
-    # def _apply_pen(self):
-    #     """应用类级别 pen_color 到当前实例。"""
-    #     self.setPen(QPen(MovementControlHandleItem.pen_color, 1.4))
 
     @classmethod
     def apply_pen_color(cls, color: QColor):

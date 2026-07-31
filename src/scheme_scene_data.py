@@ -88,7 +88,6 @@ class SchemeSceneData:
                                 members: list[int] | None = None, leaders: list[int] = None, interval: tuple[int, int] = None,
                                 rotate_info: tuple[tuple[float, float], float] = None):
         """在指定节点中新增一条路径定义。"""
-        # idx = max(0, int(node_index))
         entry = {
             'type': path_type, 
             "members": members,
@@ -110,14 +109,6 @@ class SchemeSceneData:
 
         # 直接加入路径，旧路径通过 clear_selected_point_in_path 进行处理
         self.node_paths[node_index] = self.node_paths.get(node_index, []) + [entry]
-        # node_paths = self.node_paths.setdefault(idx, [])
-        # for entry_index, existed in enumerate(node_paths):
-        #     if existed["anchor_id"] == anchor_id:
-        #         # 如果已存在相同 anchor_id 的路径定义，则更新该条路径定义
-        #         node_paths[entry_index] = entry
-        #         break
-        # else:
-        #     node_paths.append(entry)
 
     def _node_path_member_offset(self, node_index: int, ref_entry: dict, point_id: int) -> tuple[float, float]:
         """按当前节点里的锚点和成员点位计算偏移。forward方式"""
@@ -169,9 +160,6 @@ class SchemeSceneData:
         self.point_lable = data.get("point_lable", [])
 
         max_point_id = len(self.node_points[0]) if self.node_points else 0
-        # for points in self.node_points:
-        #     for point in points:
-        #         max_point_id = max(max_point_id, int(point.get("id", 0)))
 
         for group in self.group_to_point:
             for point_id in group.get("point_ids", []):
@@ -198,12 +186,10 @@ class SchemeSceneData:
             self.node_points[0] = []
             return
 
-        # self.node_points.append([])
         self.node_manual_edited.append(False)
         
         prev_points = self.node_points[idx - 1] if idx - 1 < len(self.node_points) else []
         self.node_points.append(copy.deepcopy(prev_points))
-        # self.node_paths.setdefault(idx, [])
 
     def on_node_added(self, node_index: int):
         """在时间轴末尾添加新节点后，确保节点数据结构完整并切换到新节点。"""
@@ -305,17 +291,10 @@ class SchemeSceneData:
         elif path_info['type'] == 'interval':
             left_entry["interval"] = (path_info['interval'][0], 0)
             right_entry["interval"] = (0, path_info['interval'][1])
-        # if path_info['type'] == 'rotate' and 'rotate_info' in path_info:
-        #     center, angle = path_info['rotate_info']
-        #     half_angle = float(angle) / 2.0
-        #     left_entry["rotate_info"] = ((float(center[0]), float(center[1])), half_angle)
-        #     right_entry["rotate_info"] = ((float(center[0]), float(center[1])), half_angle)
         return left_entry, right_entry
 
     def on_node_inserted(self, inserted_index: int):
         """在中间拍位插入节点后，按新时间轴索引重排并初始化新节点点位。"""
-        # inserted_index = int(node_index)
-
         moved_textboxes = {}
         for idx in sorted(self.node_textboxes.keys(), reverse=True):
             if idx >= inserted_index:
@@ -341,7 +320,6 @@ class SchemeSceneData:
         self.node_points.insert(inserted_index, copy.deepcopy(self.node_points[left_idx]))
         if left_idx < len(self.node_points) and right_idx <= len(self.node_points):  # 如果左右节点都存在则插值
             # 插值新节点点位
-            # self.node_points.insert(inserted_index, self.node_points[left_idx].copy())  # 先复制左节点，修复 follow 插值的点位丢失问题
             self.node_points[inserted_index] = self._interpolate_points_at_beat(left_idx, right_idx, self._node_start_beat(inserted_index))
             
             # 更新路径设置（仅当 inserted_index 原有路径定义时才拆分）
@@ -354,11 +332,6 @@ class SchemeSceneData:
                     split_right_paths.append(right_entry)
                 self.node_paths[inserted_index] = left_paths
                 self.node_paths[right_idx] = split_right_paths
-        # else:   # 复制左节点（如果存在）
-        #     self.node_points.insert(inserted_index, self._copy_points(left_idx))
-
-        # self.node_manual_edited[inserted_index] = False # 手动编辑状态默认为 False。
-
         self._render_points_for_active_node()
 
     def on_node_deleted(self, node_index: int):
@@ -403,10 +376,6 @@ class SchemeSceneData:
         self.node_arrows = new_arrows
 
         # 重排节点手动编辑状态
-        # if removed_index < len(self.node_manual_edited):
-        #     self.node_manual_edited.pop(removed_index)
-        # if not self.node_manual_edited:
-        #     self.node_manual_edited = [False]
         self._recalculate_manual_edited_states()
         self.clear_empty_group()
         # 调整当前选中节点索引
@@ -518,7 +487,6 @@ class SchemeSceneData:
                         return None
                     return float(leader0_sample[0]) + float(offset[0]), float(leader0_sample[1]) + float(offset[1])
 
-                # id_to_orig = {int(p.get("id", -1)): p for p in self.node_points[node_index - 1]}
                 leader_distance = progress * total_length
 
                 if int(point_id) == int(group_members[0]):
@@ -528,8 +496,6 @@ class SchemeSceneData:
                         pos = self._sample_position_along_path(path, progress)
                         return (float(pos[0]), float(pos[1])) if pos else None
                     # 其余组 leader 相对于 anchor 行进：保持与 anchor 的初始偏移量
-                    # anchor_orig = id_to_orig.get(int(anchor_id))
-                    # member_orig = id_to_orig.get(int(point_id))
                     anchor_orig = self._find_point_in_node(node_index - 1, int(anchor_id))
                     member_orig = self._find_point_in_node(node_index - 1, int(point_id))
                     if anchor_orig is not None and member_orig is not None:
@@ -555,8 +521,6 @@ class SchemeSceneData:
                 anchor_id = ref_entry.get("anchor_id")
                 leader_is_anchor = int(group_members[0]) == int(anchor_id)
                 if not leader_is_anchor:
-                    # anchor_orig2 = id_to_orig.get(int(anchor_id))
-                    # leader_orig2 = id_to_orig.get(int(group_members[0]))
                     anchor_orig2 = self._find_point_in_node(node_index - 1, int(anchor_id))
                     leader_orig2 = self._find_point_in_node(node_index - 1, int(group_members[0]))
                     if anchor_orig2 is not None and leader_orig2 is not None:
@@ -571,7 +535,6 @@ class SchemeSceneData:
                 forward_points = []
                 for j in range(idx, -1, -1):
                     pid = group_members[j]
-                    # orig = id_to_orig.get(int(pid))
                     orig = self._find_point_in_node(node_index - 1, int(pid))
                     forward_points.append((float(orig.get("x", 0.0)), float(orig.get("y", 0.0))))
 

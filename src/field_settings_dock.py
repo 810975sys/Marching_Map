@@ -147,11 +147,9 @@ class FieldSettingsDock(QDockWidget):
         form.addRow("坐标字体大小", self.labelZoomSpin)
 
         display_row = QWidget(group)
-        # display_layout3 = QVBoxLayout(display_row)
         display_layout = QHBoxLayout(display_row)
         display_layout.setContentsMargins(0, 0, 0, 0)
         display_layout.setSpacing(8)
-        # display_layout2 = QHBoxLayout(display_row)
         
         self.top_label_display = QSpinBox(display_row)
         self.bottom_label_display = QSpinBox(display_row)
