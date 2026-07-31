@@ -153,7 +153,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._follow_group_helper_items = []  # 跟随工具用的 group 首尾 helper 圆圈图元
         self._interval_helper_items = {}    # 间隔工具用的 helper 拖拽手柄图元 {point_id: QGraphicsEllipseItem}
         self._interval_anchor_id = None     # 间隔行进锚点 ID
-        self._interval_original_positions = {}  # 间隔行进锚点拖动前的原始位置快照 {point_id: (x, y)}
+        # self._interval_original_positions = {}  # 间隔行进锚点拖动前的原始位置快照 {point_id: (x, y)}
         self._interval_drag_position = None  # 当前拖拽中锚点的 field 坐标 (x, y)，仅拖拽中有效，不写入 node_points
         self._interval_dragging = False      # 是否正在拖拽间隔行进 helper
         self._rotate_angle = 0.0             # 旋转工具当前角度（度）
@@ -1411,7 +1411,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         # 注意：不重置 _interval_dragging，拖拽标志由 mousePress/Release 和切换工具时管理
         if full_reset:
             self._interval_anchor_id = None
-            self._interval_original_positions = {}
+            # self._interval_original_positions = {}
             self._interval_drag_position = None
 
     def _clear_rotate_helpers(self):
@@ -2092,7 +2092,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         """间隔行进 helper 拖动开始时：记录原始位置快照并设置该点为锚点。"""
         self._interval_anchor_id = int(point_id)
         self._interval_drag_position = None
-        self._interval_original_positions = {}
+        # self._interval_original_positions = {}
         # 切换到新锚点时，清空所有预览图元，并复原之前被移动过视觉效果的点位
         for item in getattr(self, "_pending_preview_items", []):
             self.removeItem(item)
@@ -2112,9 +2112,9 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         # 以 active_node - 1 为基准记录原始位置
         src_node = max(0, self.active_node - 1)
         node_points = self.node_points[src_node]
-        for p in node_points:
-            pid = int(p.get("id", -1))
-            self._interval_original_positions[pid] = (float(p.get("x", 0.0)), float(p.get("y", 0.0)))
+        # for p in node_points:
+        #     pid = int(p.get("id", -1))
+        #     self._interval_original_positions[pid] = (float(p.get("x", 0.0)), float(p.get("y", 0.0)))
         self._clear_draft_items()
         # 将选中点位视觉重置到上一张图位置
         self._reset_selected_points_to_prev_visual()
@@ -2128,9 +2128,10 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             return self._field_to_scene(fx, fy)
 
         anchor_id = self._interval_anchor_id
-        orig = self._interval_original_positions.get(anchor_id)
-        if orig is None:
-            return self._field_to_scene(fx, fy)
+        orig = self._find_point_in_node(self.active_node - 1, anchor_id)
+        # orig = self._interval_original_positions.get(anchor_id)
+        # if orig is None:
+        #     return self._field_to_scene(fx, fy)
 
         # 存储拖拽位置到临时变量，不修改 node_points
         self._interval_drag_position = (fx, fy)
@@ -2152,8 +2153,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._pending_preview_items = []
 
         # 锚点的移动向量（总共移动量）
-        dx = fx - orig[0]
-        dy = fy - orig[1]
+        dx = fx - orig['x']
+        dy = fy - orig['y']
 
         # 获取 fall/stop 设置
         parent = self.parent()
@@ -2174,21 +2175,22 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         group_members = []
         if group_id is not None and int(group_id) < len(self.group_to_point):
             group_info = self.group_to_point[int(group_id)]
-            group_members = [int(pid) for pid in group_info.get("point_ids", [])]
+            group_members = [int(pid) for pid in group_info.get("point_ids", []) if int(pid) in self._selected_point_ids]
 
         if not group_members or len(group_members) < 2:
             # 无组或单点：仅移动锚点自身
             preview_points = []
             src_points = []
             for pid in self._selected_point_ids:
-                p_orig = self._interval_original_positions.get(int(pid))
+                # p_orig = self._interval_original_positions.get(int(pid))
+                p_orig = self._find_point_in_node(self.active_node - 1, int(pid))
                 if p_orig is None:
                     continue
-                src_points.append({"id": int(pid), "x": p_orig[0], "y": p_orig[1]})
+                src_points.append({"id": int(pid), "x": p_orig['x'], "y": p_orig['y']})
                 if int(pid) == int(anchor_id):
-                    preview_points.append((p_orig[0] + dx, p_orig[1] + dy))
+                    preview_points.append((p_orig['x'] + dx, p_orig['y'] + dy))
                 else:
-                    preview_points.append(p_orig)
+                    preview_points.append((p_orig['x'], p_orig['y']))
             self._draw_interval_preview(preview_points, src_points)
             return self._field_to_scene(fx, fy)
 
@@ -2197,7 +2199,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
         # 计算每个组内点的偏移量：相邻点落后 fall_count 拍
         # 组长度
-        group_len = len(group_members)
+        # group_len = len(group_members)
 
         preview_points = []
         src_points = []
@@ -2208,19 +2210,19 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
         for pid in self._selected_point_ids:
             pid = int(pid)
-            p_orig = self._interval_original_positions.get(pid)
+            p_orig = self._find_point_in_node(self.active_node - 1, pid)
 
             if pid not in group_members:
                 # 不在同一组，保持原位
-                src_points.append({"id": pid, "x": p_orig[0], "y": p_orig[1]})
-                preview_points.append(p_orig)
+                src_points.append({"id": pid, "x": p_orig['x'], "y": p_orig['y']})
+                preview_points.append((p_orig['x'], p_orig['y']))
                 continue
 
             try:
                 member_idx = group_members.index(pid)
             except ValueError:
-                src_points.append({"id": pid, "x": p_orig[0], "y": p_orig[1]})
-                preview_points.append(p_orig)
+                src_points.append({"id": pid, "x": p_orig['x'], "y": p_orig['y']})
+                preview_points.append((p_orig['x'], p_orig['y']))
                 continue
 
             # 距离锚点的索引偏移
@@ -2232,9 +2234,9 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             )
 
             move_count = end_beat - start_beat if end_beat > start_beat else 0
-            px = p_orig[0] + dx * move_count
-            py = p_orig[1] + dy * move_count
-            src_points.append({"id": pid, "x": p_orig[0], "y": p_orig[1]})
+            px = p_orig['x'] + dx * move_count
+            py = p_orig['y'] + dy * move_count
+            src_points.append({"id": pid, "x": p_orig['x'], "y": p_orig['y']})
             preview_points.append((px, py))
 
         self._draw_interval_preview(preview_points, src_points)
@@ -2243,12 +2245,13 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
     def _confirm_interval_marching(self, had_draft: bool) -> bool:
         """确认间隔行进：将锚点移动量与间隔设置写入 node_paths。"""
         anchor_id = self._interval_anchor_id
-        orig = self._interval_original_positions.get(anchor_id)
+        # orig = self._interval_original_positions.get(anchor_id)
+        orig = self._find_point_in_node(self.active_node - 1, anchor_id)
         # anchor_point = self._find_point_by_id(anchor_id)
         anchor_point = self._find_point_in_node(self.active_node, anchor_id)
         # current_points = self.node_points[self.active_node]
 
-        if orig is None or anchor_point is None:
+        if anchor_point is None:
             self._clear_draft()
             self._clear_interval_helpers()
             self._pending_points = []
@@ -2265,8 +2268,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             anchor_fx, anchor_fy = float(anchor_point.get("x", 0.0)), float(anchor_point.get("y", 0.0))
 
         # 锚点移动量
-        dx = anchor_fx - orig[0]
-        dy = anchor_fy - orig[1]
+        dx = anchor_fx - orig['x']
+        dy = anchor_fy - orig['y']
 
         # 获取组成员
         group_id = anchor_point.get("group_id")
@@ -2312,7 +2315,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                     active_members.append(pid)
 
         # 存储路径（锚点原始位置到新位置），仅含活跃成员
-        path = [(float(orig[0]), float(orig[1])),
+        path = [(float(orig['x']), float(orig['y'])),
                 (float(anchor_fx), float(anchor_fy))]
 
         self._upsert_node_path_entry(
@@ -2334,9 +2337,10 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
         for pid in active_members:
             pid = int(pid)
-            p_orig = self._interval_original_positions.get(pid)
-            if p_orig is None:
-                continue
+            # p_orig = self._interval_original_positions.get(pid)
+            p_orig = self._find_point_in_node(self.active_node - 1, pid)
+            # if p_orig is None:
+            #     continue
             # point = point_by_id.get(pid)
             point = self._find_point_in_node(self.active_node, pid)
             if point is None:
@@ -2351,8 +2355,8 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             )
 
             move_count = end_beat - start_beat
-            point["x"] = p_orig[0] + dx * move_count
-            point["y"] = p_orig[1] + dy * move_count
+            point["x"] = p_orig['x'] + dx * move_count
+            point["y"] = p_orig['y'] + dy * move_count
 
         self.sync_sampling_values_from_selection("间隔")
         self.reset_sampling_defaults("间隔")
@@ -4386,7 +4390,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                         self.dataChanged.emit()
                         return True
             
-            elif  self.active_tool == "间隔" and self._interval_anchor_id is not None and self._interval_original_positions:
+            elif self.active_tool == "间隔" and self._interval_anchor_id is not None:
                 return self._confirm_interval_marching(had_draft)
 
             rematch_snapshot = self._drawing_rematch_snapshot()
