@@ -27,6 +27,7 @@ from src.field_move import FieldMove
 from src.scheme_scene import SchemeScene
 from src.field_settings_dock import FieldSettingsDock
 from src.timeline_widget import TimelineWidget, TimelineScrollArea
+from src.tempo_data import Tempo
 from src.drawing_control_dock import DrawingControlDock
 from src.app_settings_dock import AppSettingsDock
 from src.mainwindow_notice import MainWindowNotice
@@ -224,9 +225,10 @@ class MainWindow(MainWindowNotice, QMainWindow):
         return {
             "schema_version": 1,
             "field_info": self.scene.field_info.to_dict(),
-            "graph_list": list(self.timelineMainWidget.graph_list),
-            "scene": self.scene.export_confirmed_state(),
-            "bpm": self.bpmSpinBox.value(),
+            # "graph_list": list(self.timelineMainWidget.graph_list),
+            "tempo_info": self.timelineMainWidget.to_dict(),
+            "scene": self.scene.to_dict(),
+            # "bpm": self.bpmSpinBox.value(),
         }
 
     def _apply_scheme_payload(self, payload: dict):
@@ -239,7 +241,9 @@ class MainWindow(MainWindowNotice, QMainWindow):
             graph_list = payload.get("graph_list", [0])
             if not isinstance(graph_list, list):
                 raise ValueError("方案文件中的 graph_list 格式无效")
-            self.timelineMainWidget.set_graph_list(graph_list, selected_node=0, current_beat=0, emit_signals=False)
+            tempo_info = payload.get("tempo_info", {})
+            self.timelineMainWidget.load_from_dict(tempo_info)
+            # self.timelineMainWidget.set_graph_list(graph_list)
 
             scene_data = payload.get("scene", {})
             self.scene.load_confirmed_state(scene_data, node_count=len(self.timelineMainWidget.graph_list))
@@ -254,7 +258,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             field_info_data = payload.get("field_info", {})
             self.scene.field_info.load_from_dict(field_info_data)
             
-            self.bpmSpinBox.setValue(payload.get("bpm", 120))
+            self.bpmSpinBox.setValue(int(self.timelineMainWidget._bpm_at_beat(0)))
         finally:
             self._scheme_dirty_suppressed = False
         self._set_scheme_dirty(False)
@@ -343,7 +347,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         try:
             self._scheme_file_path = None
             self.scene.load_confirmed_state({})
-            self.timelineMainWidget.set_graph_list([0], selected_node=0, current_beat=0, emit_signals=False)
+            self.timelineMainWidget.load_from_dict({})
             self._apply_active_tool("框选")
             self._configure_drawing_control_dock("框选")
             self.drawingControlDock.hide()
@@ -554,20 +558,21 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
     def setupTimeline(self):
         """创建底部时间轴与播放控制区。"""
-        # 时间轴主容器
+        # 时间轴主容器（高度在创建 TimelineWidget 后统一计算）
         self.timelineWidget = QWidget(self)     # 实例化窗口容器
-        self.timelineWidget.setFixedHeight(72)  # 设置时间轴区域高度，确保足够显示工具按钮和时间轴内容
         self.timelineWidget.setStyleSheet("background:#f0f0f0;")    # 设置背景色
 
         # 左侧动画播放组件区域
         self.animControlWidget = QWidget(self.timelineWidget)
         animLayout = QVBoxLayout()
-        animLayout.setContentsMargins(8, 0, 8, 0)   # 设置内边距，让按钮不贴边显示
+        animLayout.setContentsMargins(8, 0, 8, 0)   # 设置内边距，确保按钮不贴边
         animLayout.setSpacing(1)    # 设置按钮间距
-        # BPM 速度调节
+
+        # BPM 速度调节（仅修改 beat_tempo[0]）
         bpmLayout = QHBoxLayout()
         bpmLayout.setContentsMargins(0, 0, 0, 0)
         bpmLayout.setSpacing(0)
+        bpmLayout.setAlignment(Qt.AlignmentFlag.AlignTop)
         bpmLabel = QLabel("bpm", self.animControlWidget)
         self.bpmSpinBox = QSpinBox(self.animControlWidget)
         self.bpmSpinBox.setRange(1, 300)
@@ -577,6 +582,19 @@ class MainWindow(MainWindowNotice, QMainWindow):
         bpmLayout.addWidget(self.bpmSpinBox)
         animLayout.addLayout(bpmLayout)
 
+        # 展开/折叠按钮 + 播放按钮（同一行，播放按钮在右侧）
+        expand_row = QHBoxLayout()
+        expand_row.setAlignment(Qt.AlignmentFlag.AlignBottom)
+        expand_row.setContentsMargins(0, 0, 0, 0)
+        expand_row.setSpacing(2)
+        self.btnExpand = QPushButton("展开", self.animControlWidget)
+        # self.btnExpand = QPushButton("⚙", self.animControlWidget)
+        self.btnExpand.setFixedSize(32, 32)
+        self.btnExpand.setToolTip("展开/折叠时间轴（速度轴/音频栏）")
+        self.btnExpand.setCheckable(True)
+        self.btnExpand.clicked.connect(self._toggle_timeline_expanded)
+        expand_row.addWidget(self.btnExpand)
+
         # 播放、暂停按钮
         self.btnPlayPause = QPushButton("▶", self.animControlWidget)
         self.btnPlayPause.setFixedSize(48, 32)  # 加宽主播放按钮
@@ -585,7 +603,12 @@ class MainWindow(MainWindowNotice, QMainWindow):
         btnFont = self.btnPlayPause.font()
         btnFont.setPointSize(18)
         self.btnPlayPause.setFont(btnFont)
-        animLayout.addWidget(self.btnPlayPause)
+        expand_row.addWidget(self.btnPlayPause)
+        expand_row.addStretch(1)
+        animLayout.addLayout(expand_row)
+
+        # BPM 只写回 beat_tempo[0].start_bpm
+        self.bpmSpinBox.valueChanged.connect(self._on_bpm_changed)
 
         # 播放/暂停切换逻辑
         def toggle_play_pause():
@@ -625,11 +648,15 @@ class MainWindow(MainWindowNotice, QMainWindow):
         timelineLayout.addWidget(vline)
         timelineLayout.addWidget(self.timelineScrollArea)
         self.timelineWidget.setLayout(timelineLayout)
+        # 统一计算时间轴主容器高度（初始为折叠态）
+        self.timelineWidget.setFixedHeight(self._timeline_container_height(False))
 
     def setupInteractions(self):
         """绑定时间轴、场景和控制台信号。"""
         self.timelineMainWidget.nodeSelected.connect(self.onTimelineNodeSelected)
         self.timelineMainWidget.timelineChanged.connect(self._mark_scheme_dirty)
+        self.timelineMainWidget.tempoChanged.connect(self._on_tempo_changed)
+        self.timelineMainWidget.expandedChanged.connect(self._on_timeline_expanded_changed)
         self.timelineMainWidget.currentBeatChanged.connect(self.scene.set_preview_beat)
         self.timelineMainWidget.currentBeatChanged.connect(self.updateDrawToolAvailability)
         self.timelineMainWidget.currentBeatChanged.connect(self.updateConvertToolAvailability)
@@ -1318,16 +1345,52 @@ class MainWindow(MainWindowNotice, QMainWindow):
         # 隐藏分组面板（非分组工具时）
         self.drawingControlDock.setGroupSettingVisible(False)
 
+    # ──────────────── 时间轴展开与速度联动 ────────────────
+    def _toggle_timeline_expanded(self, checked: bool):
+        """点击展开按钮：切换时间轴展开/折叠状态。"""
+        self.timelineMainWidget.set_expanded(checked)
+
+    def _timeline_container_height(self, expanded: bool) -> int:
+        """统一计算时间轴主容器高度：TimelineWidget 自身所需高度 + 水平滚动条预留高度。"""
+        widget_height = (
+            self.timelineMainWidget._expanded_min_height
+            if expanded
+            else self.timelineMainWidget._collapsed_min_height
+        )
+        return widget_height + 14
+
+    def _on_timeline_expanded_changed(self, expanded: bool):
+        """时间轴展开/折叠后，联动整体高度与按钮状态。"""
+        self.btnExpand.blockSignals(True)
+        self.btnExpand.setChecked(expanded)
+        self.btnExpand.setText("折叠" if expanded else "展开")
+        self.btnExpand.blockSignals(False)
+        # 展开/折叠后统一重算容器高度，为速度轴与音频栏腾出/收回空间
+        self.timelineWidget.setFixedHeight(self._timeline_container_height(expanded))
+        self.timelineWidget.adjustSize()
+
+    def _on_bpm_changed(self, value: int):
+        """BPM 输入框只修改 beat_tempo[0]（起始速度）。"""
+        self.timelineMainWidget.set_tempo_at_beat(0, Tempo(start_bpm=int(value)))
+        self.timelineMainWidget.update()
+
+    def _on_tempo_changed(self):
+        """速度数据变化时，同步 BPM 输入框显示（仅反映 beat_tempo[0]）。"""
+        tempo0 = self.timelineMainWidget.beat_tempo.get(0, None)
+        if tempo0 is not None:
+            self.bpmSpinBox.blockSignals(True)
+            self.bpmSpinBox.setValue(int(round(tempo0.start_bpm)))
+            self.bpmSpinBox.blockSignals(False)
+
     # ──────────────── 播放演示 ────────────────
     def _start_playback(self):
         """开始播放演示：从当前拍位启动定时器，按 BPM 推进。"""
-        total_beats = sum(self.timelineMainWidget.graph_list[1:])
+        total_beats = self.timelineMainWidget.total_beats()
         if total_beats <= 0:
             return
 
         self._playback_active = True
         self.btnPlayPause.setText("⏸")
-        total_beats = sum(self.timelineMainWidget.graph_list[1:])
         cur_beat = self.timelineMainWidget.current_beat
         if cur_beat >= total_beats:
             self._playback_start_beat = 0.0
@@ -1351,21 +1414,23 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.scene.set_preview_beat(int(self.timelineMainWidget.current_beat))
 
     def _on_playback_tick(self):
-        """播放定时器回调：根据 BPM 和已用时间计算当前浮点拍位，同步游标与场景。"""
+        """播放定时器回调：根据 beat_tempo 和已用时间计算当前浮点拍位，同步游标与场景。"""
         if not self._playback_active:
             return
 
-        bpm = max(1, self.bpmSpinBox.value())
-        elapsed_ms = self._playback_elapsed.elapsed()
-        elapsed_minutes = elapsed_ms / 60000.0  # 将毫秒转换为分钟
-        beat_float = self._playback_start_beat + elapsed_minutes * float(bpm)
-
-        total_beats = sum(self.timelineMainWidget.graph_list[1:])
+        total_beats = self.timelineMainWidget.total_beats()
         if total_beats <= 0:
             self._stop_playback()
             return
 
-        # 到达或超过末尾：停止播放，切换当前编辑节点到尾节点
+        elapsed_ms = self._playback_elapsed.elapsed()
+        elapsed_minutes = elapsed_ms / 60000.0
+        # 按 BPM 计算浮点拍位：变速区间内 BPM 随拍位线性变化（均匀变速）
+        beat_float = self.timelineMainWidget._beat_from_elapsed(
+            self._playback_start_beat, elapsed_minutes
+        )
+
+        # 到达或超过末尾：停止播放
         if beat_float >= float(total_beats):
             self._stop_playback()
             return

@@ -124,7 +124,7 @@ class SchemeSceneData:
             float(member_point.get("y", 0.0)) - float(anchor_point.get("y", 0.0)),
         )
 
-    def export_confirmed_state(self) -> dict:
+    def to_dict(self) -> dict:
         """导出已确认的方案图数据，用于保存到方案文件。"""
         return {
             "node_points": self.node_points,
