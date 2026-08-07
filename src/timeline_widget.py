@@ -8,8 +8,12 @@
 5. 音频栏（展开态下栏）：音频文件占位。
 """
 
+import math
+
+from pathlib import Path
+
 from PyQt6.QtCore import QPoint, QRect, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QKeySequence, QShortcut
+from PyQt6.QtGui import QColor, QCursor, QFont, QPainter, QPen, QPixmap, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -17,6 +21,7 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -25,6 +30,13 @@ from PyQt6.QtWidgets import (
 )
 
 from src.tempo_data import Tempo
+from src.audio_data import (
+    AudioSegment,
+    audio_duration,
+    get_range_peaks,
+    SAMPLE_RATE,
+    BUCKET,
+)
 
 class TimelineScrollArea(QScrollArea):
     """时间轴滚轮操作"""
@@ -250,12 +262,14 @@ class TimelineWidget(QWidget):
     """
     timelineChanged = pyqtSignal()
     nodeSelected = pyqtSignal(int)  # 选中节点的索引
-    currentBeatChanged = pyqtSignal(int)    # 当前显示的拍位
+    currentBeatChanged = pyqtSignal(float)  # 当前显示的拍位（负拍前导区/播放中可为小数）
     nodeAdded = pyqtSignal(int)     # 新增节点的索引
     nodeDeleted = pyqtSignal(int)   # 删除节点的索引
     nodeInserted = pyqtSignal(int)  # 插入的新节点索引
     tempoChanged = pyqtSignal()     # 速度节点数据发生变化
     expandedChanged = pyqtSignal(bool)  # 展开/折叠状态变化
+    audioChanged = pyqtSignal()     # 音频段数据发生变化
+    importAudioRequested = pyqtSignal()  # 请求导入音频（点击音频栏右侧按钮）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -270,9 +284,29 @@ class TimelineWidget(QWidget):
         # 缓存绘制几何区域
         self._node_rects: list[QRect] = []
         self._plus_rect = QRect()
+        self._minus_node_rect = QRect()     # 左侧虚拟 -1 节点区域（负起始拍，仅用于选择播放位置）
+        self._minus_node_beat = None        # 虚拟 -1 节点对应的负起始拍（最靠左的一个）
         self._ruler_rect = QRect()
         self._tempo_rect = QRect()
         self._audio_rect = QRect()
+        self._audio_add_rect = QRect()      # 音频栏右侧“导入音频”按钮区域
+        self._audio_handle_w = 5            # 裁剪手柄宽度（绘制在段外侧，交互区域需外扩该宽度）
+
+        # 音频段数据与编辑状态
+        self.audio_segments: list[AudioSegment] = []
+        self._audio_selected = -1               # 当前编辑的音频段索引（-1 表示无）
+        self._audio_pixmap: QPixmap | None = None   # 波形缓存位图
+        self._audio_unreadable: set[int] = set()    # 音频文件无法解码的段索引（渲染时记录，用于提示）
+        self._beat_time_cache: list[float] | None = None  # 拍→秒累计表（依据 beat_tempo），长度 total_beats+1
+        self._audio_drag_mode: str | None = None    # 拖拽模式: 'move'|'left'|'right'
+        self._audio_drag_from_idx = -1
+        self._audio_drag_beat = 0.0             # move 预览起始拍
+        self._audio_drag_grab_offset = 0.0      # move 拖拽：点击时鼠标相对段起始拍的偏移（抓取点）
+        self._audio_drag_target = -1            # move 拖拽：当前交换目标段索引（-1 表示无）
+        self._audio_drag_orig = None            # 边界拖拽前快照 (src_start, src_end, start_beat)
+        self._audio_drag_orig_starts: list[float] = []  # 拖拽开始时所有音频段的起始拍快照（right 拖拽回原位用）
+        self._audio_drag_ref_x = 0.0            # 拖拽参考锚点：按下时的像素 X
+        self._audio_drag_ref_beat = 0.0         # 拖拽参考锚点：按下时的鼠标拍位
 
         # 布局与尺寸参数。
         self._node_radius = 12      # 节点矩形半径
@@ -313,6 +347,8 @@ class TimelineWidget(QWidget):
         self.setMinimumHeight(self._collapsed_min_height)
         # 使控件可接收键盘事件，便于实现快捷键
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        # 开启鼠标追踪：无按键移动时也触发 mouseMoveEvent，实现悬停光标切换
+        self.setMouseTracking(True)
 
         # 字体大小（由 AppSettingsDock 统一管理）
         self._node_font_size = 9
@@ -338,6 +374,13 @@ class TimelineWidget(QWidget):
         self._shortcut_right.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self._shortcut_right.activated.connect(self._switch_next)
 
+        # Delete 快捷键：删除当前选中的音频段（带确认弹窗）。
+        # 使用 WidgetShortcut：仅在时间轴自身聚焦时生效，
+        # 避免与主窗口“删除点位”（Delete 快捷键）冲突（场景聚焦时仍用于删除点位）。
+        self._shortcut_delete_audio = QShortcut(QKeySequence(Qt.Key.Key_Delete), self)
+        self._shortcut_delete_audio.setContext(Qt.ShortcutContext.WidgetShortcut)
+        self._shortcut_delete_audio.activated.connect(self._delete_selected_audio)
+
     # ──────── 展开/折叠 ────────
     def set_expanded(self, expanded: bool):
         if self._expanded == expanded:
@@ -358,7 +401,11 @@ class TimelineWidget(QWidget):
             },
         }
     
-    def load_from_dict(self, data: dict):
+    def load_from_dict(self, data: dict, audio_data: dict | None = None):
+        """整体恢复时间轴：graph_list、beat_tempo 与音频段。
+
+        audio_data 为方案中的 "audio" 数据；为 None 或空时清空音频段。
+        """
         self.set_graph_list(data.get("graph_list", [0]))
 
         raw_tempo = data.get("beat_tempo", {0: 120})
@@ -380,6 +427,8 @@ class TimelineWidget(QWidget):
 
         self.selected_node = 0
         self.current_beat = 0
+        # 音频段随方案一起恢复：load_audio_from_dict 内部会先清空再重建
+        self.load_audio_from_dict(audio_data if isinstance(audio_data, dict) else {})
         self._recalculate_width()
         self.update()
 
@@ -435,11 +484,39 @@ class TimelineWidget(QWidget):
         self.currentBeatChanged.emit(self.current_beat)
         self.update()
 
+    def _min_axis_beat(self) -> float:
+        """时间轴最左拍位（可 < 0，可为小数）。
+
+        取 0 与所有音频段起始拍下限的最小值，返回连续浮点值（不向下取整）；
+        处于 move 拖拽时把拖拽预览起始拍也计入，使负区预览即时可见。
+        返回小数使拖入负拍区时轴按实际拍位平滑向左展开，
+        不再按整数拍阶梯式扩展（负数拍位可精确到小数）。
+        负区沿用节点 0 的速度（速度轴与节点 0 对齐）。
+        """
+        min_start = 0.0
+        for s in self.audio_segments:
+            min_start = min(min_start, float(s.start_beat))
+        if self._audio_drag_mode == "move":
+            min_start = min(min_start, float(self._audio_drag_beat))
+        return float(min_start)
+
     def _recalculate_width(self):
-        """保持每拍像素间距恒定；总拍数增长时控件变宽，由外层滚动区域处理溢出。"""
+        """按拍数跨度（最左拍 ~ 总拍数）计算控件宽度；时间轴按拍位固定宽度显示。
+
+        最左拍可由音频段负起始拍决定，因此音频段移动/裁剪/缩放后会调用本方法重新排布。
+        """
+        self._beat_time_cache = None   # 拍数/速度/最左拍变化 → 拍→秒累计表失效
         plus_size = 24  # 加号按钮尺寸
         plus_gap = 18   # 加号按钮与最后节点间距，避免影响点击
-        desired_width = self._left_padding + self.total_beats() * self._pixels_per_beat + plus_gap + plus_size + self._right_padding
+        audio_btn_w = 70    # 音频栏右侧“导入音频”按钮宽度
+        audio_btn_gap = 10  # 音频栏右缘与按钮间距
+        total_beats = self.total_beats()
+        min_beat = self._min_axis_beat()
+        span = total_beats - min_beat
+        content_width = self._left_padding + int(span * self._pixels_per_beat)
+        # 右侧预留空间取节点加号按钮与音频按钮两者较大者，避免被裁剪。
+        right_space = max(plus_gap + plus_size, audio_btn_gap + audio_btn_w)
+        desired_width = content_width + right_space + self._right_padding
         self.setFixedWidth(desired_width)   # 设置宽度
 
     # ──────── 速度轴辅助 ────────
@@ -505,6 +582,8 @@ class TimelineWidget(QWidget):
                 if old_beat is not None:
                     del self.beat_tempo[old_beat]
                 self.beat_tempo[target] = tempo
+        self._beat_time_cache = None   # 节拍速度变化 → 轴对齐映射失效
+        self._audio_pixmap = None   # 波形需按新节拍速度重新对齐
         self.tempoChanged.emit()
         self.timelineChanged.emit()
         self.update()
@@ -513,6 +592,8 @@ class TimelineWidget(QWidget):
         if beat <= 0 or beat not in self.beat_tempo:
             return
         del self.beat_tempo[beat]
+        self._beat_time_cache = None    # 节拍速度变化 → 轴对齐映射失效
+        self._audio_pixmap = None   # 波形需按新节拍速度重新对齐
         self.tempoChanged.emit()
         self.timelineChanged.emit()
         self.update()
@@ -647,26 +728,16 @@ class TimelineWidget(QWidget):
         return True
 
     def _beat_to_x(self, beat: int) -> int:
-        """把拍位转换为对应的X坐标，用于绘制节点和游标。"""
-        left = self._ruler_rect.left()
-        right = self._ruler_rect.right()
-        span = max(1, right - left)
-        total = self.total_beats()
-        if total <= 0:
-            return left
-        clamped = max(0, min(total, beat))
-        return left + int(span * clamped / total)
+        """把拍位转换为对应的X坐标（按拍位 × 每拍像素宽度，即每拍固定宽度）。"""
+        return int(round(self._beat_to_x_f(beat)))
 
     def _x_to_beat(self, x: int) -> int:
-        """把X坐标转换为对应的拍位，用于点击定位和拖动节点。"""
-        left = self._ruler_rect.left()
-        right = self._ruler_rect.right()
-        span = max(1, right - left)
+        """把X坐标转换为对应的拍位（按每拍固定宽度反推，用于点击定位和拖动节点）。"""
         total = self.total_beats()
-        if total <= 0:
+        if total <= 0 or self._pixels_per_beat <= 0:
             return 0
-        clamped_x = max(left, min(right, x))
-        return int(round((clamped_x - left) * total / span))
+        min_beat = self._min_axis_beat()
+        return int(round(min_beat + (max(self._left_padding, x) - self._left_padding) / self._pixels_per_beat))
 
     def _compute_geometry(self):
         """根据当前拍数与尺寸参数，计算所有绘制区域（三栏布局）。"""
@@ -681,13 +752,27 @@ class TimelineWidget(QWidget):
         ruler_bottom = self._middle_bottom + offset_y
 
         ruler_left = self._left_padding
-        ruler_right = ruler_left + self.total_beats() * self._pixels_per_beat
-        self._ruler_rect = QRect(ruler_left, ruler_top, ruler_right - ruler_left, ruler_bottom - ruler_top)
+        total_beats = self.total_beats()
+        min_beat = self._min_axis_beat()
+        ruler_right = ruler_left + int((total_beats - min_beat) * self._pixels_per_beat)
+        self._ruler_rect = QRect(ruler_left, ruler_top, max(1, ruler_right - ruler_left), ruler_bottom - ruler_top)
 
         for i in range(len(self.graph_list)):
             cx = self._beat_to_x(self.start_beat_of(i))
             rect = QRect(cx - self._node_radius, y_nodes, diameter, diameter)
             self._node_rects.append(rect)
+
+        # 左侧虚拟 -1 节点：取最靠左的负起始拍，与音频段起始拍对齐，仅用于选择播放位置。
+        neg_starts = [float(s.start_beat) for s in self.audio_segments if s.start_beat < 0]
+        if neg_starts:
+            self._minus_node_beat = min(neg_starts)
+            cx = self._beat_to_x_f(self._minus_node_beat)
+            self._minus_node_rect = QRect(
+                int(round(cx)) - self._node_radius, y_nodes, diameter, diameter
+            )
+        else:
+            self._minus_node_beat = None
+            self._minus_node_rect = QRect()
 
         if self._node_rects:
             last = self._node_rects[-1]
@@ -720,8 +805,25 @@ class TimelineWidget(QWidget):
                 self._left_padding, audio_top,
                 ruler_right - ruler_left, self._audio_bar_height,
             )
+            # 音频栏右侧“导入音频”按钮：位于音频栏右缘外侧。
+            btn_w = 70
+            btn_h = 22
+            btn_x = self._audio_rect.right() + 10
+            max_btn_x = max(self._left_padding, self.width() - self._right_padding - btn_w)
+            btn_x = min(btn_x, max_btn_x)
+            btn_y = self._audio_rect.top() + (self._audio_bar_height - btn_h) // 2
+            self._audio_add_rect = QRect(btn_x, btn_y, btn_w, btn_h)
         else:
             self._audio_rect = QRect()
+            self._audio_add_rect = QRect()
+
+    def _audio_hit_rect(self) -> QRect:
+        """音频栏交互区域：音频栏矩形左右外扩裁剪手柄宽度，覆盖段外侧手柄。
+
+        右侧外扩 2 倍手柄宽度：右端裁剪手柄命中范围向右延伸一个 _audio_handle_w，
+        使段右端即使接近/超出音频栏右缘也能被命中，源音频后续仍有内容时可持续向右拖拽。
+        """
+        return self._audio_rect.adjusted(-self._audio_handle_w, 0, 2 * self._audio_handle_w, 0)
 
     def paintEvent(self, event):
         """绘制时间轴背景、刻度、节点、当前拍位游标与新增按钮。"""
@@ -786,14 +888,638 @@ class TimelineWidget(QWidget):
             else:
                 p.drawLine(x, trect.top() + 1, x, trect.bottom() - 1)
                 
+    # ──────── 音频栏：数据管理 ────────
+    def _seconds_per_beat_at(self, beat: int) -> float:
+        """第 beat 拍（该拍起始）对应的秒/拍，即 60 / BPM（依据 beat_tempo）。
+
+        与 _beat_from_elapsed 播放进度计算采用相同的离散语义：变速区间内
+        每拍取该拍起始 BPM。轴对齐（显示与播放）均通过它实现。
+        """
+        bpm = max(1.0, float(self._bpm_at_beat(float(beat))))
+        return 60.0 / bpm
+
+    def _beat_time_cum(self) -> list[float]:
+        """拍→秒累计表 cum[k] = 拍 (base + k) 起始的轨道时间（秒）。
+
+        base = floor(最左拍)；轴左缘（最左拍，可为小数）时间定为 0。
+        最左拍为小数时，base 位于轴左缘左侧 frac 拍，cum[0] 相应为负偏移，
+        使 audio_time_at_beat(最左拍) == 0 仍成立。负区沿用节点 0 速度。
+        """
+        if self._beat_time_cache is None:
+            min_beat = self._min_axis_beat()
+            base = math.floor(min_beat)
+            frac = min_beat - base
+            total = self.total_beats()
+            # 轴左缘（min_beat，可为小数）时间定为 0：base 拍位于轴左缘左侧
+            # frac 拍，其时间为负偏移 -(frac * spb)，整个累计表都以此为起点，
+            # 保证 audio_time_at_beat(min_beat) == 0 且拍→时间线性连续。
+            offset = -(frac * self._seconds_per_beat_at(base)) if frac > 0 else 0.0
+            cum = [offset]
+            acc = offset
+            for b in range(base, total):
+                acc += self._seconds_per_beat_at(b)
+                cum.append(acc)
+            self._beat_time_cache = cum
+        return self._beat_time_cache
+
+    def audio_time_at_beat(self, beat: float) -> float:
+        """把拍位转换为轨道时间（秒），按 beat_tempo 累计。
+
+        负拍同样支持：时间自最左拍（可为负、可为小数）起算，负区沿用节点 0 速度。
+        注意负拍位必须用 math.floor 取整：int() 向零截断会让 -7.5 误落到 -7，
+        使负区拍→时间映射出现阶梯跳变，波形绘制成块状“马赛克”。
+        """
+        total = float(self.total_beats())
+        min_beat = float(self._min_axis_beat())
+        beat = max(min_beat, min(beat, total))
+        b = math.floor(beat)
+        cum = self._beat_time_cum()
+        base = math.floor(min_beat)
+        t = cum[b - base]
+        if beat > b:
+            t += (beat - b) * self._seconds_per_beat_at(b)
+        return t
+
+    def audio_beat_at_time(self, t: float) -> float:
+        """把轨道时间（秒）转换为拍位，按 beat_tempo 逆推（二分）。
+
+        cum 下标 0 对应整数拍 base（最左拍向下取整），返回拍位可为负、可为小数。
+        """
+        cum = self._beat_time_cum()
+        min_beat = float(self._min_axis_beat())
+        base = math.floor(min_beat)
+        total = len(cum) - 1
+        if total <= 0:
+            return min_beat
+        t = max(0.0, t)
+        lo, hi = 0, total
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if cum[mid] <= t:
+                lo = mid
+            else:
+                hi = mid - 1
+        if lo >= total:
+            return float(base + total)
+        span = cum[lo + 1] - cum[lo]
+        return float(base + lo) + (t - cum[lo]) / max(1e-6, span)
+
+    def audio_segment_end_beat(self, seg: AudioSegment) -> float:
+        """该段在时间轴上的结束拍（按 beat_tempo 反推，轴对齐随节拍速度）。"""
+        return self.audio_beat_at_time(
+            self.audio_time_at_beat(seg.start_beat) + seg.duration_seconds
+        )
+
+    def _audio_source_time_at_beat(self, seg: AudioSegment, beat: float) -> float:
+        """把拍位映射到段内源时间（秒），轴对齐依据 beat_tempo。"""
+        return seg.src_start + (
+            self.audio_time_at_beat(beat) - self.audio_time_at_beat(seg.start_beat)
+        )
+
+    def audio_segment_at_beat(self, beat: float):
+        """返回包含拍位的 (段索引, 段)；无则返回 None。"""
+        target = float(beat)
+        for i, seg in enumerate(self.audio_segments):
+            if seg.start_beat <= target < self.audio_segment_end_beat(seg):
+                return i, seg
+        return None
+
+    # def audio_source_to_beat(self, seg_idx: int, src_time: float) -> float:
+    #     """把段内源时间（秒）映射为时间轴拍位（播放同步用，依据 beat_tempo）。"""
+    #     if not (0 <= seg_idx < len(self.audio_segments)):
+    #         return 0.0
+    #     seg = self.audio_segments[seg_idx]
+    #     track_time = self.audio_time_at_beat(seg.start_beat) + (src_time - seg.src_start)
+    #     return self.audio_beat_at_time(track_time)
+
+    # def audio_beat_to_source(self, beat: float):
+    #     """把时间轴拍位映射为 (段索引, 段, 源时间秒)；无覆盖返回 None。"""
+    #     found = self.audio_segment_at_beat(beat)
+    #     if found is None:
+    #         return None
+    #     idx, seg = found
+    #     return idx, seg, self._audio_source_time_at_beat(seg, beat)
+
+    def audio_to_dict(self) -> dict:
+        """导出音频段数据（file 为原始文件绝对路径）。"""
+        return {
+            "segments": [seg.to_dict() for seg in self.audio_segments],
+        }
+
+    def load_audio_from_dict(self, data: dict):
+        """从方案数据恢复音频段；file 为绝对路径，原始文件不存在则跳过。
+
+        恢复前先进行文件存在性检查：存在缺失的音频文件时，弹出提示弹窗
+        列出缺失文件，提醒用户重新导入。
+        """
+        self.audio_segments = []
+        self._audio_selected = -1
+        self._audio_pixmap = None
+        missing: list[str] = []
+        if isinstance(data, dict):
+            for item in data.get("segments", []):
+                if not isinstance(item, dict):
+                    continue
+                seg = AudioSegment.from_dict(item)
+                if seg.duration_seconds <= 0:
+                    continue
+                seg.file = seg.resolve_file()
+                if not Path(seg.file).exists():
+                    name = Path(seg.file).name
+                    if name not in missing:
+                        missing.append(name)
+                    continue
+                self.audio_segments.append(seg)
+        if missing:
+            QMessageBox.warning(
+                self,
+                "音频文件缺失",
+                "音频文件：\n"
+                + "\n".join(missing)
+                + "\n已删除或移动，请重新导入。",
+                QMessageBox.StandardButton.Ok,
+            )
+        if self.audio_segments:
+            self._audio_selected = len(self.audio_segments) - 1
+        self.update()
+
+    def import_audio_files(self, file_paths, progress_cb=None) -> list[AudioSegment]:
+        """导入音频文件，追加到现有波形右侧（各段首尾相连）。
+
+        progress_cb 可选：每处理完一个文件回调 progress_cb(done, total, file_path)，
+        用于在导入（需读取音频时长，可能耗时）期间显示进度。
+        """
+        added: list[AudioSegment] = []
+        total = len(file_paths)
+        done = 0
+        for path in file_paths:
+            duration = audio_duration(str(path))
+            if duration <= 0:
+                continue
+            start_beat = self.audio_segment_end_beat(self.audio_segments[-1]) if self.audio_segments else 0.0
+            seg = AudioSegment(
+                file=str(path),
+                src_start=0.0,
+                src_end=duration,
+                start_beat=start_beat,
+            )
+            self.audio_segments.append(seg)
+            added.append(seg)
+            done += 1
+            if progress_cb is not None:
+                progress_cb(done, total, str(path))
+        if added:
+            self._audio_selected = len(self.audio_segments) - 1
+            self._audio_pixmap = None
+            self.audioChanged.emit()
+            self.update()
+        return added
+
+    def synthesize_playback_audio(self, output_path, progress_cb=None) -> bool:
+        """把整条时间轴合成一段连续音频（无音频段处为静音），导出到 output_path。
+
+        依据 beat_tempo 将拍位映射为轨道时间：总时长 = audio_time_at_beat(total_beats)；
+        每个音频段按 audio_time_at_beat(seg.start_beat) 处覆盖其源剪辑 [src_start, src_end]，
+        未覆盖区域保持静音，实现“段间隙静音”的连续轨道，供播放时单一文件无缝驱动。
+
+        progress_cb 可选：每处理完一个段回调 progress_cb(done, total, name)，
+        用于在合成（需解码音频，可能耗时）期间显示进度。
+
+        只读取各音频段的原始源文件（seg.resolve_file()）并写出独立的
+        整轨文件（output_path），不修改任何 seg.file / src_start / src_end /
+        start_beat，保证音频段始终引用原始源文件、可继续编辑。
+        """
+        try:
+            from pydub import AudioSegment as PydubSegment
+        except Exception:
+            return False
+
+        total = self.total_beats()
+        if total <= 0:
+            return False
+        total_duration_ms = int(round(self.audio_time_at_beat(total) * 1000.0))
+        if total_duration_ms <= 0:
+            return False
+
+        # 底轨统一为 44.1kHz 立体声：各音频段在叠加前也会被转换到该格式，
+        # 保证不同采样率/声道的段可正常叠加，且导出的整轨保持较高音质。
+        out = PydubSegment.silent(duration=total_duration_ms, frame_rate=44100).set_channels(2)
+        n = len(self.audio_segments)
+        for i, seg in enumerate(self.audio_segments):
+            if progress_cb is not None:
+                progress_cb(i + 1, n, Path(seg.file).name)
+            try:
+                clip = PydubSegment.from_file(seg.resolve_file())
+            except Exception:
+                continue
+            src_lo = int(round(seg.src_start * 1000.0))
+            src_hi = int(round(seg.src_end * 1000.0))
+            src_lo = max(0, min(src_lo, len(clip)))
+            src_hi = max(src_lo, min(src_hi, len(clip)))
+            clip = clip[src_lo:src_hi]
+            if len(clip) <= 0:
+                continue
+            # 统一到与静音底轨相同的格式，避免不同采样率/声道段叠加时 overlay 报错
+            clip = clip.set_frame_rate(out.frame_rate).set_channels(out.channels)
+            pos_ms = int(round(self.audio_time_at_beat(seg.start_beat) * 1000.0))
+            pos_ms = max(0, min(pos_ms, len(out)))
+            if pos_ms + len(clip) > len(out):
+                clip = clip[: len(out) - pos_ms]
+            if len(clip) > 0:
+                out = out.overlay(clip, position=pos_ms)
+
+        try:
+            out.export(str(output_path), format="wav")
+        except Exception:
+            return False
+        return True
+
+    def split_audio_at_beat(self, beat: float) -> bool:
+        """在拍位处把音频段切分为两段（双击）。"""
+        target = float(beat)
+        found = self.audio_segment_at_beat(target)
+        if found is None:
+            return False
+        idx, seg = found
+        seg_end = self.audio_segment_end_beat(seg)
+        if target <= seg.start_beat + 1e-6 or target >= seg_end - 1e-6:
+            return False
+        split_src = self._audio_source_time_at_beat(seg, target)
+        left = AudioSegment(
+            file=seg.file, src_start=seg.src_start, src_end=split_src,
+            start_beat=seg.start_beat,
+        )
+        right = AudioSegment(
+            file=seg.file, src_start=split_src, src_end=seg.src_end,
+            start_beat=target,
+        )
+        self.audio_segments[idx:idx + 1] = [left, right]
+        self._audio_selected = idx + 1  # 选中切分后的右侧段
+        self._audio_pixmap = None
+        self.audioChanged.emit()
+        self.update()
+        return True
+
+    def _confirm_delete_audio_dialog(self, seg: AudioSegment) -> bool:
+        """弹出删除音频段确认弹窗；用户确认删除返回 True。
+
+        弹窗风格与主窗口“删除点位”保持一致：取消按钮绑定 Esc，
+        “删除”按钮绑定 Delete 快捷键（并作为默认按钮支持回车确认）。
+        """
+        name = Path(seg.file).name
+        start = round(seg.start_beat, 2)
+        end = round(self.audio_segment_end_beat(seg), 2)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("删除音频段")
+        layout = QVBoxLayout()
+        layout.addWidget(QLabel(f"确认删除音频段“{name}”？"))
+        layout.addWidget(QLabel(f"位置：第 {start} ~ {end} 拍"))
+        layout.addWidget(QLabel("删除后不可恢复。"))
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch(1)
+        cancel_btn = QPushButton("取消 Esc", dlg)
+        cancel_btn.setShortcut("Esc")
+        delete_btn = QPushButton("删除 Delete", dlg)
+        delete_btn.setShortcut("Delete")
+        delete_btn.setDefault(True)   # 回车 / Enter 也可确认
+        delete_btn.setStyleSheet("background:#d9534f;color:white;")
+        cancel_btn.clicked.connect(dlg.reject)
+        delete_btn.clicked.connect(dlg.accept)
+        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(delete_btn)
+        layout.addLayout(btn_layout)
+        dlg.setLayout(layout)
+        return dlg.exec() == QDialog.DialogCode.Accepted
+
+    def _delete_audio_by_index(self, idx: int):
+        """选中指定音频段并弹出确认弹窗删除；未确认则不删除。"""
+        if not (0 <= idx < len(self.audio_segments)):
+            return
+        if self._confirm_delete_audio_dialog(self.audio_segments[idx]):
+            # 删除指定音频段，并同步编辑状态、缓存与外部信号。
+            if not (0 <= idx < len(self.audio_segments)):
+                return
+            del self.audio_segments[idx]
+            # 修正选中索引：删掉的正是选中段 → 无选中；删掉前面的段 → 选中索引前移
+            if self._audio_selected == idx:
+                self._audio_selected = -1
+            elif self._audio_selected > idx:
+                self._audio_selected -= 1
+            self._audio_selected = max(-1, min(self._audio_selected, len(self.audio_segments) - 1))
+            self._audio_pixmap = None
+            self._audio_unreadable.clear()
+            self.audioChanged.emit()
+            self.update()
+
+    def _delete_selected_audio(self):
+        """Delete 快捷键：删除当前选中的音频段（带确认弹窗）。"""
+        if 0 <= self._audio_selected < len(self.audio_segments):
+            self._delete_audio_by_index(self._audio_selected)
+
+    def _audio_end_beat_at(self, seg: AudioSegment, start_beat: float) -> float:
+        """段以 start_beat 起始时的结束拍（按 beat_tempo 反推）。"""
+        return self.audio_beat_at_time(
+            self.audio_time_at_beat(start_beat) + seg.duration_seconds
+        )
+
+    def _audio_move_drop_target(self, from_idx: int, start_beat: float) -> int | None:
+        """返回拖拽段（from_idx）落到 start_beat 时与其重叠的其他段索引；无则返回 None。"""
+        s0 = float(start_beat)
+        s1 = self._audio_end_beat_at(self.audio_segments[from_idx], s0)
+        for i, other in enumerate(self.audio_segments):
+            if i == from_idx:
+                continue
+            o1 = self.audio_segment_end_beat(other)
+            if s0 < o1 and other.start_beat < s1:
+                return i
+        return None
+
+    def _audio_swap_armed(self, from_idx: int, target_idx: int, mouse_beat: float) -> bool:
+        """鼠标指针是否已超过目标段一半（超过才触发交换，否则松手后自动接在后面）。"""
+        tseg = self.audio_segments[target_idx]
+        mid = (tseg.start_beat + self.audio_segment_end_beat(tseg)) / 2.0
+        if from_idx > target_idx:
+            # 从后面（右侧）拖向前面的目标：指针越过目标段中点（向小的一侧）
+            return mouse_beat < mid
+        # 从前面（左侧）拖向后面的目标：指针越过目标段中点（向大的一侧）
+        return mouse_beat > mid
+
+    def _swap_audio_segments(self, from_idx: int, to_idx: int, preview_start: float):
+        """段交换：按拖拽方向把拖拽段插到目标段的前面或后面，再按起始拍重排并解决重叠。
+
+        - 拖拽段原本在目标段之后（from_idx > to_idx）：把拖拽段插到目标段前面；
+          若预览起始拍早于目标段起始拍（拖过了目标段），则直接用预览起始拍，
+          否则用目标段起始拍；目标段自动接在拖拽段之后。
+        - 拖拽段原本在目标段之前（from_idx < to_idx）：把拖拽段插到目标段后面；
+          后面段（目标段）start_beat 设为前面段（拖拽段）原起始拍；
+          被拖拽段优先写到预览起始拍，若该位置已被占用则自动调整到空闲位置。
+        之后按起始拍重排列表（保持列表顺序与时间轴顺序一致），
+        若有重叠自动将重叠段后移（级联），保证相邻音频不重叠。
+        """
+        if not (0 <= from_idx < len(self.audio_segments)):
+            return
+        to_idx = max(0, min(to_idx, len(self.audio_segments) - 1))
+        if to_idx == from_idx:
+            return
+        preview_start = float(preview_start)
+        dragged = self.audio_segments[from_idx]     # 拖拽段
+        target = self.audio_segments[to_idx]        # 目标段
+        if from_idx > to_idx:
+            # 拖拽段在后面 → 插到目标段前面
+            # 预览起始拍早于目标段起始拍（拖过了目标段）时直接用预览起始拍，否则用目标段起始拍
+            dragged.start_beat = min(preview_start, target.start_beat)
+            # 目标段自动接在拖拽段后面
+            target.start_beat = self._audio_end_beat_at(dragged, dragged.start_beat)
+        else:
+            # 拖拽段在前面 → 插到目标段后面
+            # 后面段（目标段）start_beat 设为前面段（拖拽段）原起始拍
+            front_start = dragged.start_beat
+            target.start_beat = front_start
+            # 被拖拽段先写到预览起始拍：若预览起始拍已被占用，
+            # 由后续级联 _resolve_audio_overlaps 自动调整到空闲位置
+            dragged.start_beat = preview_start
+        # 按起始拍重排，保持列表顺序与时间轴顺序一致
+        self.audio_segments.sort(key=lambda s: s.start_beat)
+        # 级联解决重叠：重叠段自动后移，保证相邻音频不重叠
+        self._resolve_audio_overlaps()
+        self._audio_selected = self.audio_segments.index(dragged)
+        self._audio_pixmap = None
+        self.audioChanged.emit()
+        self.update()
+
+    def _resolve_audio_overlaps(self):
+        """裁剪结束后若音频段发生重叠，后移重叠段 start_beat 解除重叠。
+
+        左端向左拖拽（延伸）会把当前段 start_beat 提前到与前一音频段重叠，
+        此时把重叠段 start_beat 后移到前一段结束拍；结束拍由「起始拍 + 源时长」
+        推导，后移会连带右移后续段，循环从左到右自然完成级联修复。
+        源选区（src_start/src_end）保持不变，仅调整时间轴位置。
+        """
+        changed = False
+        for i in range(1, len(self.audio_segments)):
+            prev = self.audio_segments[i - 1]
+            seg = self.audio_segments[i]
+            prev_end = self.audio_segment_end_beat(prev)
+            if seg.start_beat < prev_end:
+                seg.start_beat = prev_end
+                changed = True
+        if changed:
+            self._audio_pixmap = None
+            self._recalculate_width()
+            self.update()
+
+    # ──────── 音频栏：波形渲染 ────────
+    def _beat_to_x_f(self, beat: float) -> float:
+        """浮点拍位 -> X 坐标（按拍位 × 每拍像素宽度，即每拍固定宽度，与 tempo 无关）。
+
+        支持负拍：最左拍（_min_axis_beat）对应 _left_padding，负区随之向左展开。
+        """
+        total = self.total_beats()
+        min_beat = float(self._min_axis_beat())
+        if total <= 0 and min_beat >= 0:
+            return float(self._left_padding)
+        clamped = max(min_beat, min(float(total), float(beat)))
+        return self._left_padding + (clamped - min_beat) * self._pixels_per_beat
+
+    def _pixel_to_beat_f(self, px: float) -> float:
+        """音频栏内像素 X（相对音频栏左缘）-> 浮点拍位（按每拍固定宽度反推）。
+
+        音频栏左缘对应最左拍（可为负），因此可返回负拍位。
+        """
+        if self._pixels_per_beat <= 0:
+            return 0.0
+        return self._min_axis_beat() + px / self._pixels_per_beat
 
     def _draw_audio_bar(self, p: QPainter):
         if self._audio_rect.isEmpty():
             return
         arect = self._audio_rect
-        p.fillRect(arect, QColor("#f0f0f0"))
+        # 缓存位图按逻辑尺寸比较（需除以 devicePixelRatio），避免高分屏下误判尺寸失效而反复重绘
+        pm = self._audio_pixmap
+        pm_matches = False
+        if pm is not None:
+            _d = pm.devicePixelRatioF() or 1.0
+            pm_matches = (
+                abs(pm.width() / _d - arect.width()) <= 1
+                and abs(pm.height() / _d - arect.height()) <= 1
+            )
+        if not pm_matches:
+            # 把当前音频段波形绘制到缓存位图；随缩放/数据变化自动重绘同步显示
+            arect = self._audio_rect
+            if arect.isEmpty():
+                self._audio_pixmap = None
+                return
+            pix_w = max(1, arect.width())
+            pix_h = max(1, arect.height())
+            # 高分屏适配：pixmap 按屏幕 devicePixelRatio 创建（QPainter 仍按逻辑坐标绘制），
+            # 波形在高 DPI 屏幕上保持清晰；否则 dpr=1 的小位图被拉伸放大后会模糊到几乎看不见。
+            dpr = self.devicePixelRatioF() or 1.0
+            pm = QPixmap(max(1, int(round(pix_w * dpr))), max(1, int(round(pix_h * dpr))))
+            pm.setDevicePixelRatio(dpr)
+            pm.fill(QColor("#f0f0f0"))
+            p = QPainter(pm)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            mid = pix_h / 2.0
+            p.setPen(QPen(QColor("#d5d5d5"), 1))
+            p.drawLine(0, int(mid), pix_w, int(mid))
+
+            ppb = self._pixels_per_beat
+            bar_left = self._audio_rect.left()
+            self._audio_unreadable = set()
+            for idx, seg in enumerate(self.audio_segments):
+                seg_t0 = self.audio_time_at_beat(seg.start_beat)
+                x0 = max(0, int(round(self._beat_to_x_f(seg.start_beat) - bar_left)))
+                x1 = min(pix_w, int(round(self._beat_to_x_f(self.audio_segment_end_beat(seg)) - bar_left)))
+                if x1 <= x0:
+                    continue
+                peaks = get_range_peaks(seg.resolve_file(), seg.src_start, seg.src_end)
+                if peaks is None or len(peaks) == 0:
+                    self._audio_unreadable.add(idx)
+                    continue
+                # get_range_peaks 返回「段内」峰值数组（下标0对应源文件内 peak_base 桶）。
+                # 绘制时必须把全文件桶下标换算为段内下标，否则段 src_start>0（左端裁剪、
+                # 切分、或从方案加载）时 i0 会立即越界，导致该段波形一个像素都画不出来。
+                peak_base = int(seg.src_start * SAMPLE_RATE) // BUCKET
+                max_abs = max(float(peaks[:, 0].max()), float(peaks[:, 1].max()))
+                amp = ((pix_h / 2.0) - 2.0) / max(max_abs, 1e-6)
+                p.setPen(QPen(QColor("#1f5e9c"), 1))
+                beat_per_px = 1.0 / ppb
+                min_beat = float(self._min_axis_beat())
+                for px in range(x0, x1):
+                    # 像素 → 拍位（每拍固定宽度，像素0对应最左拍），拍位 → 轨道时间（秒，随 tempo 变化）
+                    beat = min_beat + px * beat_per_px
+                    t0 = self.audio_time_at_beat(beat)
+                    t1 = self.audio_time_at_beat(beat + beat_per_px)
+                    src_t0 = seg.src_start + (t0 - seg_t0)   # 段内源时间
+                    src_t1 = seg.src_start + (t1 - seg_t0)
+                    i0 = max(0, int(src_t0 * SAMPLE_RATE) // BUCKET - peak_base)
+                    i1 = int(src_t1 * SAMPLE_RATE) // BUCKET + 1 - peak_base
+                    if i0 >= len(peaks):
+                        continue
+                    i1 = min(i1, len(peaks))
+                    if i1 <= i0:
+                        continue
+                    sub = peaks[i0:i1]
+                    mn = float(sub[:, 0].min())
+                    mx = float(sub[:, 1].max())
+                    y0 = int(mid - mx * amp)
+                    y1 = int(mid - mn * amp)
+                    if y1 < y0:
+                        y0, y1 = y1, y0
+                    p.drawLine(px, y0, px, y1)
+            p.end()
+            self._audio_pixmap = pm
+        if self._audio_pixmap is not None:
+            p.drawPixmap(arect.topLeft(), self._audio_pixmap)
+        else:
+            p.fillRect(arect, QColor("#f0f0f0"))
+
         p.setPen(QPen(QColor("#aeaeae"), 1))
         p.drawLine(arect.left(), arect.top(), arect.right(), arect.top())
+
+        # 音频栏右侧“导入音频”按钮（无音频段时也需绘制）
+        if not self._audio_add_rect.isEmpty():
+            br = self._audio_add_rect
+            shadow_rect = br.adjusted(1, 2, 1, 2)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(0, 0, 0, 38))
+            p.drawRoundedRect(shadow_rect, 4, 4)
+            p.setPen(QPen(QColor("#1f5e9c"), 1))
+            p.setBrush(QColor("#ffffff"))
+            p.drawRoundedRect(br, 4, 4)
+            btn_font = QFont(self.font())
+            btn_font.setPointSize(self._node_font_size)
+            p.setFont(btn_font)
+            p.setPen(QPen(QColor("#1f5e9c"), 1))
+            p.drawText(br, Qt.AlignmentFlag.AlignCenter, "导入音频")
+
+        if not self.audio_segments:
+            font = QFont(self.font())
+            font.setPointSize(8)
+            p.setFont(font)
+            p.setPen(QPen(QColor("#9a9a9a"), 1))
+            p.drawText(arect, Qt.AlignmentFlag.AlignCenter, "暂无音频 · 点击右侧 “导入音频”")
+            return
+
+        # 段边界线
+        p.setPen(QPen(QColor("#8a8a8a"), 1))
+        for seg in self.audio_segments:
+            x = int(round(self._beat_to_x_f(seg.start_beat)))
+            p.drawLine(x, arect.top() + 1, x, arect.bottom() - 1)
+
+        # 选中段高亮 + 左右端点手柄
+        # 注意：不要用 fillRect 做半透明填充——它在高分屏/特定合成下会被当作不透明，
+        # 把下方波形整个盖住。选中指示用蓝边框 + 橙色手柄即可，波形保持可见。
+        if 0 <= self._audio_selected < len(self.audio_segments):
+            seg = self.audio_segments[self._audio_selected]
+            left_x = int(round(self._beat_to_x_f(seg.start_beat)))
+            right_x = int(round(self._beat_to_x_f(self.audio_segment_end_beat(seg))))
+            sel_rect = QRect(left_x, arect.top() + 1, max(1, right_x - left_x), arect.height() - 2)
+            p.setPen(QPen(QColor("#1f5e9c"), 2))
+            # 重置画刷为 NoBrush：否则 drawRect 会用上一次残留的不透明画刷
+            # （“导入音频”按钮填充的白色）填充选中矩形内部，把下方波形盖住。
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRect(sel_rect)
+            # 裁剪手柄绘制
+            handle_w = self._audio_handle_w
+            for hr in (QRect(left_x - handle_w, arect.top() + 2, handle_w, arect.height() - 4),
+                       QRect(right_x, arect.top() + 2, handle_w, arect.height() - 4)):
+                p.fillRect(hr, QColor("#f39c12"))
+                p.setPen(QPen(QColor("#7a4a00"), 1))
+                p.drawRect(hr)
+
+        # 音频文件无法解码的段：显示提示，避免只剩空白灰条却无从排查
+        if self._audio_unreadable:
+            warn_font = QFont(self.font())
+            warn_font.setPointSize(8)
+            p.setFont(warn_font)
+            p.setPen(QPen(QColor("#c0392b"), 1))
+            for idx in sorted(self._audio_unreadable):
+                if not (0 <= idx < len(self.audio_segments)):
+                    continue
+                seg = self.audio_segments[idx]
+                wx0 = int(round(self._beat_to_x_f(seg.start_beat)))
+                wx1 = int(round(self._beat_to_x_f(self.audio_segment_end_beat(seg))))
+                if wx1 <= wx0:
+                    continue
+                warn_rect = QRect(wx0, arect.top() + 1, max(1, wx1 - wx0), arect.height() - 2)
+                p.drawText(warn_rect, Qt.AlignmentFlag.AlignCenter, "音频文件无法读取")
+
+        # 拖拽预览：移动时显示目标位置虚线框
+        if self._audio_drag_mode == "move" and 0 <= self._audio_drag_from_idx < len(self.audio_segments):
+            seg = self.audio_segments[self._audio_drag_from_idx]
+            beat_len = self.audio_segment_end_beat(seg) - seg.start_beat
+            left_x = int(round(self._beat_to_x_f(self._audio_drag_beat)))
+            right_x = int(round(self._beat_to_x_f(self._audio_drag_beat + beat_len)))
+            drect = QRect(left_x, arect.top() + 1, max(1, right_x - left_x), arect.height() - 2)
+            p.setPen(QPen(QColor("#f39c12"), 2, Qt.PenStyle.DashLine))
+            p.setBrush(QColor(243, 156, 18, 40))
+            p.drawRect(drect)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+
+        # 交换目标预览：显示目标段在交换后将移动到的位置
+        if (self._audio_drag_mode == "move"
+                and 0 <= self._audio_drag_target < len(self.audio_segments)
+                and 0 <= self._audio_drag_from_idx < len(self.audio_segments)):
+            from_idx = self._audio_drag_from_idx
+            dragged = self.audio_segments[from_idx]
+            target = self.audio_segments[self._audio_drag_target]
+            if from_idx > self._audio_drag_target:
+                # 情况①：目标段被推到拖拽段之后
+                t0 = self._audio_end_beat_at(dragged, self._audio_drag_beat)
+            else:
+                # 情况②：目标段挪到拖拽段原起始拍
+                t0 = dragged.start_beat
+            t1 = self._audio_end_beat_at(target, t0)
+            t_left = int(round(self._beat_to_x_f(t0)))
+            t_right = int(round(self._beat_to_x_f(t1)))
+            if t_right > t_left:
+                trect = QRect(t_left, arect.top() + 1, max(1, t_right - t_left), arect.height() - 2)
+                p.setPen(QPen(QColor("#2980b9"), 2, Qt.PenStyle.DashLine))
+                p.setBrush(QColor(41, 128, 185, 40))
+                p.drawRect(trect)
+                p.setBrush(Qt.BrushStyle.NoBrush)
 
     def _draw_middle_bar(self, p: QPainter):
         total = self.total_beats()
@@ -825,6 +1551,8 @@ class TimelineWidget(QWidget):
         cursor_x = self._beat_to_x(self.current_beat)
         y_top = self._top_row_y + offset_y
         y_bottom = self._middle_bottom + offset_y
+        # if self._expanded and not self._audio_rect.isEmpty():
+        #     y_bottom = self._audio_rect.bottom()
         p.setPen(QPen(QColor("#e74c3c"), 2))
         p.drawLine(cursor_x, y_top - 1, cursor_x, y_bottom + 1)
 
@@ -852,6 +1580,15 @@ class TimelineWidget(QWidget):
             else:
                 self._node_rects.append(rect)
 
+        # 左侧虚拟 -1 节点：负起始拍位置，仅用于选择播放位置，不做编辑。
+        if not self._minus_node_rect.isEmpty():
+            mrect = self._minus_node_rect
+            p.setPen(QPen(QColor("#7f8c8d"), 1, Qt.PenStyle.DashLine))
+            p.setBrush(QColor("#ffffff"))
+            p.drawRect(mrect)
+            p.setPen(QPen(QColor("#2c3e50"), 1))
+            p.drawText(mrect, Qt.AlignmentFlag.AlignCenter, "-1")
+
         # 末尾节点右侧“新增节点”按钮（圆形悬浮样式）
         shadow_rect = self._plus_rect.adjusted(1, 2, 1, 2)
         p.setPen(Qt.PenStyle.NoPen)
@@ -871,8 +1608,26 @@ class TimelineWidget(QWidget):
     def mousePressEvent(self, event):
         """处理左键点击：选中节点、新增节点，或在标尺处定位当前拍位。"""
         if event.button() == Qt.MouseButton.LeftButton:
-            # 点击节点：选中节点，并把当前拍位定位到该节点起始拍
             pos = event.pos()
+            # “导入音频”按钮点击（音频栏右缘外侧）
+            if self._expanded and self._audio_add_rect.contains(pos):
+                self.importAudioRequested.emit()
+                event.accept()
+                return
+            # 音频栏交互优先：选中/移动/裁剪音频段（含段外侧裁剪手柄）
+            if self._expanded and self._audio_hit_rect().contains(pos):
+                self._audio_press(pos)
+                event.accept()
+                return
+            # 虚拟 -1 节点：仅用于选择播放位置（负拍），不做编辑；点位显示由场景以节点0呈现。
+            # 游标精确对齐到该节点（可为小数拍位），不落在任意负整拍上。
+            if not self._minus_node_rect.isEmpty() and self._minus_node_rect.contains(pos):
+                self.current_beat = self._minus_node_beat
+                self.currentBeatChanged.emit(self.current_beat)
+                self.update()
+                event.accept()
+                return
+            # 点击节点：选中节点，并把当前拍位定位到该节点起始拍
             for i, rect in enumerate(self._node_rects):
                 if rect.contains(pos):
                     self.selected_node = i
@@ -886,11 +1641,18 @@ class TimelineWidget(QWidget):
                 self.add_node(8)
                 event.accept()
                 return
-            # 点击标尺区域，把当前拍位定位到最近的整拍
+            # 点击标尺区域，把当前拍位定位到最近的整拍；负拍区游标只能停留在虚拟 -1 节点
             expand_y = self._node_radius * 2
             ruler_hit = self._ruler_rect.adjusted(-2, -expand_y, 2, 14)
             if ruler_hit.contains(pos) or self._tempo_rect.contains(pos):
-                beat = self._x_to_beat(pos.x())
+                beat_f = self._pixel_to_beat_f(pos.x() - self._left_padding)
+                if beat_f < 0:
+                    # 负拍区不适用 _x_to_beat：游标只能停留在虚拟 -1 节点
+                    # （仅选择播放位置，不做编辑），精确对齐该节点（可为小数拍位），
+                    # 不落在任意负整拍上。
+                    beat = self._minus_node_beat if self._minus_node_beat is not None else 0
+                else:
+                    beat = self._x_to_beat(pos.x())
                 node_index = self.node_index_at_beat(beat)
                 if node_index is not None:
                     self.selected_node = node_index
@@ -905,11 +1667,21 @@ class TimelineWidget(QWidget):
         super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event):
-        """双击中层非节点拍位时，在该拍位插入新方案图。"""
+        """双击音频栏切分音频段；双击中层非节点拍位时插入新方案图。"""
         if event.button() == Qt.MouseButton.LeftButton:
             pos = event.pos()
+            # 音频栏：双击切分音频段
+            if self._expanded and self._audio_rect.contains(pos):
+                beat = self._pixel_to_beat_f(pos.x() - self._audio_rect.left())
+                self.split_audio_at_beat(beat)
+                event.accept()
+                return
             if self._expanded and self._tempo_rect.contains(pos):
                 beat = self._x_to_beat(pos.x())
+                if beat < 0:
+                    # 负拍区不适用 _x_to_beat：不在此插入速度节点（速度轴与节点 0 对齐）
+                    event.accept()
+                    return
                 if beat in self.beat_tempo:
                     return
                 current_bpm = self._bpm_at_beat(float(beat))
@@ -931,10 +1703,298 @@ class TimelineWidget(QWidget):
                     return
         super().mouseDoubleClickEvent(event)
 
+    # ──────── 音频栏交互 ────────
+    def _audio_press(self, pos: QPoint):
+        """音频栏左键按下：切换当前编辑段，或开始拖拽（移动/裁剪）。"""
+        self._audio_drag_mode = None
+        self._audio_drag_from_idx = -1
+        self._audio_drag_orig = None
+        self._audio_drag_grab_offset = 0.0
+        self._audio_drag_target = -1
+        # 起始拍快照：right 拖拽时后续段以“原位置”为下限，重叠解除后可回原位
+        self._audio_drag_orig_starts = [float(s.start_beat) for s in self.audio_segments]
+        x = float(pos.x())
+        beat = self._pixel_to_beat_f(x - self._audio_rect.left())
+        # 拖拽参考锚点：按下时的像素 X 与鼠标拍位。
+        # 拖拽中拍位 = 锚点拍位 + 像素位移 / 每拍像素，使拍位计算独立于轴扩展，
+        # 避免 _min_axis_beat 随拖拽预览变化导致“拍位↔像素”映射反馈环路。
+        self._audio_drag_ref_x = x
+        self._audio_drag_ref_beat = beat
+
+        # 裁剪手柄优先（裁剪 > 切换）：手柄绘制在音频段外侧，
+        # 先命中当前选中段的外侧手柄再进入裁剪，避免点击外侧手柄时
+        # 被 audio_segment_at_beat 命中相邻音频段而误切换选中。
+        handle_w = self._audio_handle_w
+        if 0 <= self._audio_selected < len(self.audio_segments):
+            seg = self.audio_segments[self._audio_selected]
+            left_x = self._beat_to_x_f(seg.start_beat)
+            right_x = self._beat_to_x_f(self.audio_segment_end_beat(seg))
+            if left_x - handle_w <= x <= left_x:
+                # 左端拖拽裁剪：右端固定（src_end 不变），按当前显示范围对齐
+                self._audio_drag_mode = "left"
+                self._audio_drag_from_idx = self._audio_selected
+                self._audio_drag_orig = (seg.src_start, seg.src_end, seg.start_beat)
+                self.update()
+                return
+            # 右端拖拽裁剪（基于原曲节选，固定 src_start）。
+            # 命中范围向右延伸一个 _audio_handle_w（手柄绘制在段右端外侧），
+            # 源音频后续仍有内容时可把段右端拖到音频栏更靠右的位置。
+            if right_x <= x <= right_x + handle_w * 2:
+                self._audio_drag_mode = "right"
+                self._audio_drag_from_idx = self._audio_selected
+                self._audio_drag_orig = (seg.src_start, seg.src_end, seg.start_beat)
+                self.update()
+                return
+
+        found = self.audio_segment_at_beat(beat)
+        if found is None:
+            self._audio_selected = -1
+            self.update()
+            return
+        idx, seg = found
+        # 左键点击切换当前编辑的音频段；段内按下进入移动（重新排序）模式。
+        # 记录点击点相对段起始拍的偏移（抓取点）：拖拽时预览框按该偏移跟随鼠标，
+        # 保持抓取点不跳变（而不是把预览框中心对准鼠标指针）。
+        self.setFocus()   # 聚焦时间轴，使 Delete 快捷键删除该选中段生效
+        self._audio_selected = idx
+        self._audio_drag_mode = "move"
+        self._audio_drag_from_idx = idx
+        self._audio_drag_orig = (seg.src_start, seg.src_end, seg.start_beat)   # 拖拽前快照，用于松开时判断是否真正变化
+        seg_len = self.audio_segment_end_beat(seg) - seg.start_beat
+        self._audio_drag_grab_offset = max(0.0, min(beat - seg.start_beat, seg_len))
+        self._audio_drag_beat = seg.start_beat
+        self.update()
+
+    def _audio_drag_update(self, event):
+        """音频栏拖拽中更新：move 预览 / left/right 实时裁剪并同步波形。"""
+        x = float(event.pos().x())
+        # 从拖拽起始的固定锚点反推鼠标拍位，而不是用 _pixel_to_beat_f：
+        # _min_axis_beat 会随拖拽预览/被拖拽段实时位置向左扩展，若用它反推拍位
+        # 会形成反馈环路（同一像素映射的拍位随轴扩展不断变负），导致负拍拖拽
+        # 按整拍失控跳跃。固定锚点使拍位计算与轴扩展完全独立。
+        beat = self._audio_drag_ref_beat + (x - self._audio_drag_ref_x) / self._pixels_per_beat
+        if self._audio_drag_mode == "move":
+            seg = self.audio_segments[self._audio_drag_from_idx]
+            # 预览框起始拍 = 鼠标拍位 - 抓取点偏移：跟随点击时的抓取点，而非以鼠标为中心
+            # 允许负拍：拖入音乐前导区（start_beat < 0）以支持“音乐先起、队形后动”。
+            self._audio_drag_beat = beat - self._audio_drag_grab_offset
+            # 交换目标：预览框重叠的段，且鼠标指针已超过该段一半（超过才交换）
+            self._audio_drag_target = -1
+            target = self._audio_move_drop_target(self._audio_drag_from_idx, self._audio_drag_beat)
+            if target is not None and self._audio_swap_armed(self._audio_drag_from_idx, target, beat):
+                self._audio_drag_target = target
+            self._recalculate_width()   # 拖入负区时轴向左展开，预览即时可见
+            self.update()
+            return
+        seg = self.audio_segments[self._audio_drag_from_idx]
+        orig = self._audio_drag_orig
+        if orig is None:
+            return
+        orig_src_start, orig_src_end, orig_start = orig
+        # 最小长度 0.5 秒（换算为拍，按起始拍处节拍速度）
+        min_len = max(1.0, 0.5 / self._seconds_per_beat_at(int(orig_start)))
+        if self._audio_drag_mode == "left":
+            # 左端拖拽：右端固定（end_beat 不变、src_end 不变），按“当前显示范围”锚定——
+            # 保持当前显示内容 [orig_src_start, orig_src_end] 与其拍位映射不变，
+            # 只调整左端（src_begin 与 start_beat），扩展/裁剪均在左侧进行。
+            right_edge = self.audio_beat_at_time(
+                self.audio_time_at_beat(orig_start) + (orig_src_end - orig_src_start)
+            )
+            new_start = min(beat, right_edge - min_len)
+            # 以当前显示范围左端为锚：orig_src_start ↔ orig_start 的映射保持不变
+            new_src_start = orig_src_start - (
+                self.audio_time_at_beat(orig_start) - self.audio_time_at_beat(new_start)
+            )
+            if new_src_start < 0:
+                # 左端源内容已到达文件头：src_begin 夹到 0，右端仍固定，重推 start_beat
+                new_src_start = 0.0
+                new_start = self.audio_beat_at_time(
+                    self.audio_time_at_beat(right_edge) - orig_src_end
+                )
+            seg.src_start = new_src_start
+            seg.start_beat = new_start
+        else:  # right
+            new_end = max(orig_start + min_len, beat)
+            new_src_end = orig_src_start + (
+                self.audio_time_at_beat(new_end) - self.audio_time_at_beat(orig_start)
+            )
+            dur = audio_duration(seg.file)
+            if new_src_end > dur:
+                new_src_end = dur
+                new_end = self.audio_beat_at_time(
+                    self.audio_time_at_beat(orig_start) + (dur - orig_src_start)
+                )
+            seg.src_end = new_src_end
+            # 后续音频段不自动吸附：每个后续段 start_beat = max(原位置, 前一段结束拍)。
+            # 拖拽段缩短（不重叠）时后续段回到原位置；仅在发生重叠时才后移重叠段，
+            # 且只后移不提前（推移后 start_beat 最小为原值）。       
+                
+            # 右端拖拽后重新铺排后续段：每个后续段 start_beat = max(原位置, 前一段结束拍)。
+            # 后续段不自动吸附：拖拽段缩短（不重叠）时后续段回到原位置；
+            # 仅在拖拽段右端与后续段发生重叠时后移重叠段，且只后移不提前（最小为原值）。
+            # 原位置取自 _audio_press 时的起始拍快照 _audio_drag_orig_starts。
+            b = new_end   # 拖拽段新结束拍，作为第一个后续段的“前一段结束拍”
+            for i in range(self._audio_drag_from_idx + 1, len(self.audio_segments)):
+                seg = self.audio_segments[i]
+                orig = self._audio_drag_orig_starts[i]
+                seg.start_beat = max(orig, b)
+                b = self.audio_segment_end_beat(seg)
+        self._recalculate_width()   # 裁剪使最左拍变化时轴向左展开
+        self._audio_pixmap = None
+        self.update()
+
+    def mouseMoveEvent(self, event):
+        if self._audio_drag_mode is not None:
+            # 拖拽中持续更新：按下时 Qt 已捕获鼠标，光标移出音频栏（向左进入
+            # 负拍区等）也能继续跟随，拖拽预览随像素平滑移动、无整拍跳变。
+            if self._expanded:
+                self._audio_drag_update(event)
+                event.accept()
+                return
+            return
+        # 鼠标追踪开启后，移出音频栏也会触发本事件，
+        # 因此始终调用悬停更新，以便移出手柄时能重置光标。
+        # 悬停时对选中段端点手柄显示左右双向箭头光标。
+        # 每次先重置光标，避免鼠标移出手柄/音频栏后残留旧光标。
+        pos = event.pos()
+        self.unsetCursor()
+        if not (0 <= self._audio_selected < len(self.audio_segments)):
+            return
+        if not (self._expanded and self._audio_hit_rect().contains(pos)):
+            return
+        seg = self.audio_segments[self._audio_selected]
+        x = float(pos.x())
+        left_x = self._beat_to_x_f(seg.start_beat)
+        right_x = self._beat_to_x_f(self.audio_segment_end_beat(seg))
+        handle_w = self._audio_handle_w
+        # 与裁剪手柄绘制（段外侧）保持一致：左手柄/右手柄外侧区域显示双向箭头。
+        # 右手柄命中范围向右延伸一个 _audio_handle_w，与 _audio_press 保持一致。
+        if (left_x - handle_w <= x <= left_x
+                or right_x <= x <= right_x + handle_w * 2):
+            self.setCursor(QCursor(Qt.CursorShape.SizeHorCursor))
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._audio_drag_mode is None:
+            super().mouseReleaseEvent(event)
+            return
+        mode = self._audio_drag_mode
+        idx = self._audio_drag_from_idx
+        orig = self._audio_drag_orig          # 拖拽前快照，用于判断是否真正发生了变化
+        self._audio_drag_mode = None
+        self._audio_drag_from_idx = -1
+        self._audio_drag_orig = None
+        self._audio_drag_target = -1
+        self.unsetCursor()
+        if not self._expanded or not self.audio_segments or not (0 <= idx < len(self.audio_segments)):
+            self.update()
+            return
+        if mode == "move":
+            seg = self.audio_segments[idx]
+            # 将预览位置写回：
+            # - 预览框不与其他段重叠 → 自由摆放到任意拍位（start_beat = 预览起始拍）
+            # - 预览框与其他段重叠：
+            #   · 鼠标指针已超过目标段一半 → 段交换（按拖拽方向插到目标段前/后）
+            #   · 否则 → 自动接在目标段后面
+            preview_start = self._audio_drag_beat
+            # 无实际拖拽（仅点击选中后原地松开）：预览起始拍 == 原起始拍 → 不写回、不发信号，
+            # 避免误触发重新合成/标记未保存
+            no_move = orig is not None and abs(preview_start - orig[2]) < 1e-9
+            # 与拖拽中一致：用固定锚点反推松开时的鼠标拍位（不受轴扩展影响）
+            mouse_beat = self._audio_drag_ref_beat + (
+                event.pos().x() - self._audio_drag_ref_x
+            ) / self._pixels_per_beat
+            # Ctrl+松开 → 复制模式：保留原段不动，在预览位置生成一份副本。
+            # 无实际拖拽（仅点击原地松开）时不复制，避免在相同位置凭空多出一段。
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                if no_move:
+                    self.update()
+                    return
+                new_seg = AudioSegment(
+                    file=seg.file,
+                    src_start=seg.src_start,
+                    src_end=seg.src_end,
+                    start_beat=preview_start,
+                )
+                self.audio_segments.append(new_seg)
+                self.audio_segments.sort(key=lambda s: s.start_beat)
+                self._resolve_audio_overlaps()
+                self._audio_selected = self.audio_segments.index(new_seg)
+                self._recalculate_width()
+                self._audio_pixmap = None
+                self.audioChanged.emit()
+                self.update()
+                return
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                # Shift+松开 → 整体平移：以拖拽段为基准，把「所有」音频段整体平移
+                # 相同的偏移量（等于拖拽段移动的距离），各段相对位置保持不变。
+                # 允许整体移入负区（音乐前导区）。
+                if no_move:
+                    self.update()
+                    return
+                orig_start = orig[2] if orig is not None else seg.start_beat
+                delta = preview_start - orig_start
+                for s in self.audio_segments:
+                    s.start_beat += delta
+                self._recalculate_width()
+                self._audio_pixmap = None
+                self.audioChanged.emit()
+                self.update()
+                return
+            target = self._audio_move_drop_target(idx, preview_start)
+            if target is not None and self._audio_swap_armed(idx, target, mouse_beat):
+                self._swap_audio_segments(idx, target, preview_start)
+            elif target is not None:
+                # 未超过目标段一半 → 自动接在目标段后面（不交换）
+                new_start = self.audio_segment_end_beat(self.audio_segments[target])
+                if no_move and abs(new_start - orig[2]) < 1e-9:
+                    self.update()
+                    return
+                seg.start_beat = new_start
+                self.audio_segments.sort(key=lambda s: s.start_beat)
+                self._resolve_audio_overlaps()
+                self._audio_selected = self.audio_segments.index(seg)
+                self._audio_pixmap = None
+                self.audioChanged.emit()
+            else:
+                # 自由摆放：直接写回预览起始拍，并按起始拍重排保持列表与时间轴一致
+                if no_move:
+                    self.update()
+                    return
+                seg.start_beat = preview_start
+                self.audio_segments.sort(key=lambda s: s.start_beat)
+                self._audio_selected = self.audio_segments.index(seg)
+                self._audio_pixmap = None
+                self.audioChanged.emit()
+            self._recalculate_width()   # 起始拍变化后按最左拍重新排布宽度
+            self.update()
+        else:  # left / right：拖拽已实时生效，释放时通知变化
+            seg = self.audio_segments[idx]
+            changed = orig is None or (seg.src_start, seg.src_end, seg.start_beat) != orig
+            # 裁剪后若与相邻段重叠，自动后移 start_beat 解决重叠
+            self._resolve_audio_overlaps()
+            if changed:
+                self._audio_pixmap = None
+                self.audioChanged.emit()
+            self._recalculate_width()
+            self.update()
+
     def contextMenuEvent(self, event):
         """右键节点弹出设置窗口：修改间隔拍数或删除该节点。"""
         pos: QPoint = event.pos()
-        
+
+        # 右键音频栏：选中该音频段并弹出删除确认弹窗
+        if self._expanded and self._audio_hit_rect().contains(pos):
+            beat = self._pixel_to_beat_f(pos.x() - self._audio_rect.left())
+            found = self.audio_segment_at_beat(beat)
+            if found is not None:
+                idx, _seg = found
+                self.setFocus()          # 确保随后 Delete 快捷键作用于时间轴
+                self._audio_selected = idx
+                self.update()
+                self._delete_audio_by_index(idx)
+            return
+
         # 右键速度轴区域时，弹出速度编辑对话框（修改或删除该节点）。
         if self._expanded and self._tempo_rect.contains(pos):
             beat = self._x_to_beat(pos.x())
@@ -1081,6 +2141,7 @@ class TimelineWidget(QWidget):
                 min(self._max_pixels_per_beat, self._pixels_per_beat + step),
             )
             self._recalculate_width()
+            self._audio_pixmap = None   # 缩放后波形显示同步
             self.update()
             event.accept()
             return

@@ -23,8 +23,10 @@ class TipWindow(QDialog):
                               "  · 左右方向键可快捷切换节点\n\n"+
                               "- “选择”功能：按 Shift 反转组内选择；按 Ctrl 可进行单点选择\n"+
                               "  · “框选”功能：按 Ctrl 可保持选择点位\n\n"+
-                              "- 场地坐标：旋转角度为负则不显示\n\n" + 
-                              "- 导出 PDF 会直接在当前方案的保存路径下生成\n\n" + 
+                              "- 场地坐标：旋转角度为负则不显示\n\n"+ 
+                              "- 导出 PDF 会直接在当前方案的保存路径下生成\n\n"+ 
+                              "- 音轨：拖拽音频段可调整其位置和长度；ctrl+拖拽复制；shift+拖拽整体平移\n"+
+                              "  · 音频输出设备仅会在程序启动时检测，运行时切换不可靠\n\n"+ 
                               "❗撤回功能暂未实现，敬请期待❤"), self)
         self.tip_content.setWordWrap(True)
         self.tip_content.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
