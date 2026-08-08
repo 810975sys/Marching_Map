@@ -27,7 +27,7 @@
 import json
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
     QApplication,
@@ -109,6 +109,9 @@ class AppSettingsDock(QDockWidget):
     回写与恢复默认。
     """
 
+    # 某一参数即将被修改（用户操作）时发出，携带参数键（用于撤销/重做合并）
+    paramChanged = pyqtSignal(str)
+
     def __init__(self, parent=None):
         super().__init__("应用设置", parent)
         self.setObjectName("appSettingsDock")
@@ -155,7 +158,11 @@ class AppSettingsDock(QDockWidget):
         return self._settings.get(key, self._defaults.get(key, default))
 
     def _set(self, key: str, value):
-        """更新内存中的设置（不写回）。"""
+        """更新内存中的设置（不写回）。
+
+        先发出参数变更通知再修改，使撤销/重做能捕获到“修改前”状态。
+        """
+        self.paramChanged.emit(key)
         self._settings[key] = value
 
     def _save(self):

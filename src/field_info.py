@@ -43,6 +43,8 @@ class FieldInfo(QObject):
     """
 
     changed = pyqtSignal()
+    # 参数即将被修改前发出，携带参数键（用于撤销/重做的“同一参数连续修改合并”）
+    preChange = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -82,6 +84,10 @@ class FieldInfo(QObject):
     def _emit_changed(self):
         """统一触发配置变更信号。"""
         self.changed.emit()
+
+    def _notify_pre_change(self, key: str):
+        """参数修改前通知（供撤销/重做合并同一参数的连续修改）。"""
+        self.preChange.emit(key)
 
     def _clamp_zero_step(self, step: int, limit: int) -> int:
         """确保0线步数在合理范围内，避免标签显示异常。"""
@@ -172,6 +178,7 @@ class FieldInfo(QObject):
 
     def set_field_size(self, width: int, height: int):
         """设置场地长宽（按 5 米网格对齐）。"""
+        self._notify_pre_change("field_size")
         self.field_width = max(5, int(round(width / 5)) * 5)
         self.field_height = max(5, int(round(height / 5)) * 5)
         self.label_y_zero_step = self._clamp_zero_step(self.label_y_zero_step, self._zero_step_limit_x())
@@ -180,6 +187,7 @@ class FieldInfo(QObject):
 
     def set_scale(self, scale: float):
         """设置缩放比例（受全局最小/最大值约束）。"""
+        self._notify_pre_change("scale")
         self.scale = max(SCALE_MIN, min(SCALE_MAX, scale))
         self._emit_changed()
 
@@ -196,26 +204,31 @@ class FieldInfo(QObject):
     # 视觉参数接口
     def set_bg_grid_color(self, color: QColor):
         """设置背景网格颜色。"""
+        self._notify_pre_change("bg_grid_color")
         self.bg_grid_color = color
         self._emit_changed()
 
     def set_bg_grid_width(self, width: int):
         """设置背景网格线宽。"""
+        self._notify_pre_change("bg_grid_width")
         self.bg_grid_width = width
         self._emit_changed()
 
     def set_field_line_color(self, color: QColor):
         """设置场地经纬线颜色。"""
+        self._notify_pre_change("field_line_color")
         self.field_line_color = color
         self._emit_changed()
 
     def set_field_line_width(self, width: int):
         """设置场地经纬线线宽。"""
+        self._notify_pre_change("field_line_width")
         self.field_line_width = width
         self._emit_changed()
 
     def set_bold_interval(self, interval: int):
         """设置场地线间隔（每N条网格线绘制一条场地线）。"""
+        self._notify_pre_change("bold_interval")
         self.bold_interval = interval
         self.grid_step = self.unit / self.bold_interval
         self.label_y_zero_step = self._clamp_zero_step(self.label_y_zero_step, self._zero_step_limit_x())
@@ -224,16 +237,19 @@ class FieldInfo(QObject):
 
     def set_label_abs(self, enabled: bool):
         """设置坐标显示绝对值（True）还是相对值（False）"""
+        self._notify_pre_change("label_abs")
         self.label_abs = enabled
         self._emit_changed()
 
     def set_label_zoom(self, zoom: float):
         """设置坐标字体大小（pt）。实际像素大小由 `label_zoom` 与 `scale` 共同决定"""
+        self._notify_pre_change("label_zoom")
         self.label_zoom = max(0.1, float(zoom))
         self._emit_changed()
         
     def set_label_display(self, top: int, bottom: int, left: int, right: int):
         """设置四侧坐标显示模式（旋转角度，-1表示不显示）"""
+        self._notify_pre_change("label_display")
         self.top_display = top
         self.bottom_display = bottom
         self.left_display = left
@@ -242,24 +258,28 @@ class FieldInfo(QObject):
 
     def set_label_offsets(self, y_offset: int, x_offset: int):
         """设置坐标偏移量"""
+        self._notify_pre_change("label_offsets")
         self.label_y_offset = int(y_offset)
         self.label_x_offset = int(x_offset)
         self._emit_changed()
 
     def set_label_counts(self, y_count: int, x_count: int):
         """设置坐标显示数量（单侧，从0开始计数，另一边对称）"""
+        self._notify_pre_change("label_counts")
         self.label_y_cnt = max(0, int(y_count))
         self.label_x_cnt = max(0, int(x_count))
         self._emit_changed()
 
     def set_label_y_zero_step(self, step: int):
         """设置纵向0线位置（以中心为基准，单位为网格步数）"""
+        self._notify_pre_change("label_y_zero_step")
         self.label_y_zero_step = self._clamp_zero_step(step, self._zero_step_limit_x())
         self.label_y_zero_index = self.label_y_zero_step / self.bold_interval
         self._emit_changed()
 
     def set_label_x_zero_step(self, step: int):
         """设置横向0线位置（以中心为基准，单位为网格步数）"""
+        self._notify_pre_change("label_x_zero_step")
         self.label_x_zero_step = self._clamp_zero_step(step, self._zero_step_limit_y())
         self.label_x_zero_index = self.label_x_zero_step / self.bold_interval
         self._emit_changed()

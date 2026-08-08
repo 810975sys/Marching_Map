@@ -449,15 +449,16 @@ class PerformerPointItem(QGraphicsEllipseItem):
     selected_pen_color: QColor = QColor("#f39c12")
     default_size: float = 10.0
 
-    def __init__(self, point_id: int = 0, center_scene_pos: QPointF = QPointF(), moved_callback = None, released_callback = None, can_drag_callback = None, selected: bool = False, size: float | None = None):
+    def __init__(self, point_id: int = 0, center_scene_pos: QPointF = QPointF(), moved_callback = None, released_callback = None, can_drag_callback = None, pressed_callback = None, selected: bool = False, size: float | None = None):
         if size is None:
             size = PerformerPointItem.default_size
         self.radius = size / 2.0
         super().__init__(-self.radius, -self.radius, size, size)
         self.point_id = point_id   # 点位ID，用于定位
         self._moved_callback = moved_callback   # 移动回调，返回调整后的场景坐标以实现吸附等功能。
-        self._released_callback = released_callback # 释放回调，参数为点位ID，用于通知数据层更新点位坐标。
+        self._released_callback = released_callback # 释放回调，参数为 (point_id, moved)，moved 表示拖拽过程中是否发生过移动。
         self._can_drag_callback = can_drag_callback # 是否可拖动回调，返回布尔值，控制是否允许拖动（如锁定状态下不可拖动）
+        self._pressed_callback = pressed_callback   # 按下回调，参数为点位ID，用于撤销/重做的“拖拽前快照”。
         self._moved_during_drag = False # 记录拖动过程中是否发生过移动，用于在释放时判断是否需要触发更新
         # 初始化位置时会触发 ItemPositionChange；此阶段不应触发吸附与数据写回。
         self._suspend_position_change = True
@@ -490,14 +491,16 @@ class PerformerPointItem(QGraphicsEllipseItem):
             return
         if event.button() == Qt.MouseButton.LeftButton:
             self._moved_during_drag = False
+            if callable(self._pressed_callback):
+                self._pressed_callback(self.point_id)
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event):
         """按键释放响应"""
         super().mouseReleaseEvent(event)
-        if event.button() == Qt.MouseButton.LeftButton and self._moved_during_drag:
+        if event.button() == Qt.MouseButton.LeftButton:
             if callable(self._released_callback):
-                self._released_callback(self.point_id)
+                self._released_callback(self.point_id, self._moved_during_drag)
 
     def itemChange(self, change, value):
         """位置变化时调用移动回调，获取调整后的坐标以实现吸附等功能；拖动过程中记录是否发生过移动。"""

@@ -282,6 +282,9 @@ class TimelineWidget(QWidget):
         self.beat_tempo: dict[int, Tempo] = {0: Tempo(start_bpm=120)}
         self.tempo_label_width = 25  # bpm 标签宽度
 
+        # 撤销/重做管理器（由 MainWindow 注入）；用于时间轴/音频编辑的会话与一步操作记录
+        self.history = None
+
         # 缓存绘制几何区域
         self._node_rects: list[QRect] = []
         self._plus_rect = QRect()
@@ -455,17 +458,23 @@ class TimelineWidget(QWidget):
 
     def add_node(self, interval: int = 8):
         """在末尾新增一个节点，默认间隔为8拍。"""
+        if self.history is not None:
+            self.history.begin("新增节点")
         self.graph_list.append(max(1, int(interval)))
         added_index = len(self.graph_list) - 1
         self._recalculate_width()
         self.timelineChanged.emit()
         self.nodeAdded.emit(added_index)
         self.update()
+        if self.history is not None:
+            self.history.commit()
 
     def delete_node(self, node_index: int):
         """删除指定节点，节点0不允许删除。"""
         if node_index <= 0 or node_index >= len(self.graph_list):
             return
+        if self.history is not None:
+            self.history.begin("删除节点")
 
         # 删除中间节点时，需要把“前->删节点”和“删节点->后”两段拍数合并，
         # 这样后续节点的绝对起始拍不会变化。
@@ -487,6 +496,8 @@ class TimelineWidget(QWidget):
         self.nodeDeleted.emit(node_index)
         self.currentBeatChanged.emit(self.current_beat)
         self.update()
+        if self.history is not None:
+            self.history.commit()
 
     def _min_axis_beat(self) -> float:
         """时间轴最左拍位（可 < 0，可为小数）。
@@ -716,6 +727,8 @@ class TimelineWidget(QWidget):
         if left_interval <= 0 or right_interval <= 0:
             return False
 
+        if self.history is not None:
+            self.history.begin("插入节点")
         # 原间隔替换为左段，并在其后插入右段。
         self.graph_list[right_idx] = left_interval
         self.graph_list.insert(right_idx + 1, right_interval)
@@ -729,6 +742,8 @@ class TimelineWidget(QWidget):
         self.nodeSelected.emit(inserted_index)
         self.currentBeatChanged.emit(self.current_beat)
         self.update()
+        if self.history is not None:
+            self.history.commit()
         return True
 
     def _beat_to_x(self, beat: int) -> int:
@@ -1074,6 +1089,8 @@ class TimelineWidget(QWidget):
         progress_cb 可选：每处理完一个文件回调 progress_cb(done, total, file_path)，
         用于在导入（需读取音频时长，可能耗时）期间显示进度。
         """
+        if self.history is not None:
+            self.history.begin("导入音频")
         added: list[AudioSegment] = []
         total = len(file_paths)
         done = 0
@@ -1101,6 +1118,11 @@ class TimelineWidget(QWidget):
             self._preload_audio_peaks()
             self.audioChanged.emit()
             self.update()
+        if self.history is not None:
+            if added:
+                self.history.commit()
+            else:
+                self.history.cancel()
         return added
 
     def synthesize_playback_audio(self, output_path, progress_cb=None) -> bool:
@@ -1172,6 +1194,8 @@ class TimelineWidget(QWidget):
         seg_end = self.audio_segment_end_beat(seg)
         if target <= seg.start_beat + 1e-6 or target >= seg_end - 1e-6:
             return False
+        if self.history is not None:
+            self.history.begin("切分音频段")
         split_src = self._audio_source_time_at_beat(seg, target)
         left = AudioSegment(
             file=seg.file, src_start=seg.src_start, src_end=split_src,
@@ -1186,6 +1210,8 @@ class TimelineWidget(QWidget):
         self._audio_pixmap = None
         self.audioChanged.emit()
         self.update()
+        if self.history is not None:
+            self.history.commit()
         return True
 
     def _confirm_delete_audio_dialog(self, seg: AudioSegment) -> bool:
@@ -1228,6 +1254,8 @@ class TimelineWidget(QWidget):
             # 删除指定音频段，并同步编辑状态、缓存与外部信号。
             if not (0 <= idx < len(self.audio_segments)):
                 return
+            if self.history is not None:
+                self.history.begin("删除音频段")
             del self.audio_segments[idx]
             # 修正选中索引：删掉的正是选中段 → 无选中；删掉前面的段 → 选中索引前移
             if self._audio_selected == idx:
@@ -1239,6 +1267,8 @@ class TimelineWidget(QWidget):
             self._audio_unreadable.clear()
             self.audioChanged.emit()
             self.update()
+            if self.history is not None:
+                self.history.commit()
 
     def _delete_selected_audio(self):
         """Delete 快捷键：删除当前选中的音频段（带确认弹窗）。"""
@@ -1722,7 +1752,11 @@ class TimelineWidget(QWidget):
                     tempo_keys=sorted(self.beat_tempo.keys()),
                 )
                 if dialog.exec() == QDialog.DialogCode.Accepted:
+                    if self.history is not None:
+                        self.history.begin("新增速度节点")
                     self.set_tempo_at_beat(dialog._beat_spin.value(), dialog.get_tempo(), is_new=True)
+                    if self.history is not None:
+                        self.history.commit()
                 event.accept()
                 return
             expand_y = self._node_radius * 2
@@ -1735,6 +1769,20 @@ class TimelineWidget(QWidget):
         super().mouseDoubleClickEvent(event)
 
     # ──────── 音频栏交互 ────────
+    def _begin_audio_undo(self):
+        """音频拖拽会话开始（撤销/重做：按下→松开视为一步）。"""
+        if self.history is not None:
+            self.history.begin("音频编辑")
+
+    def _finish_audio_undo(self, changed: bool):
+        """音频拖拽会话结束：真正发生变化则提交为一步，否则取消。"""
+        if self.history is None:
+            return
+        if changed:
+            self.history.commit()
+        else:
+            self.history.cancel()
+
     def _audio_press(self, pos: QPoint):
         """音频栏左键按下：切换当前编辑段，或开始拖拽（移动/裁剪）。"""
         self._audio_drag_mode = None
@@ -1765,6 +1813,7 @@ class TimelineWidget(QWidget):
                 self._audio_drag_mode = "left"
                 self._audio_drag_from_idx = self._audio_selected
                 self._audio_drag_orig = (seg.src_start, seg.src_end, seg.start_beat)
+                self._begin_audio_undo()
                 self.update()
                 return
             # 右端拖拽裁剪（基于原曲节选，固定 src_start）。
@@ -1774,6 +1823,7 @@ class TimelineWidget(QWidget):
                 self._audio_drag_mode = "right"
                 self._audio_drag_from_idx = self._audio_selected
                 self._audio_drag_orig = (seg.src_start, seg.src_end, seg.start_beat)
+                self._begin_audio_undo()
                 self.update()
                 return
 
@@ -1794,6 +1844,7 @@ class TimelineWidget(QWidget):
         seg_len = self.audio_segment_end_beat(seg) - seg.start_beat
         self._audio_drag_grab_offset = max(0.0, min(beat - seg.start_beat, seg_len))
         self._audio_drag_beat = seg.start_beat
+        self._begin_audio_undo()
         self.update()
 
     def _audio_drag_update(self, event):
@@ -1918,6 +1969,7 @@ class TimelineWidget(QWidget):
         self._audio_drag_target = -1
         self.unsetCursor()
         if not self._expanded or not self.audio_segments or not (0 <= idx < len(self.audio_segments)):
+            self._finish_audio_undo(False)
             self.update()
             return
         if mode == "move":
@@ -1939,6 +1991,7 @@ class TimelineWidget(QWidget):
             # 无实际拖拽（仅点击原地松开）时不复制，避免在相同位置凭空多出一段。
             if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
                 if no_move:
+                    self._finish_audio_undo(False)
                     self.update()
                     return
                 new_seg = AudioSegment(
@@ -1955,12 +2008,14 @@ class TimelineWidget(QWidget):
                 self._audio_pixmap = None
                 self.audioChanged.emit()
                 self.update()
+                self._finish_audio_undo(True)
                 return
             if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                 # Shift+松开 → 整体平移：以拖拽段为基准，把「所有」音频段整体平移
                 # 相同的偏移量（等于拖拽段移动的距离），各段相对位置保持不变。
                 # 允许整体移入负区（音乐前导区）。
                 if no_move:
+                    self._finish_audio_undo(False)
                     self.update()
                     return
                 orig_start = orig[2] if orig is not None else seg.start_beat
@@ -1971,6 +2026,7 @@ class TimelineWidget(QWidget):
                 self._audio_pixmap = None
                 self.audioChanged.emit()
                 self.update()
+                self._finish_audio_undo(True)
                 return
             target = self._audio_move_drop_target(idx, preview_start)
             if target is not None and self._audio_swap_armed(idx, target, mouse_beat):
@@ -1979,6 +2035,7 @@ class TimelineWidget(QWidget):
                 # 未超过目标段一半 → 自动接在目标段后面（不交换）
                 new_start = self.audio_segment_end_beat(self.audio_segments[target])
                 if no_move and abs(new_start - orig[2]) < 1e-9:
+                    self._finish_audio_undo(False)
                     self.update()
                     return
                 seg.start_beat = new_start
@@ -1990,6 +2047,7 @@ class TimelineWidget(QWidget):
             else:
                 # 自由摆放：直接写回预览起始拍，并按起始拍重排保持列表与时间轴一致
                 if no_move:
+                    self._finish_audio_undo(False)
                     self.update()
                     return
                 seg.start_beat = preview_start
@@ -1999,6 +2057,7 @@ class TimelineWidget(QWidget):
                 self.audioChanged.emit()
             self._recalculate_width()   # 起始拍变化后按最左拍重新排布宽度
             self.update()
+            self._finish_audio_undo(True)
         else:  # left / right：拖拽已实时生效，释放时通知变化
             seg = self.audio_segments[idx]
             changed = orig is None or (seg.src_start, seg.src_end, seg.start_beat) != orig
@@ -2009,6 +2068,7 @@ class TimelineWidget(QWidget):
                 self.audioChanged.emit()
             self._recalculate_width()
             self.update()
+            self._finish_audio_undo(changed)
 
     def contextMenuEvent(self, event):
         """右键节点弹出设置窗口：修改间隔拍数或删除该节点。"""
@@ -2041,11 +2101,15 @@ class TimelineWidget(QWidget):
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 # 弹窗里可编辑节拍位置，OK 后应使用用户最终确认的拍位，
                 # 而不是右键点击位置 key，否则改拍位不生效。
+                if self.history is not None:
+                    self.history.begin("修改速度节点")
                 new_beat = dialog._beat_spin.value()
                 if dialog.delete_requested:
                     self.delete_tempo_at_beat(new_beat)
                 else:
                     self.set_tempo_at_beat(new_beat, dialog.get_tempo(), is_new=False, old_beat=key)
+                if self.history is not None:
+                    self.history.commit()
             return
         
         # 右键速度轴右缘外侧一个定值范围（bpm 值宽度）内，定位到最后一个速度节点（tempo[-1]）。
@@ -2065,11 +2129,15 @@ class TimelineWidget(QWidget):
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 # 弹窗里可编辑节拍位置，OK 后应使用用户最终确认的拍位，
                 # 而不是右键点击位置 key，否则改拍位不生效。
+                if self.history is not None:
+                    self.history.begin("修改速度节点")
                 new_beat = dialog._beat_spin.value()
                 if dialog.delete_requested:
                     self.delete_tempo_at_beat(new_beat)
                 else:
                     self.set_tempo_at_beat(new_beat, dialog.get_tempo(), is_new=False, old_beat=key)
+                if self.history is not None:
+                    self.history.commit()
             return
         
         # 右键设置方案图节点信息
@@ -2082,13 +2150,17 @@ class TimelineWidget(QWidget):
                 dialog = NodeEditDialog(i, self.graph_list[i], self)
                 if dialog.exec() == QDialog.DialogCode.Accepted:
                     if dialog.delete_requested:
-                        self.delete_node(i)
+                        self.delete_node(i)   # delete_node 内部自行记录撤销步骤
                     else:
+                        if self.history is not None:
+                            self.history.begin("修改节点间隔")
                         self.graph_list[i] = dialog.get_interval_value()
                         self._recalculate_width()
                         self.timelineChanged.emit()
                         self.update()
                         self._switch_next()
+                        if self.history is not None:
+                            self.history.commit()
                 return
 
         super().contextMenuEvent(event)

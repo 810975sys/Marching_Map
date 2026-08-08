@@ -1,17 +1,20 @@
 import sys
 import json
+import copy
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QToolBar,
     QVBoxLayout, QWidget, QFileDialog, 
     QHBoxLayout, QPushButton, QSizePolicy, QToolButton, QGridLayout, QFrame,
     QLabel, QLineEdit, QSlider, QButtonGroup, QDialog, QSpinBox,
-    QMessageBox, QProgressDialog,
+    QMessageBox, QProgressDialog, QTextEdit, QPlainTextEdit,
 )
 from PyQt6.QtCore import Qt, QTimer, QElapsedTimer, QUrl
 from PyQt6.QtGui import QIcon, QShortcut, QKeySequence
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from pathlib import Path
 import time
+
+from src.history_manager import HistoryManager
 
 # 导入自定义场景
 from src.field_info import (
@@ -53,6 +56,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self._scheme_file_path: Path | None = None
         self._scheme_dirty = False
         self._scheme_dirty_suppressed = False
+        # 撤销/重做管理器（在 _setup_history 中创建并注入各数据层）
+        self._history: HistoryManager | None = None
         # 按钮字体大小（由 AppSettingsDock 统一管理）
         self._font_size = 9
         # 播放演示状态
@@ -83,6 +88,12 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self._transform_tools = {"调整", "路径", "旋转"}
         self._p0_forbidden_transform_tools = {"跟随", "路径", "间隔", "旋转"}
         self._multi_select_tools = {"跟随", "间隔"}
+        # 需要“确认/取消”会话语义的工具（进入时快照、确认时合并为一步）
+        self._session_tools = (
+            self._drawing_tools | self._text_tools | self._label_tools
+            | self._group_tools | self._transform_tools | self._multi_select_tools
+            | {"箭头"}
+        )
         
         self.setupMenus()   # 菜单栏
         self.setupToolBar()    # 工具栏
@@ -96,6 +107,9 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
         # 启动时从历史文件恢复上次编辑的方案
         self._restore_last_scheme()
+
+        # 撤销/重做管理器：必须在各数据层与 UI 初始化完成后创建
+        self._setup_history()
         
         self.setWindowTitle("Marching Map Editor")
         self.resize(1200, 800)
@@ -125,12 +139,14 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.actionAppSettings.setCheckable(True)
 
         # 撤销和重做直接作为主菜单栏按钮，添加图标
-        # undo_icon = QIcon.fromTheme("edit-undo")
-        # redo_icon = QIcon.fromTheme("edit-redo")
-        # undo = self.menuBar().addAction(undo_icon, "撤销")
-        # undo.setShortcut("Ctrl+Z")
-        # redo = self.menuBar().addAction(redo_icon, "重做")
-        # redo.setShortcut("Ctrl+Y")
+        undo_icon = QIcon.fromTheme("edit-undo")
+        redo_icon = QIcon.fromTheme("edit-redo")
+        self.actionUndo = self.menuBar().addAction(undo_icon, "撤销")
+        self.actionUndo.setShortcut("Ctrl+Z")
+        self.actionUndo.triggered.connect(self._undo)
+        self.actionRedo = self.menuBar().addAction(redo_icon, "重做")
+        self.actionRedo.setShortcut("Ctrl+Y")
+        self.actionRedo.triggered.connect(self._redo)
 
         # 场地设置
         groundMenu = self.menuBar().addMenu("场地")
@@ -371,6 +387,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self._apply_scheme_payload(payload)
         self._scheme_file_path = Path(file_path)
         self._save_last_scheme_path()
+        if self._history is not None:
+            self._history.initialize()   # 打开新方案：清空撤销历史，以当前状态为基准
         self._show_menu_notice(f"已打开：{Path(file_path).name}")
         return True
 
@@ -413,6 +431,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
         finally:
             self._scheme_dirty_suppressed = False
         self._set_scheme_dirty(False)
+        if self._history is not None:
+            self._history.initialize()   # 新建方案：清空撤销历史
         self._show_menu_notice("已新建空白方案")
         return True
 
@@ -457,6 +477,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
                 payload = json.load(f)
             self._apply_scheme_payload(payload)
             self._scheme_file_path = target
+            if self._history is not None:
+                self._history.initialize()   # 启动恢复：以恢复后的状态为撤销基准
             self._show_menu_notice(f"已恢复：{target.name}")
         except Exception:
             QMessageBox.warning(
@@ -468,6 +490,172 @@ class MainWindow(MainWindowNotice, QMainWindow):
             # 清空历史文件
             with open(LAST_SCHEME_PATH_FILE, "w", encoding="utf-8") as f:
                 json.dump({"last_scheme_path": ""}, f, ensure_ascii=False, indent=2)
+
+    # ──────────────── 撤销 / 重做 ────────────────
+    def _setup_history(self):
+        """创建撤销/重做管理器并注入各数据层，建立基准快照。"""
+        self._history = HistoryManager(
+            capture=self._history_capture,
+            restore=self._history_restore,
+            max_steps=50,
+            on_changed=self._update_undo_redo_actions,
+        )
+        self.scene.history = self._history
+        self.timelineMainWidget.history = self._history
+        self.scene.field_info.preChange.connect(self._history.notify_param_change)
+        self.appSettingsDock.paramChanged.connect(self._history.notify_param_change)
+        self._history.initialize()
+        self._update_undo_redo_actions()
+
+    def _history_capture(self) -> dict:
+        """采集当前完整状态（含 UI 状态），作为撤销/重做快照。"""
+        return {
+            "scene": copy.deepcopy(self.scene.to_dict()),
+            "timeline": copy.deepcopy(self.timelineMainWidget.to_dict()),
+            "audio": copy.deepcopy(self.timelineMainWidget.audio_to_dict()),
+            # field_info.to_dict() 未包含 scale（缩放），单独补上以便撤销/重做还原
+            "field": self._field_capture(),
+            "app_settings": dict(self.appSettingsDock._settings),
+            "ui": {
+                "active_tool": self.activeToolName,
+                "selected_point_ids": sorted(int(p) for p in self.scene._selected_point_ids),
+                "active_node": int(self.scene.active_node),
+            },
+        }
+
+    def _field_capture(self) -> dict:
+        """采集场地设置（field_info.to_dict() 不含 scale，需补上）。"""
+        field = copy.deepcopy(self.scene.field_info.to_dict())
+        field["scale"] = float(self.scene.field_info.scale)
+        return field
+
+    def _history_restore(self, snap: dict):
+        """把快照恢复到各数据层并刷新界面。"""
+        self._stop_playback()
+        # 1) 时间轴（先恢复，以便场景按节点数初始化）
+        self.timelineMainWidget.load_from_dict(
+            snap.get("timeline", {}),
+            audio_data=snap.get("audio"),
+        )
+        # 2) 场景数据
+        self.scene.load_confirmed_state(
+            snap.get("scene", {}),
+            node_count=len(self.timelineMainWidget.graph_list),
+        )
+        # 3) 场地设置
+        field_data = snap.get("field", {})
+        self.scene.field_info.load_from_dict(field_data)
+        if "scale" in field_data:
+            # 通过 set_scale 恢复缩放（同时刷新主窗口缩放条显示）
+            self.scene.field_info.set_scale(float(field_data["scale"]))
+        # 4) 应用设置（恢复后重绘使用正确的默认值）
+        app_settings = snap.get("app_settings")
+        if isinstance(app_settings, dict) and app_settings:
+            self.appSettingsDock._settings = dict(app_settings)
+            self.appSettingsDock._apply_to_controls()
+            self.appSettingsDock._apply_all_to_targets()
+        # 5) UI 状态（当前编辑节点 / 工具 / 选中点位）
+        self._restore_ui_state(snap.get("ui", {}))
+        # 6) 缩放条 / BPM 输入框同步 + 音频合成标记 + 未保存标记
+        self._sync_zoom_slider()
+        tempo0 = self.timelineMainWidget.beat_tempo.get(0, None)
+        if tempo0 is not None:
+            self.bpmSpinBox.blockSignals(True)
+            self.bpmSpinBox.setValue(int(round(tempo0.start_bpm)))
+            self.bpmSpinBox.blockSignals(False)
+        self._audio_dirty = True
+        self._mark_scheme_dirty()
+        self._update_undo_redo_actions()
+
+    def _restore_ui_state(self, ui: dict):
+        """恢复撤销/重做步骤对应的工具、选中状态与当前编辑节点。"""
+        tool = ui.get("active_tool", "框选") or "框选"
+        sel = set(int(i) for i in ui.get("selected_point_ids", []))
+        node = int(ui.get("active_node", 0))
+        node_count = len(self.scene.node_points)
+        if node_count > 0:
+            node = max(0, min(node, node_count - 1))
+        else:
+            node = 0
+        # 恢复当前编辑节点（时间轴选中 + 拍位 + 场景活动节点）
+        self.timelineMainWidget.selected_node = node
+        try:
+            self.timelineMainWidget.current_beat = self.timelineMainWidget.start_beat_of(node)
+        except Exception:
+            self.timelineMainWidget.current_beat = 0
+        self.scene.active_node = node
+        self.scene.ensure_node_exists(node)
+        # 恢复工具与选中状态：调整/旋转/路径类需要“先有选中”，框选/选择会在切换时清空选中
+        if tool in {"框选", "选择"}:
+            self._apply_active_tool(tool)
+            self.scene._selected_point_ids = set(sel)
+        else:
+            self.scene._selected_point_ids = set(sel)
+            self._apply_active_tool(tool)
+        self.scene._render_points_for_active_node()
+        # 配置绘制控制台可见性与内容
+        self._configure_drawing_control_dock(self.activeToolName)
+        if self.activeToolName in self._select_tools:
+            self.drawingControlDock.hide()
+        else:
+            self.drawingControlDock.show()
+            self._positionDrawingControlDock()
+            self.drawingControlDock.raise_()
+        self.scene.set_preview_beat(int(self.timelineMainWidget.current_beat))
+        self.actionDeletePoint.setEnabled(bool(sel))
+        self.updateContextToolAvailability(int(self.timelineMainWidget.current_beat), len(sel))
+        self.timelineMainWidget.update()
+
+    def _begin_session_for_current_tool(self):
+        """撤销/重做恢复到会话工具后，为后续确认建立新的撤销会话。"""
+        if self._history is None:
+            return
+        if self.activeToolName in self._session_tools:
+            self._history.begin(self.activeToolName)
+
+    def _update_undo_redo_actions(self):
+        """根据撤销/重做栈可用性刷新菜单按钮状态。"""
+        if not hasattr(self, "actionUndo") or self._history is None:
+            return
+        self.actionUndo.setEnabled(self._history.can_undo())
+        self.actionRedo.setEnabled(self._history.can_redo())
+
+    def _undo(self):
+        """撤销：若焦点在文本编辑控件则交给控件自身处理，否则执行全局撤销。"""
+        w = QApplication.focusWidget()
+        if isinstance(w, (QLineEdit, QTextEdit, QPlainTextEdit)):
+            w.undo()
+            return
+        if self._history is None:
+            return
+        self._history.undo()
+        self._begin_session_for_current_tool()
+        self._update_undo_redo_actions()
+        self._show_menu_notice("已撤销")
+
+    def _redo(self):
+        """重做：若焦点在文本编辑控件则交给控件自身处理，否则执行全局重做。"""
+        w = QApplication.focusWidget()
+        if isinstance(w, (QLineEdit, QTextEdit, QPlainTextEdit)):
+            w.redo()
+            return
+        if self._history is None:
+            return
+        self._history.redo()
+        self._begin_session_for_current_tool()
+        self._update_undo_redo_actions()
+        self._show_menu_notice("已重做")
+
+    def _sync_zoom_slider(self):
+        """场地缩放变化后同步主窗口缩放条与输入框显示。"""
+        if not hasattr(self, "_zoom_slider"):
+            return
+        val = int(self.scene.field_info.scale * ZOOM_PERCENT_FACTOR)
+        val = max(ZOOM_PERCENT_MIN, min(ZOOM_PERCENT_MAX, val))
+        self._zoom_slider.blockSignals(True)
+        self._zoom_slider.setValue(val)
+        self._zoom_slider.blockSignals(False)
+        self._zoom_input.setText(str(val))
 
     def closeEvent(self, event):
         """关闭窗口前处理未保存修改。"""
@@ -497,7 +685,10 @@ class MainWindow(MainWindowNotice, QMainWindow):
         if not file_path:
             return
 
-        loadFieldInfo(self.scene.field_info, Path(file_path))
+        if self._history is not None:
+            self._history.record_op(lambda: loadFieldInfo(self.scene.field_info, Path(file_path)))
+        else:
+            loadFieldInfo(self.scene.field_info, Path(file_path))
         self._show_menu_notice("导入成功！")
     
     def setupToolBar(self):
@@ -567,6 +758,9 @@ class MainWindow(MainWindowNotice, QMainWindow):
         # 播放演示中点击任何工具按钮都停止播放
         if self._playback_active:
             self._stop_playback()
+        # 切回“框选/选择”等非会话工具时，结束上一个未确认的绘图会话（丢弃草稿快照）
+        if tool_name not in self._session_tools and self._history is not None:
+            self._history.cancel()
         tool_text = {
             '点': "点击绘制参考点；拖动空心矩形可对单点进行修正。",
             '线段': "确定线段起止点；拖动空心矩形可对单点进行修正。",
@@ -598,6 +792,9 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
         self._apply_active_tool(tool_name)
         self._configure_drawing_control_dock(tool_name)
+        # 进入会话工具时记录“进入该绘图方式时”的快照（确认后合并为一步撤销）
+        if tool_name in self._session_tools and self._history is not None:
+            self._history.begin(tool_name)
 
         if tool_name in self._select_tools:
             self.drawingControlDock.hide()
@@ -1047,6 +1244,9 @@ class MainWindow(MainWindowNotice, QMainWindow):
         zoomInput = QLineEdit(f"{zoomSlider.value()}")
         zoomInput.setFixedWidth(35)
         zoomInput.setAlignment(Qt.AlignmentFlag.AlignRight)
+        # 保存缩放条引用，撤销/重做恢复场地缩放后需同步显示
+        self._zoom_slider = zoomSlider
+        self._zoom_input = zoomInput
         # zoomInput.setToolTip("输入缩放百分比，回车或失焦生效")
         percentLabel = QLabel("%")
         percentLabel.setMinimumWidth(16)
@@ -1174,6 +1374,10 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.scene.set_adjustment_mode(mode_name)
 
     def _on_control_confirmed(self):
+        # 若绘图会话在进入工具后被打断（如期间编辑了时间轴对话框），在确认前补建会话，
+        # 确保本次确认内容仍能被记录为一步撤销（快照在确认写库前捕获）。
+        if self._history is not None and not self._history.has_active_session():
+            self._history.begin(self.activeToolName)
         if self.activeToolName == "调整":
             self.scene.confirm_current_adjustment()
         elif self.activeToolName == "文本":
@@ -1191,11 +1395,17 @@ class MainWindow(MainWindowNotice, QMainWindow):
             if self.scene.confirm_current_drawing() is False:
                 self._sync_drawing_rematch_controls()
                 # return
+        # 确认完成：把“进入工具时”的快照合并为一步撤销
+        if self._history is not None:
+            self._history.commit()
         self.scene._selected_point_ids.clear()
         self.onToolButtonClicked("框选")  # 草稿完成后自动切回选择工具
         self.updateContextToolAvailability(self.timelineMainWidget.current_beat, 0)
 
     def _on_control_cancelled(self):
+        # 取消：丢弃本次绘图会话（不产生撤销步骤）
+        if self._history is not None:
+            self._history.cancel()
         if self.activeToolName == "调整":
             self.scene.cancel_current_adjustment()
             self.drawingControlDock.setAdjustmentMode(self.scene._adjustment_mode)
@@ -1295,10 +1505,16 @@ class MainWindow(MainWindowNotice, QMainWindow):
         if not action:
             return
         if action == "delete":
-            self.scene.delete_selected_points()
+            if self._history is not None:
+                self._history.record_op(lambda: self.scene.delete_selected_points())
+            else:
+                self.scene.delete_selected_points()
             self._show_menu_notice("删除成功！")
         elif action == "restore":
-            self.scene.restore_selected_points_to_prev()
+            if self._history is not None:
+                self._history.record_op(lambda: self.scene.restore_selected_points_to_prev())
+            else:
+                self.scene.restore_selected_points_to_prev()
             self._show_menu_notice("已恢复转换点位置。")
         else:
             return
@@ -1429,7 +1645,9 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.timelineWidget.adjustSize()
 
     def _on_bpm_changed(self, value: int):
-        """BPM 输入框只修改 beat_tempo[0]（起始速度）。"""
+        """BPM 输入框只修改 beat_tempo[0]（起始速度）；连续调节合并为一步撤销。"""
+        if self._history is not None:
+            self._history.notify_param_change("bpm0")
         self.timelineMainWidget.set_tempo_at_beat(0, Tempo(start_bpm=int(value)))
         self.timelineMainWidget.update()
 

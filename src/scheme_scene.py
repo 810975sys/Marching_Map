@@ -81,6 +81,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._previous_items = []   # 上一个节点的点位图元列表，仅在切换节点时保留；切换工具时会立即清除。
         self._label_items = []      # 当前显示的标签图元列表，用于快速清除与重建。每次切换节点或工具时会重建。
         self._selected_point_ids = set()    # 当前选中的点位ID集合，用于批量操作和分组等功能
+        self.history = None         # 撤销/重做管理器（由 MainWindow 注入）；用于点位拖拽等操作的会话记录
         
         self.setup_scene_data()     # 初始化场景数据结构
         self._draft_tool_name = None    # 当前正在使用的绘图工具名称，None表示无草稿状态；非None表示草稿状态，值为对应工具名称。
@@ -2873,11 +2874,27 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
         return self._field_to_scene(x, y)
 
-    def _on_performer_point_released(self, point_id: int | None = None):
-        """预览拍位下禁止写回真实数据，直接返回；当前节点拍位上则标记节点为手动编辑过并触发后续自动调整。"""
+    def _on_performer_point_pressed(self, point_id: int | None = None):
+        """点位拖拽开始（按下）：为撤销/重做记录“拖拽前”快照（会话开始）。"""
+        if self.history is not None:
+            self.history.begin("拖拽点位")
+
+    def _on_performer_point_released(self, point_id: int | None = None, moved: bool = True):
+        """预览拍位下禁止写回真实数据，直接返回；当前节点拍位上则标记节点为手动编辑过并触发后续自动调整。
+
+        moved 表示拖拽过程中是否真正发生了移动：仅真实拖拽提交撤销步骤，原地点击则取消会话。
+        """
+        # 撤销/重做会话收尾：真实拖拽提交为一步，原地点击取消。
+        if self.history is not None:
+            if moved:
+                self.history.commit()
+            else:
+                self.history.cancel()
         # 清理拖拽中附加到 selection_link 的预览连线。
         self._refresh_selected_group_links()
         if not self._is_current_beat_editable():
+            return
+        if not moved:
             return
 
         # 若拖拽过程中点位确实发生过移动，从当前节点的路径定义中清除该选中点位
@@ -5328,6 +5345,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 moved_callback=self._on_performer_point_moved,
                 released_callback=self._on_performer_point_released,
                 can_drag_callback=self._can_drag_performer_point,
+                pressed_callback=self._on_performer_point_pressed,
                 selected=point["id"] in self._selected_point_ids,
             )
             self._current_items.append(item)
