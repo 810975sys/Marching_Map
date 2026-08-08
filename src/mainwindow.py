@@ -917,6 +917,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.timelineMainWidget.currentBeatChanged.connect(self.updateDrawToolAvailability)
         self.timelineMainWidget.currentBeatChanged.connect(self.updateConvertToolAvailability)
         self.timelineMainWidget.currentBeatChanged.connect(self.updateMultiSelectToolAvailability)
+        # 播放中点击标尺/方案图节点：不暂停，从点击拍位继续播放（音轨同步）
+        self.timelineMainWidget.currentBeatChanged.connect(self._on_timeline_beat_changed_for_playback)
 
         self.timelineMainWidget.nodeAdded.connect(self.scene.on_node_added)
         self.timelineMainWidget.nodeInserted.connect(self.scene.on_node_inserted)
@@ -1052,9 +1054,18 @@ class MainWindow(MainWindowNotice, QMainWindow):
         btn.click()
 
     def onTimelineNodeSelected(self, node_index: int):
-        """时间轴选中节点变化时，同步场景与工具可用状态。"""
+        """时间轴选中节点变化时，同步场景与工具可用状态。
+
+        播放中点击方案图节点：不暂停播放，仅同步场景活动节点，
+        从该节点起始拍继续播放（音轨同步由 _seek_playback_to 处理）。
+        注意此处不能调用 updateContextToolAvailability，否则可能因工具不可用
+        自动切回“框选”，从而触发 onToolButtonClicked 内的 _stop_playback。
+        """
         if self._playback_active:
-            self._stop_playback()
+            self.scene.active_node = max(0, int(node_index))
+            # self.scene.ensure_node_exists(self.scene.active_node)
+            self.scene._selected_point_ids.clear()
+            return
         self.scene.set_active_node(node_index)
         self.updateContextToolAvailability(node_index, len(getattr(self.scene, "_selected_point_ids", set())))
 
@@ -1804,6 +1815,33 @@ class MainWindow(MainWindowNotice, QMainWindow):
         target_ms = int(round(self.timelineMainWidget.audio_time_at_beat(start_beat) * 1000.0))
         player.setPosition(target_ms)
         player.play()
+
+    def _seek_playback_to(self, beat: float):
+        """播放中跳转：不暂停，从指定拍位继续播放（同步音轨）。
+
+        合成整轨播放：把音频重新定位到新拍位对应的轨道时间并继续播放；
+        无音频（或合成失败）时：重置计时基准，从新拍位按设置速度继续推进。
+        """
+        if not self._playback_active:
+            return
+        total_beats = float(self.timelineMainWidget.total_beats())
+        min_beat = float(self.timelineMainWidget._min_axis_beat())
+        beat = max(min_beat, min(float(beat), total_beats))
+        if self._playback_use_synth:
+            # 合成整轨：定位到新拍位对应的轨道时间并继续播放（音轨同步）
+            self._audio_start_synth_playback(beat)
+        else:
+            # 无音频：重置计时基准，从新拍位继续按设置速度推进
+            self._playback_start_beat = beat
+            self._playback_elapsed.restart()
+            self._playback_elapsed.start()
+        self.timelineMainWidget.current_beat = beat
+        self.timelineMainWidget.update()
+
+    def _on_timeline_beat_changed_for_playback(self, beat: float):
+        """播放中点击标尺/方案图节点：不暂停，从点击拍位继续播放。"""
+        if self._playback_active:
+            self._seek_playback_to(beat)
 
     def _stop_playback(self):
         """停止播放演示，恢复编辑态预览。"""
