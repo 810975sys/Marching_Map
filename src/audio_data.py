@@ -21,6 +21,9 @@ BUCKET = 256
 
 # 文件路径 -> (sample_rate, mono float32 归一化采样)
 _WAVEFORM_CACHE: dict[str, tuple[int, np.ndarray]] = {}
+# 文件峰值缓存：键 (path, bucket) -> min/max 峰值数组，避免每次绘制重复分桶计算。
+# 与 _WAVEFORM_CACHE 一样假设源文件在会话内不可变。
+_PEAKS_CACHE: dict[tuple[str, int], np.ndarray] = {}
 
 
 def _decode(path: str) -> tuple[int, np.ndarray] | None:
@@ -52,7 +55,11 @@ def audio_duration(path: str) -> float:
 
 
 def get_file_peaks(path: str, bucket: int = BUCKET) -> np.ndarray | None:
-    """返回整个文件的 min/max 峰值数组，形状 (N, 2)，按路径缓存。"""
+    """返回整个文件的 min/max 峰值数组，形状 (N, 2)，按 (路径, 桶大小) 缓存。"""
+    key = (path, bucket)
+    cached = _PEAKS_CACHE.get(key)
+    if cached is not None:
+        return cached
     info = _decode(path)
     if info is None:
         return None
@@ -68,7 +75,9 @@ def get_file_peaks(path: str, bucket: int = BUCKET) -> np.ndarray | None:
     a2 = a.reshape(nb, bucket)
     mn = a2.min(axis=1)
     mx = a2.max(axis=1)
-    return np.stack([mn, mx], axis=1)
+    peaks = np.stack([mn, mx], axis=1)
+    _PEAKS_CACHE[key] = peaks
+    return peaks
 
 
 def get_range_peaks(path: str, t0: float, t1: float, bucket: int = BUCKET) -> np.ndarray | None:

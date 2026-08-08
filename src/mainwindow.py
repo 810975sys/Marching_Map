@@ -262,10 +262,38 @@ class MainWindow(MainWindowNotice, QMainWindow):
             if not isinstance(graph_list, list):
                 raise ValueError("方案文件中的 graph_list 格式无效")
             tempo_info = payload.get("tempo_info", {})
+            audio_payload = payload.get("audio")
+            # 恢复音频段需预解码各源文件（可能耗时），存在音频段时弹出进度提示框，
+            # 样式与音频导入一致：无取消按钮、模态、完成后自动关闭。
+            segments_data = audio_payload.get("segments", []) if isinstance(audio_payload, dict) else []
+            progress = None
+            progress_cb = None
+            if segments_data:
+                progress = QProgressDialog("正在加载音频...", "", 0, len(segments_data), self)
+                progress.setWindowTitle("加载音频")
+                progress.setWindowModality(Qt.WindowModality.WindowModal)
+                progress.setMinimumDuration(0)
+                progress.setCancelButton(None)
+                progress.setAutoClose(True)
+                progress.setAutoReset(False)
+                progress.setMinimumWidth(320)
+                progress.show()
+                QApplication.processEvents()   # 立即显示初始提示，避免首个文件解码期间无反馈
+
+                def _on_audio_load_progress(done: int, n: int, name: str):
+                    progress.setValue(done)
+                    progress.setLabelText(f"正在加载：{name}（{done}/{n}）")
+                    QApplication.processEvents()
+
+                progress_cb = _on_audio_load_progress
+
             # 音频随 tempo_info 一起恢复（file 为绝对路径，直接按路径读取）
             self.timelineMainWidget.load_from_dict(
-                tempo_info, audio_data=payload.get("audio")
+                tempo_info, audio_data=audio_payload, progress_cb=progress_cb
             )
+            if progress is not None:
+                progress.setValue(len(segments_data))   # 加载完成，进度归满
+                progress.close()                        # 自动关闭提示框
             self._audio_dirty = True   # 音频段已按方案恢复，播放前需按当前状态重新合成
             # self.timelineMainWidget.set_graph_list(graph_list)
 

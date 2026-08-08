@@ -33,6 +33,7 @@ from src.tempo_data import Tempo
 from src.audio_data import (
     AudioSegment,
     audio_duration,
+    get_file_peaks,
     get_range_peaks,
     SAMPLE_RATE,
     BUCKET,
@@ -401,10 +402,11 @@ class TimelineWidget(QWidget):
             },
         }
     
-    def load_from_dict(self, data: dict, audio_data: dict | None = None):
+    def load_from_dict(self, data: dict, audio_data: dict | None = None, progress_cb=None):
         """整体恢复时间轴：graph_list、beat_tempo 与音频段。
 
         audio_data 为方案中的 "audio" 数据；为 None 或空时清空音频段。
+        progress_cb 可选：预解码音频段时回调 progress_cb(done, total, name)，用于显示进度。
         """
         self.set_graph_list(data.get("graph_list", [0]))
 
@@ -428,7 +430,9 @@ class TimelineWidget(QWidget):
         self.selected_node = 0
         self.current_beat = 0
         # 音频段随方案一起恢复：load_audio_from_dict 内部会先清空再重建
-        self.load_audio_from_dict(audio_data if isinstance(audio_data, dict) else {})
+        self.load_audio_from_dict(
+            audio_data if isinstance(audio_data, dict) else {}, progress_cb=progress_cb
+        )
         self._recalculate_width()
         self.update()
 
@@ -1006,11 +1010,30 @@ class TimelineWidget(QWidget):
             "segments": [seg.to_dict() for seg in self.audio_segments],
         }
 
-    def load_audio_from_dict(self, data: dict):
+    def _preload_audio_peaks(self, progress_cb=None):
+        """预解码所有音频段源文件，填充波形缓存，避免首次展开时间轴时同步解码卡顿。
+
+        绘制波形（_draw_audio_bar → get_range_peaks）首次遇到未解码的文件时，
+        pydub 需整段解码为内存波形，会阻塞 UI（表现为展开时间轴的停顿）。本方法
+        在音频数据加载/导入阶段主动调用 get_file_peaks（内部解码并缓存波形），
+        把耗时前移到数据加载流程，使首次展开时波形可直接从缓存切片、即时绘制。
+        文件无法解码时 get_file_peaks 返回 None，不会抛出异常。
+
+        progress_cb 可选：每处理完一个文件回调 progress_cb(done, total, name)，
+        用于在加载（需解码音频，可能耗时）期间显示进度。
+        """
+        n = len(self.audio_segments)
+        for i, seg in enumerate(self.audio_segments):
+            get_file_peaks(seg.resolve_file())
+            if progress_cb is not None:
+                progress_cb(i + 1, n, Path(seg.file).name)
+
+    def load_audio_from_dict(self, data: dict, progress_cb=None):
         """从方案数据恢复音频段；file 为绝对路径，原始文件不存在则跳过。
 
         恢复前先进行文件存在性检查：存在缺失的音频文件时，弹出提示弹窗
         列出缺失文件，提醒用户重新导入。
+        progress_cb 可选：预解码音频段时回调 progress_cb(done, total, name)，用于显示进度。
         """
         self.audio_segments = []
         self._audio_selected = -1
@@ -1041,6 +1064,8 @@ class TimelineWidget(QWidget):
             )
         if self.audio_segments:
             self._audio_selected = len(self.audio_segments) - 1
+        # 预解码所有段源文件：把波形加载耗时从“首次展开时间轴”前移到“方案加载”
+        self._preload_audio_peaks(progress_cb)
         self.update()
 
     def import_audio_files(self, file_paths, progress_cb=None) -> list[AudioSegment]:
@@ -1071,6 +1096,9 @@ class TimelineWidget(QWidget):
         if added:
             self._audio_selected = len(self.audio_segments) - 1
             self._audio_pixmap = None
+            # 预解码新增段源文件：audio_duration 已完成解码，此步再补齐峰值表，
+            # 确保导入后首次展开/绘制波形无需重新加载、无卡顿
+            self._preload_audio_peaks()
             self.audioChanged.emit()
             self.update()
         return added
@@ -1358,11 +1386,14 @@ class TimelineWidget(QWidget):
             pm = QPixmap(max(1, int(round(pix_w * dpr))), max(1, int(round(pix_h * dpr))))
             pm.setDevicePixelRatio(dpr)
             pm.fill(QColor("#f0f0f0"))
-            p = QPainter(pm)
-            p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            # 注意：pixmap 画刷必须用独立变量 pm_painter，不能复用函数参数 p——
+            # 否则会覆盖外层窗口画刷，p.end() 后后续所有绘制（按钮/选中框等）
+            # 都会落到已结束的画刷上，产生 “QPainter ... Painter not active” 报错。
+            pm_painter = QPainter(pm)
+            pm_painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
             mid = pix_h / 2.0
-            p.setPen(QPen(QColor("#d5d5d5"), 1))
-            p.drawLine(0, int(mid), pix_w, int(mid))
+            pm_painter.setPen(QPen(QColor("#d5d5d5"), 1))
+            pm_painter.drawLine(0, int(mid), pix_w, int(mid))
 
             ppb = self._pixels_per_beat
             bar_left = self._audio_rect.left()
@@ -1383,7 +1414,7 @@ class TimelineWidget(QWidget):
                 peak_base = int(seg.src_start * SAMPLE_RATE) // BUCKET
                 max_abs = max(float(peaks[:, 0].max()), float(peaks[:, 1].max()))
                 amp = ((pix_h / 2.0) - 2.0) / max(max_abs, 1e-6)
-                p.setPen(QPen(QColor("#1f5e9c"), 1))
+                pm_painter.setPen(QPen(QColor("#1f5e9c"), 1))
                 beat_per_px = 1.0 / ppb
                 min_beat = float(self._min_axis_beat())
                 for px in range(x0, x1):
@@ -1407,8 +1438,8 @@ class TimelineWidget(QWidget):
                     y1 = int(mid - mn * amp)
                     if y1 < y0:
                         y0, y1 = y1, y0
-                    p.drawLine(px, y0, px, y1)
-            p.end()
+                    pm_painter.drawLine(px, y0, px, y1)
+            pm_painter.end()
             self._audio_pixmap = pm
         if self._audio_pixmap is not None:
             p.drawPixmap(arect.topLeft(), self._audio_pixmap)
