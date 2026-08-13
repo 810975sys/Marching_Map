@@ -28,6 +28,11 @@ windows
             icon=None,              # 可指定图标，如 'icon.ico'
         )
         coll = COLLECT(……)
+
+        # 注意：项目还通过 Analysis 的 binaries 参数把 ffmpeg.exe 一起打包
+        # （放到 _internal/ 下，运行时用 sys._MEIPASS 定位并配置给 pydub）。
+        # 若 ffmpeg 路径变化，需同步修改 MarchingMap.spec 的 binaries 与
+        # src/ffmpeg_utils.py 中的 _DEV_FFMPEG_CANDIDATES。
         保存文件。
 
     二、重新打包
