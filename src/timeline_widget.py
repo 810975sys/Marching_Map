@@ -12,7 +12,7 @@ import math
 
 from pathlib import Path
 
-from PyQt6.QtCore import QPoint, QRect, Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, QRect, Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QColor, QCursor, QFont, QPainter, QPen, QPixmap, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -309,8 +309,23 @@ class TimelineWidget(QWidget):
         self._audio_drag_target = -1            # move 拖拽：当前交换目标段索引（-1 表示无）
         self._audio_drag_orig = None            # 边界拖拽前快照 (src_start, src_end, start_beat)
         self._audio_drag_orig_starts: list[float] = []  # 拖拽开始时所有音频段的起始拍快照（right 拖拽回原位用）
-        self._audio_drag_ref_x = 0.0            # 拖拽参考锚点：按下时的像素 X
+        self._audio_drag_ref_x = 0.0            # 拖拽参考锚点：按下时的全局（屏幕）像素 X
         self._audio_drag_ref_beat = 0.0         # 拖拽参考锚点：按下时的鼠标拍位
+        self._audio_drag_prev_beat = 0.0        # 拖拽上一次有效拍位（裁剪方向门控基准）
+        self._audio_drag_last_global_x = 0.0    # 拖拽中上一次指针全局 X（自动滚动方向检测）
+
+        # 自动向右滚动：拖拽时指针贴近/越过视口右缘则持续向右延伸，
+        # 滚动速度随指针位置动态变化（指针越靠右越快）；进入触发区后
+        # 即使指针不动，定时器也会持续推进延伸。
+        self._auto_scroll_timer = QTimer(self)
+        self._auto_scroll_timer.setInterval(16)   # ≈60fps，滚动平滑连续
+        self._auto_scroll_timer.timeout.connect(self._auto_scroll_tick)
+        self._auto_scroll_zone = 80        # 右缘触发区宽度（px）：指针进入该区域开始自动滚动
+        self._auto_scroll_max_step = 48    # 单次 tick 最大滚动量（px），速度因子按指针位置缩放
+        # 自动延伸累计拍位：进入触发区后每个 tick 按速度累加，拖拽有效拍位 =
+        # 指针拍位 + 累计延伸，使指针不动时内容仍持续向右延伸；指针离开触发区
+        # 后累计量冻结（保持已延伸位置），松手/新拖拽时清零。
+        self._auto_scroll_beat_accum = 0.0
 
         # 布局与尺寸参数。
         self._node_radius = 12      # 节点矩形半径
@@ -515,20 +530,92 @@ class TimelineWidget(QWidget):
             min_start = min(min_start, float(self._audio_drag_beat))
         return float(min_start)
 
-    def _recalculate_width(self):
-        """按拍数跨度（最左拍 ~ 总拍数）计算控件宽度；时间轴按拍位固定宽度显示。
+    def _spb_after_total(self) -> float:
+        """最后一个节点处每拍秒数（60/BPM）。
 
-        最左拍可由音频段负起始拍决定，因此音频段移动/裁剪/缩放后会调用本方法重新排布。
+        超出最后节点的部分不再有方案图变换，音频按“纯时间”延伸，
+        这里用最后节点的拍速换算像素/秒，使波形在衔接处无缝。
+        """
+        total = self.total_beats()
+        return max(1e-6, self._seconds_per_beat_at(max(0, total)))
+
+    def _audio_right_time(self) -> float:
+        """整轨音频结束的轨道时间（秒）。
+
+        取最后一个节点的轨道时间与所有音频段结束时间的最大值；
+        音频段可能延伸到最后一个方案图节点之后，此时超出部分按音频时间延伸。
+        move 拖拽时把拖拽段预览的右缘也计入，使向右延伸（含自动延伸）时
+        内容宽度随之扩展，滚动区不会在内容右缘处停下。
+        """
+        total = float(self.total_beats())
+        max_t = self.audio_time_at_beat(total)
+        for seg in self.audio_segments:
+            start = min(float(seg.start_beat), total)
+            t_end = self.audio_time_at_beat(start) + seg.duration_seconds
+            max_t = max(max_t, t_end)
+        if (self._audio_drag_mode == "move"
+                and 0 <= self._audio_drag_from_idx < len(self.audio_segments)):
+            seg = self.audio_segments[self._audio_drag_from_idx]
+            t_end = self.audio_time_at_beat(self._audio_drag_beat) + seg.duration_seconds
+            max_t = max(max_t, t_end)
+        return max_t
+
+    def _audio_right_x(self) -> float:
+        """音频栏右缘 X：超出最后节点的部分按音频时间（秒）延伸，不用 beat。"""
+        total = self.total_beats()
+        x_total = self._beat_to_x_f(total)
+        t_total = self.audio_time_at_beat(float(total))
+        max_t = self._audio_right_time()
+        if max_t <= t_total:
+            return x_total
+        return x_total + (max_t - t_total) * (self._pixels_per_beat / self._spb_after_total())
+
+    def _audio_time_to_x(self, t: float) -> float:
+        """音频轨道时间（秒）→ X 坐标。
+
+        最后一个节点内走 beat 轴；超出后按音频时间（秒）无缝延伸。
+        """
+        total = self.total_beats()
+        t_total = self.audio_time_at_beat(float(total))
+        if t <= t_total:
+            return self._beat_to_x_f(self.audio_beat_at_time(t))
+        x_total = self._beat_to_x_f(total)
+        return x_total + (t - t_total) * (self._pixels_per_beat / self._spb_after_total())
+
+    def _audio_x_to_time(self, x: float) -> float:
+        """X 坐标 → 音频轨道时间（秒）。
+
+        最后一个节点内走 beat 轴；超出后按音频时间（秒）无缝延伸。
+        """
+        total = self.total_beats()
+        min_beat = float(self._min_axis_beat())
+        x_total = self._beat_to_x_f(total)
+        if x <= x_total:
+            beat = min_beat + (x - self._left_padding) / self._pixels_per_beat
+            return self.audio_time_at_beat(beat)
+        t_total = self.audio_time_at_beat(float(total))
+        return t_total + (x - x_total) * (self._spb_after_total() / self._pixels_per_beat)
+
+    def audio_end_beat(self) -> float:
+        """整轨音频结束拍（可超出最后方案图节点；无音频时为总拍数）。"""
+        return self.audio_beat_at_time(self._audio_right_time())
+
+    def _recalculate_width(self):
+        """按跨度（最左拍 ~ 音频右缘）计算控件宽度；时间轴按拍位固定宽度显示。
+
+        最左拍可由音频段负起始拍决定；右缘可由音频段结束时间（超出最后节点）
+        决定，超出部分按音频时间延伸，因此音频段移动/裁剪/缩放后会调用本方法重新排布。
         """
         self._beat_time_cache = None   # 拍数/速度/最左拍变化 → 拍→秒累计表失效
         plus_size = 24  # 加号按钮尺寸
         plus_gap = 18   # 加号按钮与最后节点间距，避免影响点击
         audio_btn_w = 70    # 音频栏右侧“导入音频”按钮宽度
         audio_btn_gap = 10  # 音频栏右缘与按钮间距
-        total_beats = self.total_beats()
-        min_beat = self._min_axis_beat()
-        span = total_beats - min_beat
-        content_width = self._left_padding + int(span * self._pixels_per_beat)
+        # min_beat = self._min_axis_beat()
+        # 右缘按音频结束时间延伸（可超出最后方案图节点），波形不被截断
+        right_x = self._audio_right_x()
+        span_px = right_x - self._left_padding
+        content_width = self._left_padding + int(round(span_px))
         # 右侧预留空间取节点加号按钮与音频按钮两者较大者，避免被裁剪。
         right_space = max(plus_gap + plus_size, audio_btn_gap + audio_btn_w)
         desired_width = content_width + right_space + self._right_padding
@@ -597,7 +684,8 @@ class TimelineWidget(QWidget):
                 if old_beat is not None:
                     del self.beat_tempo[old_beat]
                 self.beat_tempo[target] = tempo
-        self._beat_time_cache = None   # 节拍速度变化 → 轴对齐映射失效
+        # 节拍速度变化 → 轴对齐映射失效，且音频段结束拍（最右拍）随之变化
+        self._recalculate_width()
         self._audio_pixmap = None   # 波形需按新节拍速度重新对齐
         self.tempoChanged.emit()
         self.timelineChanged.emit()
@@ -607,7 +695,8 @@ class TimelineWidget(QWidget):
         if beat <= 0 or beat not in self.beat_tempo:
             return
         del self.beat_tempo[beat]
-        self._beat_time_cache = None    # 节拍速度变化 → 轴对齐映射失效
+        # 节拍速度变化 → 轴对齐映射失效，且音频段结束拍（最右拍）随之变化
+        self._recalculate_width()
         self._audio_pixmap = None   # 波形需按新节拍速度重新对齐
         self.tempoChanged.emit()
         self.timelineChanged.emit()
@@ -774,6 +863,8 @@ class TimelineWidget(QWidget):
         total_beats = self.total_beats()
         min_beat = self._min_axis_beat()
         ruler_right = ruler_left + int((total_beats - min_beat) * self._pixels_per_beat)
+        # 音频栏右缘按音频结束时间延伸（可超出最后方案图节点），波形不被截断
+        audio_right = self._audio_right_x()
         self._ruler_rect = QRect(ruler_left, ruler_top, max(1, ruler_right - ruler_left), ruler_bottom - ruler_top)
 
         for i in range(len(self.graph_list)):
@@ -822,7 +913,7 @@ class TimelineWidget(QWidget):
             audio_top = beat_label_bottom + 4
             self._audio_rect = QRect(
                 self._left_padding, audio_top,
-                ruler_right - ruler_left, self._audio_bar_height,
+                max(1, int(round(audio_right)) - ruler_left), self._audio_bar_height,
             )
             # 音频栏右侧“导入音频”按钮：位于音频栏右缘外侧。
             btn_w = 70
@@ -923,6 +1014,8 @@ class TimelineWidget(QWidget):
         base = floor(最左拍)；轴左缘（最左拍，可为小数）时间定为 0。
         最左拍为小数时，base 位于轴左缘左侧 frac 拍，cum[0] 相应为负偏移，
         使 audio_time_at_beat(最左拍) == 0 仍成立。负区沿用节点 0 速度。
+        表只覆盖到总拍数（最后方案图节点）；超出部分由 audio_time_at_beat /
+        audio_beat_at_time 按最后节点拍速做纯时间线性外推，不再生成新的“拍”表项。
         """
         if self._beat_time_cache is None:
             min_beat = self._min_axis_beat()
@@ -945,13 +1038,28 @@ class TimelineWidget(QWidget):
         """把拍位转换为轨道时间（秒），按 beat_tempo 累计。
 
         负拍同样支持：时间自最左拍（可为负、可为小数）起算，负区沿用节点 0 速度。
+        轴左缘（最左拍）时间为 0；向左（beat < 最左拍，左端裁剪延伸/外推）按节点 0
+        拍速线性外推为负时间，避免轴向左展开时拍→时间映射出现跳变。
+        超出总拍数（音频延伸到最后节点之后）的部分按最后节点拍速做纯时间线性外推，
+        不再生成新的“拍”表项。
         注意负拍位必须用 math.floor 取整：int() 向零截断会让 -7.5 误落到 -7，
         使负区拍→时间映射出现阶梯跳变，波形绘制成块状“马赛克”。
         """
-        total = float(self.total_beats())
         min_beat = float(self._min_axis_beat())
-        beat = max(min_beat, min(beat, total))
+        total = float(self.total_beats())
+        beat = float(beat)
         b = math.floor(beat)
+        if beat < min_beat:
+            # 轴左缘左侧：按节点 0 拍速线性外推（负区速度恒定），时间为负
+            base = math.floor(min_beat)
+            spb = self._seconds_per_beat_at(base)
+            return - (min_beat - beat) * spb
+        if b > total:
+            # 超出最后节点：不再有方案图变换，按最后节点拍速线性延续时间
+            cum = self._beat_time_cum()
+            base = math.floor(min_beat)
+            t_total = cum[int(total) - base]
+            return t_total + (beat - total) * self._seconds_per_beat_at(int(total))
         cum = self._beat_time_cum()
         base = math.floor(min_beat)
         t = cum[b - base]
@@ -963,6 +1071,8 @@ class TimelineWidget(QWidget):
         """把轨道时间（秒）转换为拍位，按 beat_tempo 逆推（二分）。
 
         cum 下标 0 对应整数拍 base（最左拍向下取整），返回拍位可为负、可为小数。
+        超出最后一个节点时间后按最后节点拍速做纯时间线性外推（仅供内部编辑/播放
+        定位使用，不生成新的“拍”表项）。
         """
         cum = self._beat_time_cum()
         min_beat = float(self._min_axis_beat())
@@ -970,7 +1080,10 @@ class TimelineWidget(QWidget):
         total = len(cum) - 1
         if total <= 0:
             return min_beat
-        t = max(0.0, t)
+        if t < cum[0]:
+            # 轴左缘左侧时间：按节点 0 拍速线性外推（与 audio_time_at_beat 负向延伸对应）
+            spb = self._seconds_per_beat_at(base)
+            return float(base) + (t - cum[0]) / max(1e-6, spb)
         lo, hi = 0, total
         while lo < hi:
             mid = (lo + hi + 1) // 2
@@ -979,7 +1092,9 @@ class TimelineWidget(QWidget):
             else:
                 hi = mid - 1
         if lo >= total:
-            return float(base + total)
+            # 超出最后节点时间：按最后节点拍速线性外推
+            spb = self._seconds_per_beat_at(int(self.total_beats()))
+            return float(base + total) + (t - cum[total]) / max(1e-6, spb)
         span = cum[lo + 1] - cum[lo]
         return float(base + lo) + (t - cum[lo]) / max(1e-6, span)
 
@@ -1081,6 +1196,7 @@ class TimelineWidget(QWidget):
             self._audio_selected = len(self.audio_segments) - 1
         # 预解码所有段源文件：把波形加载耗时从“首次展开时间轴”前移到“方案加载”
         self._preload_audio_peaks(progress_cb)
+        self._recalculate_width()   # 音频可超出最后节点 → 重新按波形结束拍排布宽度
         self.update()
 
     def import_audio_files(self, file_paths, progress_cb=None) -> list[AudioSegment]:
@@ -1117,6 +1233,7 @@ class TimelineWidget(QWidget):
             # 确保导入后首次展开/绘制波形无需重新加载、无卡顿
             self._preload_audio_peaks()
             self.audioChanged.emit()
+            self._recalculate_width()   # 音频可超出最后节点 → 重新按波形结束拍排布宽度
             self.update()
         if self.history is not None:
             if added:
@@ -1128,7 +1245,8 @@ class TimelineWidget(QWidget):
     def synthesize_playback_audio(self, output_path, progress_cb=None) -> bool:
         """把整条时间轴合成一段连续音频（无音频段处为静音），导出到 output_path。
 
-        依据 beat_tempo 将拍位映射为轨道时间：总时长 = audio_time_at_beat(total_beats)；
+        依据 beat_tempo 将拍位映射为轨道时间：总时长取到整轨音频结束时间
+        （可超出最后方案图节点，超出部分按音频时间延伸）；
         每个音频段按 audio_time_at_beat(seg.start_beat) 处覆盖其源剪辑 [src_start, src_end]，
         未覆盖区域保持静音，实现“段间隙静音”的连续轨道，供播放时单一文件无缝驱动。
 
@@ -1147,7 +1265,8 @@ class TimelineWidget(QWidget):
         total = self.total_beats()
         if total <= 0:
             return False
-        total_duration_ms = int(round(self.audio_time_at_beat(total) * 1000.0))
+        # 整轨时长取到音频结束时间（可超出最后方案图节点，超出部分按音频时间延伸）
+        total_duration_ms = int(round(self._audio_right_time() * 1000.0))
         if total_duration_ms <= 0:
             return False
 
@@ -1266,6 +1385,7 @@ class TimelineWidget(QWidget):
             self._audio_pixmap = None
             self._audio_unreadable.clear()
             self.audioChanged.emit()
+            self._recalculate_width()   # 删除后最右拍变化 → 重新排布宽度
             self.update()
             if self.history is not None:
                 self.history.commit()
@@ -1344,6 +1464,7 @@ class TimelineWidget(QWidget):
         self._audio_selected = self.audio_segments.index(dragged)
         self._audio_pixmap = None
         self.audioChanged.emit()
+        self._recalculate_width()   # 交换后最右拍变化 → 重新排布宽度
         self.update()
 
     def _resolve_audio_overlaps(self):
@@ -1372,6 +1493,7 @@ class TimelineWidget(QWidget):
         """浮点拍位 -> X 坐标（按拍位 × 每拍像素宽度，即每拍固定宽度，与 tempo 无关）。
 
         支持负拍：最左拍（_min_axis_beat）对应 _left_padding，负区随之向左展开。
+        拍位只在最后方案图节点内有意义；超出节点由 _audio_time_to_x 按音频时间换算。
         """
         total = self.total_beats()
         min_beat = float(self._min_axis_beat())
@@ -1425,13 +1547,12 @@ class TimelineWidget(QWidget):
             pm_painter.setPen(QPen(QColor("#d5d5d5"), 1))
             pm_painter.drawLine(0, int(mid), pix_w, int(mid))
 
-            ppb = self._pixels_per_beat
             bar_left = self._audio_rect.left()
             self._audio_unreadable = set()
             for idx, seg in enumerate(self.audio_segments):
                 seg_t0 = self.audio_time_at_beat(seg.start_beat)
                 x0 = max(0, int(round(self._beat_to_x_f(seg.start_beat) - bar_left)))
-                x1 = min(pix_w, int(round(self._beat_to_x_f(self.audio_segment_end_beat(seg)) - bar_left)))
+                x1 = min(pix_w, int(round(self._audio_time_to_x(seg_t0 + seg.duration_seconds) - bar_left)))
                 if x1 <= x0:
                     continue
                 peaks = get_range_peaks(seg.resolve_file(), seg.src_start, seg.src_end)
@@ -1445,13 +1566,10 @@ class TimelineWidget(QWidget):
                 max_abs = max(float(peaks[:, 0].max()), float(peaks[:, 1].max()))
                 amp = ((pix_h / 2.0) - 2.0) / max(max_abs, 1e-6)
                 pm_painter.setPen(QPen(QColor("#1f5e9c"), 1))
-                beat_per_px = 1.0 / ppb
-                min_beat = float(self._min_axis_beat())
                 for px in range(x0, x1):
-                    # 像素 → 拍位（每拍固定宽度，像素0对应最左拍），拍位 → 轨道时间（秒，随 tempo 变化）
-                    beat = min_beat + px * beat_per_px
-                    t0 = self.audio_time_at_beat(beat)
-                    t1 = self.audio_time_at_beat(beat + beat_per_px)
+                    # 像素 → 轨道时间：最后一个节点内走 beat 轴，超出后按音频时间无缝延伸
+                    t0 = self._audio_x_to_time(bar_left + px)
+                    t1 = self._audio_x_to_time(bar_left + px + 1)
                     src_t0 = seg.src_start + (t0 - seg_t0)   # 段内源时间
                     src_t1 = seg.src_start + (t1 - seg_t0)
                     i0 = max(0, int(src_t0 * SAMPLE_RATE) // BUCKET - peak_base)
@@ -1515,7 +1633,8 @@ class TimelineWidget(QWidget):
         if 0 <= self._audio_selected < len(self.audio_segments):
             seg = self.audio_segments[self._audio_selected]
             left_x = int(round(self._beat_to_x_f(seg.start_beat)))
-            right_x = int(round(self._beat_to_x_f(self.audio_segment_end_beat(seg))))
+            right_x = int(round(self._audio_time_to_x(
+                self.audio_time_at_beat(seg.start_beat) + seg.duration_seconds)))
             sel_rect = QRect(left_x, arect.top() + 1, max(1, right_x - left_x), arect.height() - 2)
             p.setPen(QPen(QColor("#1f5e9c"), 2))
             # 重置画刷为 NoBrush：否则 drawRect 会用上一次残留的不透明画刷
@@ -1541,7 +1660,8 @@ class TimelineWidget(QWidget):
                     continue
                 seg = self.audio_segments[idx]
                 wx0 = int(round(self._beat_to_x_f(seg.start_beat)))
-                wx1 = int(round(self._beat_to_x_f(self.audio_segment_end_beat(seg))))
+                wx1 = int(round(self._audio_time_to_x(
+                    self.audio_time_at_beat(seg.start_beat) + seg.duration_seconds)))
                 if wx1 <= wx0:
                     continue
                 warn_rect = QRect(wx0, arect.top() + 1, max(1, wx1 - wx0), arect.height() - 2)
@@ -1550,9 +1670,9 @@ class TimelineWidget(QWidget):
         # 拖拽预览：移动时显示目标位置虚线框
         if self._audio_drag_mode == "move" and 0 <= self._audio_drag_from_idx < len(self.audio_segments):
             seg = self.audio_segments[self._audio_drag_from_idx]
-            beat_len = self.audio_segment_end_beat(seg) - seg.start_beat
             left_x = int(round(self._beat_to_x_f(self._audio_drag_beat)))
-            right_x = int(round(self._beat_to_x_f(self._audio_drag_beat + beat_len)))
+            right_x = int(round(self._audio_time_to_x(
+                self.audio_time_at_beat(self._audio_drag_beat) + seg.duration_seconds)))
             drect = QRect(left_x, arect.top() + 1, max(1, right_x - left_x), arect.height() - 2)
             p.setPen(QPen(QColor("#f39c12"), 2, Qt.PenStyle.DashLine))
             p.setBrush(QColor(243, 156, 18, 40))
@@ -1567,14 +1687,14 @@ class TimelineWidget(QWidget):
             dragged = self.audio_segments[from_idx]
             target = self.audio_segments[self._audio_drag_target]
             if from_idx > self._audio_drag_target:
-                # 情况①：目标段被推到拖拽段之后
-                t0 = self._audio_end_beat_at(dragged, self._audio_drag_beat)
+                # 情况①：目标段被推到拖拽段之后（拖拽段结束时间处）
+                t0_time = self.audio_time_at_beat(self._audio_drag_beat) + dragged.duration_seconds
             else:
                 # 情况②：目标段挪到拖拽段原起始拍
-                t0 = dragged.start_beat
-            t1 = self._audio_end_beat_at(target, t0)
-            t_left = int(round(self._beat_to_x_f(t0)))
-            t_right = int(round(self._beat_to_x_f(t1)))
+                t0_time = self.audio_time_at_beat(dragged.start_beat)
+            t1_time = t0_time + target.duration_seconds
+            t_left = int(round(self._audio_time_to_x(t0_time)))
+            t_right = int(round(self._audio_time_to_x(t1_time)))
             if t_right > t_left:
                 trect = QRect(t_left, arect.top() + 1, max(1, t_right - t_left), arect.height() - 2)
                 p.setPen(QPen(QColor("#2980b9"), 2, Qt.PenStyle.DashLine))
@@ -1608,8 +1728,8 @@ class TimelineWidget(QWidget):
                     p.setPen(QPen(QColor("#b0b5ba"), 1))
                     p.drawLine(x, self._ruler_rect.top() + 7, x, self._ruler_rect.bottom())
 
-        # 当前拍位游标
-        cursor_x = self._beat_to_x(self.current_beat)
+        # 当前拍位游标：超出最后节点的部分按音频时间移动（不用 beat）
+        cursor_x = int(round(self._audio_time_to_x(self.audio_time_at_beat(self.current_beat))))
         y_top = self._top_row_y + offset_y
         y_bottom = self._middle_bottom + offset_y
         # if self._expanded and not self._audio_rect.isEmpty():
@@ -1769,6 +1889,115 @@ class TimelineWidget(QWidget):
         super().mouseDoubleClickEvent(event)
 
     # ──────── 音频栏交互 ────────
+    def _timeline_scroll_area(self):
+        """向上查找包裹本控件的滚动区域（TimelineScrollArea）；未包裹时返回 None。"""
+        p = self.parent()
+        while p is not None:
+            if isinstance(p, TimelineScrollArea):
+                return p
+            p = p.parent()
+        return None
+
+    def _reanchor_audio_drag_reference(self):
+        """把自动延伸累计并入拖拽参考锚点，从当前手柄位置重新锚定（保留偏移）。
+
+        指针离开自动滚动触发区、或拖拽方向反转（向左压缩）时调用：把
+        _auto_scroll_beat_accum 累加的延伸拍位折入 _audio_drag_ref_beat，
+        ref_x 更新为当前全局 X、累计清零。这样：
+        - 压缩时手柄按“鼠标移动多少压缩多少”增量跟随（保留自动延伸的偏移，
+          不会一次回到头）；
+        - 再次向右延伸时从当前手柄位置按延伸流程继续（累计已清零、无残留），
+          方向门控已改为只看拍位移动方向，故不会出现跳变/死区。
+        重锚后 _audio_pointer_beat() 数值连续、无跳变，手柄位置保持不变。
+        """
+        if self._audio_drag_mode is None:
+            return
+        self._audio_drag_ref_beat = self._audio_pointer_beat()
+        self._audio_drag_ref_x = float(QCursor.pos().x())
+        self._auto_scroll_beat_accum = 0.0
+
+    def _auto_scroll_extend(self):
+        """持续跟随：时刻向右延伸，滚动速度随鼠标指针在视口内的位置动态调整。
+
+        以鼠标指针为驱动：指针越靠近（或越过）视口右缘，延伸越快。
+        - 指针离开触发区或拖拽方向反转（向左压缩）→ 停止延伸并重锚定
+          （把累计延伸并入参考锚点，保留偏移），压缩按“鼠标移动多少压缩
+          多少”增量跟随，累计量不再残留到下次进入触发区；
+        - 指针进入/越过触发区 → 启动定时器持续向右延伸：即使指针不动，
+          定时器也会持续推进内容向右、滚动区跟随，速度由指针距右缘距离
+          决定（指针越靠右越快）。
+
+        该滚动基于全局鼠标坐标，不受滚动影响，无反馈环路。
+        """
+        sa = self._timeline_scroll_area()
+        if sa is None:
+            self._auto_scroll_timer.stop()
+            return
+        sb = sa.horizontalScrollBar()
+        if sb is None:
+            self._auto_scroll_timer.stop()
+            return
+        vp = sa.viewport()
+        vw = vp.width()
+        # 指针在视口内的 X（全局坐标 → 视口局部，滚动不影响）
+        pointer_x = vp.mapFromGlobal(QCursor.pos()).x()
+        dist = vw - pointer_x   # >0 在右缘内侧，<=0 在右缘外侧
+        # 指针全局 X 方向：向左移动表示拖拽方向反转（右端压缩 / 段左移）
+        gx = float(QCursor.pos().x())
+        moving_left = gx < self._audio_drag_last_global_x - 1.0
+        self._audio_drag_last_global_x = gx
+        if dist > self._auto_scroll_zone or moving_left:
+            # 指针离开触发区，或拖拽方向反转（向左压缩）时：停止自动延伸并重锚定
+            # （把累计延伸并入参考锚点，保留偏移）。压缩时手柄按“鼠标移动多少
+            # 压缩多少”增量跟随，不会一次回到头；再次向右延伸时按延伸流程从当前
+            # 手柄位置继续（累计已清零、无残留），不会跳到上次最远位置。
+            self._auto_scroll_timer.stop()
+            self._reanchor_audio_drag_reference()
+            return
+        # 指针进入/越过触发区：保持定时器持续向右延伸（速度每 tick 重算）
+        if not self._auto_scroll_timer.isActive():
+            self._auto_scroll_timer.start()
+
+    def _auto_scroll_tick(self):
+        """自动滚动定时器 tick：持续推进向右延伸，即使指针不动也会继续。
+
+        按速度因子累加 _auto_scroll_beat_accum（延伸拍位），用它重算拖拽并
+        向右滚动相同步长，使内容/拖拽目标随 tick 持续推进；指针不在触发区内
+        或拖拽方向反转（向左压缩）时停止定时器并重锚定（常规由 _auto_scroll_extend
+        负责停止，本方法为安全网）。
+        """
+        sa = self._timeline_scroll_area()
+        if sa is None:
+            self._auto_scroll_timer.stop()
+            return
+        sb = sa.horizontalScrollBar()
+        if sb is None:
+            self._auto_scroll_timer.stop()
+            return
+        vp = sa.viewport()
+        vw = vp.width()
+        pointer_x = vp.mapFromGlobal(QCursor.pos()).x()
+        dist = vw - pointer_x
+        # 方向反转（压缩）安全网：定时器仍在运行但指针已向左移动时停止并重锚，
+        # 避免累计延伸把拍位持续推大、压缩被阻断
+        gx = float(QCursor.pos().x())
+        moving_left = gx < self._audio_drag_last_global_x - 1.0
+        self._audio_drag_last_global_x = gx
+        if dist > self._auto_scroll_zone or moving_left:
+            self._auto_scroll_timer.stop()
+            self._reanchor_audio_drag_reference()
+            return
+        speed = 1.0 - min(1.0, max(0.0, dist / self._auto_scroll_zone))
+        step = max(1, int(round(self._auto_scroll_max_step * speed)))
+        # 推进延伸：累计拍位与滚动同步前进（指针不动也持续推进）
+        self._auto_scroll_beat_accum += step / self._pixels_per_beat
+        # 用最新累计延伸重算拖拽（move 预览 / right 裁剪实时生效），使内容随延伸增长
+        if (self._audio_drag_mode is not None and self._expanded
+                and 0 <= self._audio_drag_from_idx < len(self.audio_segments)):
+            self._apply_audio_drag(self._audio_pointer_beat())
+        sb.setValue(max(sb.minimum(), min(sb.maximum(), sb.value() + step)))
+        self.update()
+
     def _begin_audio_undo(self):
         """音频拖拽会话开始（撤销/重做：按下→松开视为一步）。"""
         if self.history is not None:
@@ -1790,15 +2019,20 @@ class TimelineWidget(QWidget):
         self._audio_drag_orig = None
         self._audio_drag_grab_offset = 0.0
         self._audio_drag_target = -1
+        self._auto_scroll_timer.stop()       # 新拖拽会话：停止可能残留的自动滚动
+        self._auto_scroll_beat_accum = 0.0   # 新拖拽会话：清除自动延伸累计
         # 起始拍快照：right 拖拽时后续段以“原位置”为下限，重叠解除后可回原位
         self._audio_drag_orig_starts = [float(s.start_beat) for s in self.audio_segments]
         x = float(pos.x())
         beat = self._pixel_to_beat_f(x - self._audio_rect.left())
-        # 拖拽参考锚点：按下时的像素 X 与鼠标拍位。
-        # 拖拽中拍位 = 锚点拍位 + 像素位移 / 每拍像素，使拍位计算独立于轴扩展，
-        # 避免 _min_axis_beat 随拖拽预览变化导致“拍位↔像素”映射反馈环路。
-        self._audio_drag_ref_x = x
+        # 拖拽参考锚点：按下时的“全局（屏幕）像素 X”与鼠标拍位。
+        # 拖拽中拍位 = 锚点拍位 + 全局位移 / 每拍像素，使拍位计算独立于轴扩展
+        # 与自动滚动（滚动时控件在鼠标下移动、局部坐标会变，全局坐标保持稳定），
+        # 避免 _min_axis_beat / 滚动导致的“拍位↔像素”映射反馈环路。
+        self._audio_drag_ref_x = float(self.mapToGlobal(pos).x())
         self._audio_drag_ref_beat = beat
+        self._audio_drag_prev_beat = beat   # 裁剪方向门控：按下时拍位作为初始方向基准
+        self._audio_drag_last_global_x = float(self.mapToGlobal(pos).x())
 
         # 裁剪手柄优先（裁剪 > 切换）：手柄绘制在音频段外侧，
         # 先命中当前选中段的外侧手柄再进入裁剪，避免点击外侧手柄时
@@ -1807,7 +2041,8 @@ class TimelineWidget(QWidget):
         if 0 <= self._audio_selected < len(self.audio_segments):
             seg = self.audio_segments[self._audio_selected]
             left_x = self._beat_to_x_f(seg.start_beat)
-            right_x = self._beat_to_x_f(self.audio_segment_end_beat(seg))
+            right_x = self._audio_time_to_x(
+                self.audio_time_at_beat(seg.start_beat) + seg.duration_seconds)
             if left_x - handle_w <= x <= left_x:
                 # 左端拖拽裁剪：右端固定（src_end 不变），按当前显示范围对齐
                 self._audio_drag_mode = "left"
@@ -1847,17 +2082,30 @@ class TimelineWidget(QWidget):
         self._begin_audio_undo()
         self.update()
 
-    def _audio_drag_update(self, event):
-        """音频栏拖拽中更新：move 预览 / left/right 实时裁剪并同步波形。"""
-        x = float(event.pos().x())
-        # 从拖拽起始的固定锚点反推鼠标拍位，而不是用 _pixel_to_beat_f：
-        # _min_axis_beat 会随拖拽预览/被拖拽段实时位置向左扩展，若用它反推拍位
-        # 会形成反馈环路（同一像素映射的拍位随轴扩展不断变负），导致负拍拖拽
-        # 按整拍失控跳跃。固定锚点使拍位计算与轴扩展完全独立。
-        beat = self._audio_drag_ref_beat + (x - self._audio_drag_ref_x) / self._pixels_per_beat
+    def _audio_pointer_beat(self) -> float:
+        """当前鼠标指针在时间轴上的有效拍位。
+
+        用按下时的固定锚点（_audio_drag_ref_x / _audio_drag_ref_beat）加全局位移
+        反推，独立于轴扩展与滚动（自动滚动时控件会在鼠标下移动，局部坐标会变，
+        全局坐标保持稳定），避免“拍位↔像素”映射反馈环路。
+        返回指针拍位 + 自动延伸累计（_auto_scroll_beat_accum）：指针进入触发区
+        后，即使指针不动，累计延伸也会持续推进有效拍位向右。
+        """
+        return (
+            self._audio_drag_ref_beat
+            + (QCursor.pos().x() - self._audio_drag_ref_x) / self._pixels_per_beat
+            + self._auto_scroll_beat_accum
+        )
+
+    def _apply_audio_drag(self, beat: float):
+        """按有效拍位应用当前拖拽：move 预览 / left/right 实时裁剪并同步波形。
+
+        供鼠标移动（_audio_drag_update）与自动延伸定时器（_auto_scroll_tick）
+        共用，保证自动延伸期间预览/裁剪与鼠标拖拽表现一致。
+        """
         if self._audio_drag_mode == "move":
             seg = self.audio_segments[self._audio_drag_from_idx]
-            # 预览框起始拍 = 鼠标拍位 - 抓取点偏移：跟随点击时的抓取点，而非以鼠标为中心
+            # 预览框起始拍 = 有效拍位 - 抓取点偏移：跟随点击时的抓取点，而非以鼠标为中心
             # 允许负拍：拖入音乐前导区（start_beat < 0）以支持“音乐先起、队形后动”。
             self._audio_drag_beat = beat - self._audio_drag_grab_offset
             # 交换目标：预览框重叠的段，且鼠标指针已超过该段一半（超过才交换）
@@ -1877,25 +2125,45 @@ class TimelineWidget(QWidget):
         min_len = max(1.0, 0.5 / self._seconds_per_beat_at(int(orig_start)))
         if self._audio_drag_mode == "left":
             # 左端拖拽：右端固定（end_beat 不变、src_end 不变），按“当前显示范围”锚定——
-            # 保持当前显示内容 [orig_src_start, orig_src_end] 与其拍位映射不变，
+            # 保持当前显示内容 [seg.src_start, seg.src_end] 与其拍位映射不变，
             # 只调整左端（src_begin 与 start_beat），扩展/裁剪均在左侧进行。
-            right_edge = self.audio_beat_at_time(
-                self.audio_time_at_beat(orig_start) + (orig_src_end - orig_src_start)
-            )
+            # 用当前 seg 值做“增量”计算（而非按下快照 orig），并配合 audio_time_at_beat
+            # 对轴左缘左侧负拍的线性外推，避免轴向左展开（min_beat 重锚）导致
+            # src_start 滞后、start_beat 乱跳（负区左端裁剪）。
+            # 方向判定：只看拍位移动方向（不再用指针内外侧像素判断）。手柄需严格
+            # 跟随指针的移动量（鼠标移动多少、左缘就延伸/收缩多少），去掉内外侧
+            # 门控后，压缩与再次延伸都能连续跟随，不会因保留自动延伸偏移而出现
+            # “先保持不动、指针追上手柄后突然跳到最远位置”的跳变。
+            if not (
+                beat < self._audio_drag_prev_beat     # 左移 → 延伸
+                or beat > self._audio_drag_prev_beat  # 右移 → 收缩
+            ):
+                self._audio_drag_prev_beat = beat
+                return
+            right_edge = self.audio_segment_end_beat(seg)
             new_start = min(beat, right_edge - min_len)
-            # 以当前显示范围左端为锚：orig_src_start ↔ orig_start 的映射保持不变
-            new_src_start = orig_src_start - (
-                self.audio_time_at_beat(orig_start) - self.audio_time_at_beat(new_start)
+            new_src_start = seg.src_start - (
+                self.audio_time_at_beat(seg.start_beat) - self.audio_time_at_beat(new_start)
             )
             if new_src_start < 0:
                 # 左端源内容已到达文件头：src_begin 夹到 0，右端仍固定，重推 start_beat
                 new_src_start = 0.0
                 new_start = self.audio_beat_at_time(
-                    self.audio_time_at_beat(right_edge) - orig_src_end
+                    self.audio_time_at_beat(right_edge) - seg.src_end
                 )
             seg.src_start = new_src_start
             seg.start_beat = new_start
         else:  # right
+            # 方向判定：只看拍位移动方向（不再用指针内外侧像素判断）。手柄需严格
+            # 跟随指针的移动量（延伸/压缩均按“鼠标移动多少、右缘就移动多少”），
+            # 去掉内外侧门控后，压缩与再次延伸都能连续跟随，不会出现“先保持不动、
+            # 指针追上手柄后突然跳到最远位置”的跳变。
+            if not (
+                beat > self._audio_drag_prev_beat     # 右移 → 延伸
+                or beat < self._audio_drag_prev_beat  # 左移 → 收缩
+            ):
+                self._audio_drag_prev_beat = beat
+                return
             new_end = max(orig_start + min_len, beat)
             new_src_end = orig_src_start + (
                 self.audio_time_at_beat(new_end) - self.audio_time_at_beat(orig_start)
@@ -1921,6 +2189,7 @@ class TimelineWidget(QWidget):
                 orig = self._audio_drag_orig_starts[i]
                 seg.start_beat = max(orig, b)
                 b = self.audio_segment_end_beat(seg)
+        self._audio_drag_prev_beat = beat   # 记录本次有效拍位，供下次方向门控判断
         self._recalculate_width()   # 裁剪使最左拍变化时轴向左展开
         self._audio_pixmap = None
         self.update()
@@ -1930,7 +2199,12 @@ class TimelineWidget(QWidget):
             # 拖拽中持续更新：按下时 Qt 已捕获鼠标，光标移出音频栏（向左进入
             # 负拍区等）也能继续跟随，拖拽预览随像素平滑移动、无整拍跳变。
             if self._expanded:
-                self._audio_drag_update(event)
+                """音频栏拖拽中更新：move 预览 / left/right 实时裁剪并同步波形。"""
+                # 拖拽一律用“全局（屏幕）坐标”锚点反推拍位，而不是局部坐标；
+                # 有效拍位 = 指针拍位 + 自动延伸累计（指针不动时累计持续推进向右）。
+                self._apply_audio_drag(self._audio_pointer_beat())
+                # 持续跟随：指针贴近/越过右缘时滚动区持续向右延伸，速度随指针位置变化
+                self._auto_scroll_extend()
                 event.accept()
                 return
             return
@@ -1947,7 +2221,8 @@ class TimelineWidget(QWidget):
         seg = self.audio_segments[self._audio_selected]
         x = float(pos.x())
         left_x = self._beat_to_x_f(seg.start_beat)
-        right_x = self._beat_to_x_f(self.audio_segment_end_beat(seg))
+        right_x = self._audio_time_to_x(
+            self.audio_time_at_beat(seg.start_beat) + seg.duration_seconds)
         handle_w = self._audio_handle_w
         # 与裁剪手柄绘制（段外侧）保持一致：左手柄/右手柄外侧区域显示双向箭头。
         # 右手柄命中范围向右延伸一个 _audio_handle_w，与 _audio_press 保持一致。
@@ -1963,10 +2238,13 @@ class TimelineWidget(QWidget):
         mode = self._audio_drag_mode
         idx = self._audio_drag_from_idx
         orig = self._audio_drag_orig          # 拖拽前快照，用于判断是否真正发生了变化
+        accum = self._auto_scroll_beat_accum  # 自动延伸累计：松开时用于有效拍位计算
         self._audio_drag_mode = None
         self._audio_drag_from_idx = -1
         self._audio_drag_orig = None
         self._audio_drag_target = -1
+        self._auto_scroll_timer.stop()          # 拖拽结束：停止自动向右滚动
+        self._auto_scroll_beat_accum = 0.0      # 清除自动延伸累计（下次拖拽重新计算）
         self.unsetCursor()
         if not self._expanded or not self.audio_segments or not (0 <= idx < len(self.audio_segments)):
             self._finish_audio_undo(False)
@@ -1983,10 +2261,11 @@ class TimelineWidget(QWidget):
             # 无实际拖拽（仅点击选中后原地松开）：预览起始拍 == 原起始拍 → 不写回、不发信号，
             # 避免误触发重新合成/标记未保存
             no_move = orig is not None and abs(preview_start - orig[2]) < 1e-9
-            # 与拖拽中一致：用固定锚点反推松开时的鼠标拍位（不受轴扩展影响）
+            # 与拖拽中一致：用固定锚点反推松开时的有效拍位（全局坐标，不受轴扩展/滚动影响），
+            # 自动延伸期间需加上累计延伸，使“是否越过目标段一半”的判断与拖拽预览一致
             mouse_beat = self._audio_drag_ref_beat + (
-                event.pos().x() - self._audio_drag_ref_x
-            ) / self._pixels_per_beat
+                event.globalPosition().x() - self._audio_drag_ref_x
+            ) / self._pixels_per_beat + accum
             # Ctrl+松开 → 复制模式：保留原段不动，在预览位置生成一份副本。
             # 无实际拖拽（仅点击原地松开）时不复制，避免在相同位置凭空多出一段。
             if event.modifiers() & Qt.KeyboardModifier.ControlModifier:

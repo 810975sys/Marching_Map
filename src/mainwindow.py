@@ -1878,7 +1878,11 @@ class MainWindow(MainWindowNotice, QMainWindow):
         )
 
     def _on_playback_tick(self):
-        """定时器回调：合成整轨播放时直接由音频位置驱动；无音频时按经过时间推算。"""
+        """定时器回调：合成整轨播放时直接由音频位置驱动；无音频时按经过时间推算。
+
+        超出最后方案图节点的部分：音频继续播放，画面保持最后一张方案图的点位
+        （场景 sub-beat 渲染会把拍位钳制到最后节点），直到整轨音频播完才停止。
+        """
         if not self._playback_active:
             return
 
@@ -1887,12 +1891,24 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self._stop_playback()
             return
 
-        # 优先取音频当前位置反推的拍位；无音频/未播放时回退到经过时间推算
-        beat_float = self._playback_beat()
+        # 整轨结束拍（合成音频延伸到超出最后节点的部分；无音频时为总拍数）
+        end_beat = self.timelineMainWidget.audio_end_beat()
 
-        if beat_float >= float(total_beats):
-            self._stop_playback()
-            return
+        if self._playback_use_synth:
+            player = self._audio_player
+            dur = player.duration()
+            pos = player.position()
+            # 合成整轨播到末尾即停止（含超出最后节点的部分）
+            if dur > 0 and pos >= dur - 50:
+                self._stop_playback()
+                return
+            beat_float = self._playback_beat()
+        else:
+            # 无音频（或合成失败）：按经过时间推算，到整轨结束（无音频即总拍数）停止
+            beat_float = self._playback_beat()
+            if beat_float >= end_beat:
+                self._stop_playback()
+                return
 
         self._update_playback_display(beat_float)   # 点位移动 / 时间轴游标
         if self._playback_use_synth:
@@ -1911,8 +1927,9 @@ class MainWindow(MainWindowNotice, QMainWindow):
         if self.timelineMainWidget.current_beat != beat_float:
             self.timelineMainWidget.current_beat = beat_float
             self.timelineMainWidget.update()
-            # 自动滚动时间轴使游标保持可见（按整拍定位滚动）
-            cursor_x = self.timelineMainWidget._beat_to_x(int_beat)
+            # 自动滚动时间轴使游标保持可见（超出最后节点按音频时间定位滚动）
+            cursor_x = int(round(self.timelineMainWidget._audio_time_to_x(
+                self.timelineMainWidget.audio_time_at_beat(float(int_beat)))))
             scroll_bar = self.timelineScrollArea.horizontalScrollBar()
             if scroll_bar is not None:
                 viewport_width = self.timelineScrollArea.viewport().width()
