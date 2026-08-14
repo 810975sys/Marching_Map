@@ -17,7 +17,7 @@ if __name__ == "__main__":
     # 把随程序打包的 ffmpeg.exe（或开发环境找到的 ffmpeg）配置给 pydub，
     # 保证导入/导出音频时不依赖系统 PATH。
     configure_pydub_ffmpeg()
-    setup_logging()
+    # setup_logging()
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()

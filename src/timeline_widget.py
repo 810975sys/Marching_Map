@@ -38,8 +38,6 @@ from src.audio_data import (
     SAMPLE_RATE,
     BUCKET,
 )
-import logging
-logger = logging.getLogger(__name__)
 
 class TimelineScrollArea(QScrollArea):
     """时间轴滚轮操作"""

@@ -24,8 +24,8 @@ _WAVEFORM_CACHE: dict[str, tuple[int, np.ndarray]] = {}
 # 文件峰值缓存：键 (path, bucket) -> min/max 峰值数组，避免每次绘制重复分桶计算。
 # 与 _WAVEFORM_CACHE 一样假设源文件在会话内不可变。
 _PEAKS_CACHE: dict[tuple[str, int], np.ndarray] = {}
-import logging
-logger = logging.getLogger(__name__)
+# import logging
+# logger = logging.getLogger(__name__)
 
 def _decode(path: str) -> tuple[int, np.ndarray] | None:
     """解码音频文件为单声道 22050Hz float32（[-1, 1]），结果按路径缓存。"""
@@ -43,7 +43,7 @@ def _decode(path: str) -> tuple[int, np.ndarray] | None:
         _WAVEFORM_CACHE[path] = (SAMPLE_RATE, samples)
         return _WAVEFORM_CACHE[path]
     except Exception as e:
-        logger.warning(f"无法解码音频文件\n{e}")
+        # logger.warning(f"无法解码音频文件\n{e}")
         return None
 
 

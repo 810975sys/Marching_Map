@@ -32,8 +32,11 @@ windows
         )
         coll = COLLECT(……)
 
-        # 注意：项目还通过 Analysis 的 binaries 参数把 ffmpeg.exe 一起打包
-        # （放到 _internal/ 下，运行时用 sys._MEIPASS 定位并配置给 pydub）。
+        # 注意：项目还通过 Analysis 的 binaries 参数把 ffmpeg.exe 与
+        # ffprobe.exe 一起打包（放到 _internal/ 下，运行时用 sys._MEIPASS
+        # 定位并配置给 pydub）。pydub 解码用 ffmpeg、探测音频信息用 ffprobe，
+        # 两者缺一不可，否则在其他没有安装 ffmpeg 的电脑上会报
+        # [WinError 2] 系统找不到指定的文件。
         # 若 ffmpeg 路径变化，需同步修改 MarchingMap.spec 的 binaries 与
         # src/ffmpeg_utils.py 中的 _DEV_FFMPEG_CANDIDATES。
         保存文件。
