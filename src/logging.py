@@ -2,7 +2,7 @@
 import logging
 import sys
 from pathlib import Path
-from app_settings_dock import _PROJECT_ROOT
+from src.app_settings_dock import _PROJECT_ROOT
 
 def setup_logging():
     """配置全局日志系统，在程序入口调用一次即可。"""

@@ -45,7 +45,7 @@ def scheme_default_dir() -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     return directory
 
-from app_settings_dock import _PROJECT_ROOT
+from src.app_settings_dock import _PROJECT_ROOT
 # 历史文件：记录最后保存的方案文件路径
 LAST_SCHEME_PATH_FILE = _PROJECT_ROOT / "last_scheme_path.json"
 
