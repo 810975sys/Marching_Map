@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import shutil
 import sys
+import os
 from pathlib import Path
+import logging
+logger = logging.getLogger(__name__)
 
 # 打包后随 binaries 放到 sys._MEIPASS 下的文件名
 _BUNDLED_FFMPEG_NAME = "ffmpeg.exe"
@@ -43,6 +46,7 @@ def configure_pydub_ffmpeg() -> Path | None:
         from pydub import AudioSegment
 
         AudioSegment.converter = str(path)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"无法配置 pydub 的 ffmpeg 转换器\n{e}")
         return None
     return path

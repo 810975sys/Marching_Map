@@ -12,6 +12,9 @@ windows
         a = Analysis(
             ['run.py'],
             ……
+            binaries=[
+                (r'C:\ffmpeg-9.0-essentials_build\bin\ffmpeg.exe', '.'),
+            ],  # 将 ffmpeg.exe 随程序一起打包（onedir 模式下会放到 _internal/ 下，运行时通过 sys._MEIPASS / 'ffmpeg.exe' 定位，供 pydub 解码/导出音频）
             datas=[
                 ('fields', 'fields'),   # 将 fields 目录整个打包到程序根目录
                 ('saves', 'saves'),     # 将 saves 目录整个打包

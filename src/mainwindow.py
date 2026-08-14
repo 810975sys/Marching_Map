@@ -45,8 +45,9 @@ def scheme_default_dir() -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     return directory
 
+from app_settings_dock import _PROJECT_ROOT
 # 历史文件：记录最后保存的方案文件路径
-LAST_SCHEME_PATH_FILE = Path(__file__).resolve().parent / "last_scheme_path.json"
+LAST_SCHEME_PATH_FILE = _PROJECT_ROOT / "last_scheme_path.json"
 
 class MainWindow(MainWindowNotice, QMainWindow):
     """主窗口：组织菜单、场景、时间轴与各类控制台。"""
@@ -73,7 +74,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self._audio_output.setVolume(1.0)
         self._audio_player.setAudioOutput(self._audio_output)
         # 合成整轨播放：音频/速度/时间轴变化后置为 True，播放前据此重新合成
-        self._audio_dirty = True
+        self._audio_dirty = False
         self._playback_synth_path: str | None = None   # 当前播放使用的合成整轨音频文件路径
         self._playback_use_synth = False               # 当前播放是否使用合成整轨（否则无音频）
         # 工具栏按钮映射：工具名 -> QToolButton
@@ -189,9 +190,9 @@ class MainWindow(MainWindowNotice, QMainWindow):
         """标记当前方案为未保存。"""
         self._set_scheme_dirty(True)
 
-    def _mark_audio_dirty(self, *args):
-        """标记音频（或其轴对齐依据：时间轴/速度）已变化，需重新合成整轨音频。"""
-        self._audio_dirty = True
+    # def _mark_audio_dirty(self, *args):
+    #     """标记音频（或其轴对齐依据：时间轴/速度）已变化，需重新合成整轨音频。"""
+    #     self._audio_dirty = True
 
     def _on_audio_changed(self):
         """音频段数据变化：标记未保存且需重新合成；若正在播放，已加载的合成整轨失效，停止播放。"""
@@ -908,7 +909,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         """绑定时间轴、场景和控制台信号。"""
         self.timelineMainWidget.nodeSelected.connect(self.onTimelineNodeSelected)
         self.timelineMainWidget.timelineChanged.connect(self._mark_scheme_dirty)
-        self.timelineMainWidget.timelineChanged.connect(self._mark_audio_dirty)
+        # self.timelineMainWidget.timelineChanged.connect(self._mark_audio_dirty)
         self.timelineMainWidget.tempoChanged.connect(self._on_tempo_changed)
         self.timelineMainWidget.expandedChanged.connect(self._on_timeline_expanded_changed)
         self.timelineMainWidget.audioChanged.connect(self._on_audio_changed)
@@ -1664,7 +1665,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
     def _on_tempo_changed(self):
         """速度数据变化时，同步 BPM 输入框显示（仅反映 beat_tempo[0]），并标记需重新合成音频。"""
-        self._audio_dirty = True   # 轴对齐依赖 beat_tempo，速度变化后合成整轨需更新
+        # self._audio_dirty = True   # 轴对齐依赖 beat_tempo，速度变化后合成整轨需更新
         tempo0 = self.timelineMainWidget.beat_tempo.get(0, None)
         if tempo0 is not None:
             self.bpmSpinBox.blockSignals(True)
