@@ -2239,8 +2239,12 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 stop_count = int(stop_spin.value())
 
         # 先预计算各成员是否有运动节拍，过滤出活跃成员
+        sum_beat = self._node_start_beat(self.active_node) - self._node_start_beat(self.active_node - 1)
+        effect_range = sum_beat / (fall_count + stop_count) if (fall_count + stop_count) > 0 else 0
         active_members = []
-        if len(members_union) >= 2:
+        if effect_range == 0:
+            active_members = members_union
+        elif len(members_union) >= 2:
             for pid in members_union:
                 try:
                     member_idx = members_union.index(pid)
@@ -2249,14 +2253,14 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                     continue
                 dist_from_anchor = abs(member_idx - anchor_idx)
 
-                sum_beat = self._node_start_beat(self.active_node) - self._node_start_beat(self.active_node - 1)
+                # sum_beat = self._node_start_beat(self.active_node) - self._node_start_beat(self.active_node - 1)
 
-                start_beat, end_beat = _calc_interval_beats(
-                    dist_from_anchor, sum_beat, fall_count, stop_count,
-                )
+                # start_beat, end_beat = _calc_interval_beats(
+                #     dist_from_anchor, sum_beat, fall_count, stop_count,
+                # )
 
                 # 有实际运动节拍才视为活跃成员
-                if start_beat < sum_beat and end_beat > start_beat:
+                if dist_from_anchor < effect_range:
                     active_members.append(pid)
 
         # 存储路径（锚点原始位置到新位置），仅含活跃成员
@@ -2275,8 +2279,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         # 应用活跃成员的各点最终位置
         # 计算锚点拍数基准（与预览 _on_interval_helper_moved 一致）
         anchor_idx = active_members.index(int(anchor_id))
-        sum_beat = self._node_start_beat(self.active_node) - self._node_start_beat(self.active_node - 1)
-
         dx, dy = dx / sum_beat, dy / sum_beat
 
         for pid in active_members:
@@ -5572,7 +5574,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                     anchor_id = self._get_anchor()
                     anchor_point = self._find_point_in_node(self.active_node, anchor_id)
                     point_group_id = int(anchor_point["group_id"])
-                    if point_group_id == int(group_id):
+                    if not self._draft_reference_points and not self._pending_points:
                         group_info = self.group_to_point[point_group_id]
                         ordered_ids = self._follow_group_point_ids_for_group(group_info)
                         new_anchor_id = int(ordered_ids[0])
