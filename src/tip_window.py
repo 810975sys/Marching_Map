@@ -26,8 +26,9 @@ class TipWindow(QDialog):
                               "- 场地坐标：旋转角度为负则不显示\n\n"+ 
                               "- 导出 PDF 会直接在当前方案的保存路径下生成\n\n"+ 
                               "- 音轨：拖拽音频段可调整其位置和长度；ctrl+拖拽复制；shift+拖拽整体平移\n"+
+                              "  · 可将开头没有移动的部分拖拽到第0张图之前\n" +
                               "  · 音频输出设备仅会在程序启动时检测，运行时切换不可靠\n\n"+ 
-                              "❗撤回功能暂未实现，敬请期待❤"), self)
+                              "❗视频导出、节拍器、播放倍速设置等功能暂未实现，敬请期待❤"), self)
         self.tip_content.setWordWrap(True)
         self.tip_content.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         self.tip_content.setFocusPolicy(Qt.FocusPolicy.NoFocus)
