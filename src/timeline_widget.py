@@ -302,6 +302,7 @@ class TimelineWidget(QWidget):
         self._audio_pixmap: QPixmap | None = None   # 波形缓存位图
         self._audio_unreadable: set[int] = set()    # 音频文件无法解码的段索引（渲染时记录，用于提示）
         self._beat_time_cache: list[float] | None = None  # 拍→秒累计表（依据 beat_tempo），长度 total_beats+1
+        self._beat_time_cache_key: tuple | None = None    # 累计表有效性键（base, total, beat_tempo 快照）
         self._audio_drag_mode: str | None = None    # 拖拽模式: 'move'|'left'|'right'
         self._audio_drag_from_idx = -1
         self._audio_drag_beat = 0.0             # move 预览起始拍
@@ -607,6 +608,7 @@ class TimelineWidget(QWidget):
         决定，超出部分按音频时间延伸，因此音频段移动/裁剪/缩放后会调用本方法重新排布。
         """
         self._beat_time_cache = None   # 拍数/速度/最左拍变化 → 拍→秒累计表失效
+        self._beat_time_cache_key = None
         plus_size = 24  # 加号按钮尺寸
         plus_gap = 18   # 加号按钮与最后节点间距，避免影响点击
         audio_btn_w = 70    # 音频栏右侧“导入音频”按钮宽度
@@ -1017,22 +1019,42 @@ class TimelineWidget(QWidget):
         表只覆盖到总拍数（最后方案图节点）；超出部分由 audio_time_at_beat /
         audio_beat_at_time 按最后节点拍速做纯时间线性外推，不再生成新的“拍”表项。
         """
-        if self._beat_time_cache is None:
-            min_beat = self._min_axis_beat()
-            base = math.floor(min_beat)
-            frac = min_beat - base
-            total = self.total_beats()
-            # 轴左缘（min_beat，可为小数）时间定为 0：base 拍位于轴左缘左侧
-            # frac 拍，其时间为负偏移 -(frac * spb)，整个累计表都以此为起点，
-            # 保证 audio_time_at_beat(min_beat) == 0 且拍→时间线性连续。
-            offset = -(frac * self._seconds_per_beat_at(base)) if frac > 0 else 0.0
-            cum = [offset]
-            acc = offset
-            for b in range(base, total):
-                acc += self._seconds_per_beat_at(b)
-                cum.append(acc)
-            self._beat_time_cache = cum
+        key = self._beat_time_key()
+        if self._beat_time_cache is not None and self._beat_time_cache_key == key:
+            return self._beat_time_cache
+        min_beat = self._min_axis_beat()
+        base = math.floor(min_beat)
+        frac = min_beat - base
+        total = self.total_beats()
+        # 轴左缘（min_beat，可为小数）时间定为 0：base 拍位于轴左缘左侧
+        # frac 拍，其时间为负偏移 -(frac * spb)，整个累计表都以此为起点，
+        # 保证 audio_time_at_beat(min_beat) == 0 且拍→时间线性连续。
+        offset = -(frac * self._seconds_per_beat_at(base)) if frac > 0 else 0.0
+        cum = [offset]
+        acc = offset
+        for b in range(base, total):
+            acc += self._seconds_per_beat_at(b)
+            cum.append(acc)
+        self._beat_time_cache = cum
+        self._beat_time_cache_key = key
         return self._beat_time_cache
+
+    def _beat_time_key(self) -> tuple:
+        """拍→秒累计表的有效性键：base（最左拍向下取整）、总拍数 total 与 beat_tempo 快照。
+
+        累计表依赖三者；任一变化（如 load_from_dict 重排 beat_tempo / audio_segments
+        后尚未调用 _recalculate_width，进度回调 pump 事件触发重绘）都会使其失效。
+        用“键比对”而非“仅置空”判断失效，可避免数据已变但缓存未清的空窗期
+        访问过期累计表越界（IndexError）。
+        """
+        return (
+            math.floor(self._min_axis_beat()),
+            self.total_beats(),
+            tuple(
+                (int(k), int(v.start_bpm), v.end_bpm, int(v.duration_beats))
+                for k, v in sorted(self.beat_tempo.items())
+            ),
+        )
 
     def audio_time_at_beat(self, beat: float) -> float:
         """把拍位转换为轨道时间（秒），按 beat_tempo 累计。
