@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QWidget, QFileDialog, 
     QHBoxLayout, QPushButton, QSizePolicy, QToolButton, QGridLayout, QFrame,
     QLabel, QLineEdit, QSlider, QButtonGroup, QDialog, QSpinBox,
-    QMessageBox, QProgressDialog, QTextEdit, QPlainTextEdit,
+    QMessageBox, QProgressDialog, QTextEdit, QPlainTextEdit, QComboBox,
 )
 from PyQt6.QtCore import Qt, QTimer, QElapsedTimer, QUrl
 from PyQt6.QtGui import QIcon, QShortcut, QKeySequence
@@ -181,14 +181,13 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.tipWindow.activateWindow()
 
     def _set_scheme_dirty(self, dirty: bool = True):
-        """更新当前方案是否存在未保存修改。"""
+        """更新当前方案是否存在未保存修改（默认 True：标记为未保存）。
+
+        也可直接作为无参信号（timelineChanged / dataChanged / field_info.changed）的槽。
+        """
         if self._scheme_dirty_suppressed:
             return
         self._scheme_dirty = bool(dirty)
-
-    def _mark_scheme_dirty(self, *args):
-        """标记当前方案为未保存。"""
-        self._set_scheme_dirty(True)
 
     # def _mark_audio_dirty(self, *args):
     #     """标记音频（或其轴对齐依据：时间轴/速度）已变化，需重新合成整轨音频。"""
@@ -197,7 +196,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
     def _on_audio_changed(self):
         """音频段数据变化：标记未保存且需重新合成；若正在播放，已加载的合成整轨失效，停止播放。"""
         self._audio_dirty = True
-        self._mark_scheme_dirty()
+        self._set_scheme_dirty()
         if self._playback_active and self._playback_use_synth:
             # 合成整轨在播放中发生变化：已加载的合成文件失效，停止播放，下次播放重新合成
             self._stop_playback()
@@ -266,6 +265,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             "tempo_info": self.timelineMainWidget.to_dict(),
             "scene": self.scene.to_dict(),
             "audio": self.timelineMainWidget.audio_to_dict(),
+            "view_mode": self.viewModeCombo.currentText() if hasattr(self, "viewModeCombo") else "指挥视角"
         }
 
     def _apply_scheme_payload(self, payload: dict):
@@ -275,9 +275,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
 
         self._scheme_dirty_suppressed = True
         try:
-            graph_list = payload.get("graph_list", [0])
-            if not isinstance(graph_list, list):
-                raise ValueError("方案文件中的 graph_list 格式无效")
             tempo_info = payload.get("tempo_info", {})
             audio_payload = payload.get("audio")
             # 恢复音频段需预解码各源文件（可能耗时），存在音频段时弹出进度提示框，
@@ -312,7 +309,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
                 progress.setValue(len(segments_data))   # 加载完成，进度归满
                 progress.close()                        # 自动关闭提示框
             self._audio_dirty = True   # 音频段已按方案恢复，播放前需按当前状态重新合成
-            # self.timelineMainWidget.set_graph_list(graph_list)
 
             scene_data = payload.get("scene", {})
             self.scene.load_confirmed_state(scene_data, node_count=len(self.timelineMainWidget.graph_list))
@@ -328,6 +324,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self.scene.field_info.load_from_dict(field_info_data)
             
             self.bpmSpinBox.setValue(int(self.timelineMainWidget._bpm_at_beat(0)))
+            
+            self.viewModeCombo.setCurrentText(payload.get("view_mode", "指挥视角"))
         finally:
             self._scheme_dirty_suppressed = False
         self._set_scheme_dirty(False)
@@ -404,10 +402,17 @@ class MainWindow(MainWindowNotice, QMainWindow):
         
         pdf_path = self._scheme_file_path
         stem = pdf_path.stem
-        conductor = pdf_path.with_name(f"{stem}_指挥视角.pdf")
-        performer = pdf_path.with_name(f"{stem}_表演者视角.pdf")
-        self.scene.export_conductor_pdf(conductor, self.timelineMainWidget.graph_list)
-        self.scene.export_performer_pdf(performer, self.timelineMainWidget.graph_list)
+        # 按当前编辑视角决定导出文件名（默认指挥视角）
+        view = getattr(self, "viewModeCombo", None)
+        view_name = view.currentText() if view is not None else "指挥视角"
+        conductor_view = pdf_path.with_name(f"{stem}_指挥视角.pdf")
+        performer_view = pdf_path.with_name(f"{stem}_表演者视角.pdf")
+        if view_name == "指挥视角":
+            self.scene.export_origin_pdf(conductor_view, self.timelineMainWidget.graph_list)
+            self.scene.export_upsidedown_pdf(performer_view, self.timelineMainWidget.graph_list)            
+        else:
+            self.scene.export_origin_pdf(performer_view, self.timelineMainWidget.graph_list)
+            self.scene.export_upsidedown_pdf(conductor_view, self.timelineMainWidget.graph_list)
 
         self._show_menu_notice(f"已导出 pdf 到 {stem}")
         return True
@@ -565,7 +570,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self.bpmSpinBox.setValue(int(round(tempo0.start_bpm)))
             self.bpmSpinBox.blockSignals(False)
         self._audio_dirty = True
-        self._mark_scheme_dirty()
+        self._set_scheme_dirty()
         self._update_undo_redo_actions()
 
     def _restore_ui_state(self, ui: dict):
@@ -722,7 +727,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             if idx > 0: 
                 line = QFrame() # 实例化竖直分割线
                 line.setFrameShape(QFrame.Shape.VLine)      # 竖线
-                line.setFrameShadow(QFrame.Shadow.Sunken)   # 凹陷效果
+                # line.setFrameShadow(QFrame.Shadow.Sunken)   # 凹陷效果
                 h_layout.addWidget(line)    # 添加分割线到布局
             
             cols = (len(group) + rows - 1) // rows  # 计算列数
@@ -743,6 +748,24 @@ class MainWindow(MainWindowNotice, QMainWindow):
                 grid.addWidget(btn, i // cols, i % cols)    # 添加按钮到网格布局，自动换行
             group_widget.setLayout(grid)        # 设置组容器布局
             h_layout.addWidget(group_widget)    # 添加组容器到水平布局
+
+        # 工具组右侧：以竖直分割线隔开，添加编辑视角下拉菜单（仅影响 PDF 导出文件名）
+        view_line = QFrame()                    # 实例化竖直分割线
+        view_line.setFrameShape(QFrame.Shape.VLine)
+        h_layout.addWidget(view_line)
+
+        view_label = QLabel("编辑视角：")
+        view_label.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        h_layout.addWidget(view_label)
+
+        self.viewModeCombo = QComboBox()
+        self.viewModeCombo.addItem("指挥视角")
+        self.viewModeCombo.addItem("表演者视角")
+        self.viewModeCombo.setCurrentText("指挥视角")   # 默认为指挥视角
+        self.viewModeCombo.setToolTip("选择编辑视角：仅影响 PDF 导出文件名")
+        self.viewModeCombo.currentIndexChanged.connect(lambda idx: self._set_scheme_dirty())  # 视角切换时标记方案未保存
+        h_layout.addWidget(self.viewModeCombo)
+
         container.setLayout(h_layout)           # 设置总容器布局
         
         # 用QToolBar包裹，便于后续扩展
@@ -908,7 +931,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
     def setupInteractions(self):
         """绑定时间轴、场景和控制台信号。"""
         self.timelineMainWidget.nodeSelected.connect(self.onTimelineNodeSelected)
-        self.timelineMainWidget.timelineChanged.connect(self._mark_scheme_dirty)
+        self.timelineMainWidget.timelineChanged.connect(self._set_scheme_dirty)
         # self.timelineMainWidget.timelineChanged.connect(self._mark_audio_dirty)
         self.timelineMainWidget.tempoChanged.connect(self._on_tempo_changed)
         self.timelineMainWidget.expandedChanged.connect(self._on_timeline_expanded_changed)
@@ -928,8 +951,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.scene.selectedPointsChanged.connect(self.onSelectedPointsChanged)
         self.scene.drawingRematchStateChanged.connect(self._sync_drawing_rematch_controls)
         self.scene.textBoxSelectionChanged.connect(self._on_textbox_selection_changed)
-        self.scene.dataChanged.connect(self._mark_scheme_dirty)
-        self.scene.field_info.changed.connect(self._mark_scheme_dirty)
+        self.scene.dataChanged.connect(self._set_scheme_dirty)
+        self.scene.field_info.changed.connect(self._set_scheme_dirty)
         self.scene.draftStarted.connect(self.onDraftStarted)
         self.scene.draftFinished.connect(self.onDraftFinished)
         self.scene.samplingPointCountChanged.connect(self.onSamplingPointCountChanged)
@@ -1713,7 +1736,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             return
         # 展开时间轴以显示音频栏
         self.timelineMainWidget.set_expanded(True)
-        self._mark_scheme_dirty()
+        self._set_scheme_dirty()
         self._show_menu_notice(f"已导入 {len(added)} 个音频段")
 
     # ──────────────── 合成整轨音频 ────────────────

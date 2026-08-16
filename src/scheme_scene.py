@@ -881,7 +881,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
         return export_scene
 
-    def export_conductor_pdf(self, file_path: str | Path, cnt_per_page: list[int] | None = None):
+    def export_origin_pdf(self, file_path: str | Path, cnt_per_page: list[int] | None = None):
         """将每个方案图节点导出为一页 A4 PDF。"""
         output_path = Path(file_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -941,7 +941,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
         painter.end()
 
-    def export_performer_pdf(self, file_path: str | Path, cnt_per_page: list[int] | None = None):
+    def export_upsidedown_pdf(self, file_path: str | Path, cnt_per_page: list[int] | None = None):
         """将每个方案图节点导出为一页 A4 PDF（表演视角），仅将构建导出场景时的 x,y 坐标取负。"""
         output_path = Path(file_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
