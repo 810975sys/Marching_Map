@@ -112,7 +112,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         # 撤销/重做管理器：必须在各数据层与 UI 初始化完成后创建
         self._setup_history()
         
-        self.setWindowTitle("Marching Map Editor")
+        # self.setWindowTitle("Marching Map Editor")
         self.resize(1200, 800)
         self.showMaximized() # 默认最大化窗口
 
@@ -344,6 +344,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self._save_last_scheme_path()
         self._set_scheme_dirty(False)
         self._show_menu_notice(f"已保存：{target.name}")
+        self.setWindowTitle("Marching Map Editor - " + target.name)
         return True
 
     def _save_scheme_as(self, checked=False):
@@ -388,7 +389,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self._save_last_scheme_path()
         if self._history is not None:
             self._history.initialize()   # 打开新方案：清空撤销历史，以当前状态为基准
-        self._show_menu_notice(f"已打开：{Path(file_path).name}")
+        self._show_menu_notice(f"已打开：{Path(file_path).name}")        
+        self.setWindowTitle("Marching Map Editor - " + Path(file_path).name)
         return True
 
     def _export_pdf(self, checked=False):
@@ -440,6 +442,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         if self._history is not None:
             self._history.initialize()   # 新建方案：清空撤销历史
         self._show_menu_notice("已新建空白方案")
+        self.setWindowTitle("Marching Map Editor - 未命名方案")
         return True
 
     # ──────────────── 历史文件管理 ────────────────
@@ -486,6 +489,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             if self._history is not None:
                 self._history.initialize()   # 启动恢复：以恢复后的状态为撤销基准
             self._show_menu_notice(f"已恢复：{target.name}")
+            self.setWindowTitle(f"Marching Map Editor - {target.name}")
         except Exception:
             QMessageBox.warning(
                 self,
