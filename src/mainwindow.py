@@ -457,6 +457,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
     def _restore_last_scheme(self):
         """启动时从历史文件恢复上次编辑的方案。"""
         if not LAST_SCHEME_PATH_FILE.exists():
+            self.setWindowTitle(f"Marching Map Editor")
             return
 
         try:
@@ -466,6 +467,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             return
         last_path = data.get("last_scheme_path", "")
         if not last_path:
+            self.setWindowTitle(f"Marching Map Editor")
             return
 
         target = Path(last_path)
@@ -479,6 +481,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             # 清空历史文件
             with open(LAST_SCHEME_PATH_FILE, "w", encoding="utf-8") as f:
                 json.dump({"last_scheme_path": ""}, f, ensure_ascii=False, indent=2)
+            self.setWindowTitle(f"Marching Map Editor")
             return
 
         try:
