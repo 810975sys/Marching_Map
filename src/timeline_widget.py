@@ -1359,67 +1359,112 @@ class TimelineWidget(QWidget):
             self.history.commit()
         return True
 
-    def _confirm_delete_audio_dialog(self, seg: AudioSegment) -> bool:
-        """弹出删除音频段确认弹窗；用户确认删除返回 True。
+    def _edit_audio_dialog(self, seg: AudioSegment) -> str | None:
+        """弹出音频段操作弹窗（复制 / 删除）；返回 "copy"/"delete"，取消返回 None。
 
         弹窗风格与主窗口“删除点位”保持一致：取消按钮绑定 Esc，
-        “删除”按钮绑定 Delete 快捷键（并作为默认按钮支持回车确认）。
+        “复制”按钮绑定 Tab，“删除”按钮绑定 Delete 快捷键
+        （并作为默认按钮支持回车确认）。
         """
         name = Path(seg.file).name
         start = round(seg.start_beat, 2)
         end = round(self.audio_segment_end_beat(seg), 2)
         dlg = QDialog(self)
-        dlg.setWindowTitle("删除音频段")
+        dlg.setWindowTitle("编辑音频段")
         layout = QVBoxLayout()
-        layout.addWidget(QLabel(f"确认删除音频段“{name}”？"))
-        layout.addWidget(QLabel(f"位置：第 {start} ~ {end} 拍"))
-        layout.addWidget(QLabel("删除后不可恢复。"))
+        layout.addWidget(QLabel(f"当前音频段“{name}”，位置：第 {start} ~ {end} 拍"))
+
+        result: dict[str, str | None] = {"action": None}
+
+        def _choose(action: str):
+            result["action"] = action
+            dlg.accept()
 
         btn_layout = QHBoxLayout()
         btn_layout.addStretch(1)
         cancel_btn = QPushButton("取消 Esc", dlg)
         cancel_btn.setShortcut("Esc")
+        copy_btn = QPushButton("复制 tab", dlg)
+        copy_btn.setShortcut("Tab")
         delete_btn = QPushButton("删除 Delete", dlg)
         delete_btn.setShortcut("Delete")
         delete_btn.setDefault(True)   # 回车 / Enter 也可确认
         delete_btn.setStyleSheet("background:#d9534f;color:white;")
         cancel_btn.clicked.connect(dlg.reject)
-        delete_btn.clicked.connect(dlg.accept)
+        copy_btn.clicked.connect(lambda: _choose("copy"))
+        delete_btn.clicked.connect(lambda: _choose("delete"))
         btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(copy_btn)
         btn_layout.addWidget(delete_btn)
         layout.addLayout(btn_layout)
         dlg.setLayout(layout)
-        return dlg.exec() == QDialog.DialogCode.Accepted
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            return result["action"]
+        return None
 
-    def _delete_audio_by_index(self, idx: int):
-        """选中指定音频段并弹出确认弹窗删除；未确认则不删除。"""
+    def _copy_audio_by_index(self, idx: int):
+        """复制指定音频段：在原段后插入一份完全一致的段，后续段自动后移直到无重叠。
+
+        复制的段与原段源选区（src_start/src_end）完全一致，起始拍接在原段结束拍处；
+        与原段不会重叠，但与后续段可能重叠，由 _resolve_audio_overlaps 级联后移解决。
+        """
         if not (0 <= idx < len(self.audio_segments)):
             return
-        if self._confirm_delete_audio_dialog(self.audio_segments[idx]):
-            # 删除指定音频段，并同步编辑状态、缓存与外部信号。
-            if not (0 <= idx < len(self.audio_segments)):
-                return
-            if self.history is not None:
-                self.history.begin("删除音频段")
-            del self.audio_segments[idx]
-            # 修正选中索引：删掉的正是选中段 → 无选中；删掉前面的段 → 选中索引前移
-            if self._audio_selected == idx:
-                self._audio_selected = -1
-            elif self._audio_selected > idx:
-                self._audio_selected -= 1
-            self._audio_selected = max(-1, min(self._audio_selected, len(self.audio_segments) - 1))
-            self._audio_pixmap = None
-            self._audio_unreadable.clear()
-            self.audioChanged.emit()
-            self._recalculate_width()   # 删除后最右拍变化 → 重新排布宽度
-            self.update()
-            if self.history is not None:
-                self.history.commit()
+        if self.history is not None:
+            self.history.begin("复制音频段")
+        seg = self.audio_segments[idx]
+        new_seg = AudioSegment(
+            file=seg.file,
+            src_start=seg.src_start,
+            src_end=seg.src_end,
+            start_beat=self.audio_segment_end_beat(seg),
+        )
+        self.audio_segments.insert(idx + 1, new_seg)
+        self._resolve_audio_overlaps()   # 后续段自动后移直到无重叠
+        self._audio_selected = self.audio_segments.index(new_seg)   # 选中复制出的段
+        self._audio_pixmap = None
+        self._audio_unreadable.clear()
+        self.audioChanged.emit()
+        self._recalculate_width()   # 复制后最右拍变化 → 重新排布宽度
+        self.update()
+        if self.history is not None:
+            self.history.commit()
+
+    def _edit_audio_by_index(self, idx: int):
+        """弹出音频段操作弹窗（复制 / 删除）并执行对应操作。"""
+        if not (0 <= idx < len(self.audio_segments)):
+            return
+        action = self._edit_audio_dialog(self.audio_segments[idx])
+        if action == "copy":
+            self._copy_audio_by_index(idx)
+        elif action == "delete":
+            self._delete_audio_by_index(idx)
+
+    def _delete_audio_by_index(self, idx: int):
+        """删除指定音频段，并同步编辑状态、缓存与外部信号。"""
+        if not (0 <= idx < len(self.audio_segments)):
+            return
+        if self.history is not None:
+            self.history.begin("删除音频段")
+        del self.audio_segments[idx]
+        # 修正选中索引：删掉的正是选中段 → 无选中；删掉前面的段 → 选中索引前移
+        if self._audio_selected == idx:
+            self._audio_selected = -1
+        elif self._audio_selected > idx:
+            self._audio_selected -= 1
+        self._audio_selected = max(-1, min(self._audio_selected, len(self.audio_segments) - 1))
+        self._audio_pixmap = None
+        self._audio_unreadable.clear()
+        self.audioChanged.emit()
+        self._recalculate_width()   # 删除后最右拍变化 → 重新排布宽度
+        self.update()
+        if self.history is not None:
+            self.history.commit()
 
     def _delete_selected_audio(self):
-        """Delete 快捷键：删除当前选中的音频段（带确认弹窗）。"""
+        """Delete 快捷键：弹出音频段操作弹窗（复制 / 删除）。"""
         if 0 <= self._audio_selected < len(self.audio_segments):
-            self._delete_audio_by_index(self._audio_selected)
+            self._edit_audio_by_index(self._audio_selected)
 
     def _audio_end_beat_at(self, seg: AudioSegment, start_beat: float) -> float:
         """段以 start_beat 起始时的结束拍（按 beat_tempo 反推）。"""
@@ -2424,7 +2469,7 @@ class TimelineWidget(QWidget):
         """右键节点弹出设置窗口：修改间隔拍数或删除该节点。"""
         pos: QPoint = event.pos()
 
-        # 右键音频栏：选中该音频段并弹出删除确认弹窗
+        # 右键音频栏：选中该音频段并弹出操作弹窗（复制 / 删除）
         if self._expanded and self._audio_hit_rect().contains(pos):
             beat = self._pixel_to_beat_f(pos.x() - self._audio_rect.left())
             found = self.audio_segment_at_beat(beat)
@@ -2433,7 +2478,7 @@ class TimelineWidget(QWidget):
                 self.setFocus()          # 确保随后 Delete 快捷键作用于时间轴
                 self._audio_selected = idx
                 self.update()
-                self._delete_audio_by_index(idx)
+                self._edit_audio_by_index(idx)
             return
 
         # 右键速度轴区域时，弹出速度编辑对话框（修改或删除该节点）。
