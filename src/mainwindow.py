@@ -408,11 +408,11 @@ class MainWindow(MainWindowNotice, QMainWindow):
         conductor_view = pdf_path.with_name(f"{stem}_指挥视角.pdf")
         performer_view = pdf_path.with_name(f"{stem}_表演者视角.pdf")
         if view_name == "指挥视角":
-            self.scene.export_origin_pdf(conductor_view, self.timelineMainWidget.graph_list)
-            self.scene.export_upsidedown_pdf(performer_view, self.timelineMainWidget.graph_list)            
+            self.scene.export_origin_pdf(conductor_view, self.timelineMainWidget.graph_list, view_name)
+            self.scene.export_upsidedown_pdf(performer_view, self.timelineMainWidget.graph_list, view_name)            
         else:
-            self.scene.export_origin_pdf(performer_view, self.timelineMainWidget.graph_list)
-            self.scene.export_upsidedown_pdf(conductor_view, self.timelineMainWidget.graph_list)
+            self.scene.export_origin_pdf(performer_view, self.timelineMainWidget.graph_list, view_name)
+            self.scene.export_upsidedown_pdf(conductor_view, self.timelineMainWidget.graph_list, view_name)
 
         self._show_menu_notice(f"已导出 pdf 到 {stem}")
         return True

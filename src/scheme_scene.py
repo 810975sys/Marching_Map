@@ -881,7 +881,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
 
         return export_scene
 
-    def export_origin_pdf(self, file_path: str | Path, cnt_per_page: list[int] | None = None):
+    def export_origin_pdf(self, file_path: str | Path, cnt_per_page: list[int] | None = None, view_name: str = "指挥视角"):
         """将每个方案图节点导出为一页 A4 PDF。"""
         output_path = Path(file_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -937,12 +937,12 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             else:
                 footer_text = f'set：#{node_index+1}   节拍：{page_cnt}'
             painter.drawText(footer_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, footer_text)
-            painter.drawText(footer_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop, '指挥视角')
+            painter.drawText(footer_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop, view_name)
 
         painter.end()
 
-    def export_upsidedown_pdf(self, file_path: str | Path, cnt_per_page: list[int] | None = None):
-        """将每个方案图节点导出为一页 A4 PDF（表演视角），仅将构建导出场景时的 x,y 坐标取负。"""
+    def export_upsidedown_pdf(self, file_path: str | Path, cnt_per_page: list[int] | None = None, view_name: str = "表演者视角"):
+        """将每个方案图节点导出为一页 A4 PDF（视角调换），仅将构建导出场景时的 x,y 坐标取负。"""
         output_path = Path(file_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1029,7 +1029,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
             else:
                 footer_text = f'set：#{node_index+1}   节拍：{page_cnt}'
             painter.drawText(footer_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, footer_text)
-            painter.drawText(footer_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop, '表演者视角')
+            painter.drawText(footer_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop, view_name)
 
         painter.end()
 
