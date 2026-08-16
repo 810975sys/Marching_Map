@@ -30,7 +30,7 @@ class SchemeSceneData:
         # 格式: { node_index: # 节点索引
         # [{
         # "type": str, # 路径类型 {'forward', 'follow', 'interval', 'rotate'}，对应平移、跟随、间隔、旋转四种
-        # "path": [(x,y), ...], # 路径点列表
+        # "path": [(x,y), ...], # 路径点列表（不保存前一张图位置；计算时以 node_index-1 的锚点位置作为 [0] 动态补齐）
         # "anchor_id": int, # 锚点 ID，用于计算路径偏移量的参考点（rotate不需要）
         # "members": [point_ids] # 成员点位 ID 列表
             # "leaders": [point_ids] # follow 特有，各组的 leader id 列表
@@ -124,6 +124,19 @@ class SchemeSceneData:
             float(member_point.get("y", 0.0)) - float(anchor_point.get("y", 0.0)),
         )
 
+    def _node_path_effective_path(self, node_index: int, ref_entry: dict) -> list[tuple[float, float]]:
+        """返回节点路径的有效轨迹：以 node_index-1 中锚点位置作为 [0]，其后为存储的轨迹点。
+
+        path 字段不保存前一张图的位置；计算时通过 _find_point_in_node 动态获取 node_index-1 的位置作为 [0] 使用。
+        """
+        path = [tuple(float(v) for v in p) for p in (ref_entry.get("path") or [])]
+        anchor_id = ref_entry.get("anchor_id")
+        if anchor_id is not None and path:
+            prev_anchor = self._find_point_in_node(int(node_index) - 1, int(anchor_id))
+            if prev_anchor is not None:
+                path.insert(0, (float(prev_anchor.get("x", 0.0)), float(prev_anchor.get("y", 0.0))))
+        return path
+
     def to_dict(self) -> dict:
         """导出已确认的方案图数据，用于保存到方案文件。"""
         return {
@@ -197,7 +210,7 @@ class SchemeSceneData:
         self.node_to_group.append(self.node_to_group[-1])
         self._render_points_for_active_node()
 
-    def _split_node_path_entry_at_midpoint(self, path_info: dict) -> tuple[dict, dict]:
+    def _split_node_path_entry_at_midpoint(self, node_index: int, path_info: dict) -> tuple[dict, dict]:
         """把单条路径定义按路径长度中点拆成左右两段。"""
         # rotate 类型无需路径拆分，只需角度减半，提前处理
         if path_info.get('type') == 'rotate':
@@ -212,7 +225,34 @@ class SchemeSceneData:
                 empty_entry["rotate_info"] = rotate_entry
             return empty_entry, copy.deepcopy(empty_entry)
 
-        path = path_info.get('path', [])
+        if path_info.get('type') == 'interval':
+            # interval：path 仅存终点；插入节点时左段取有效路径（前一张图锚点位置→终点）的中点位置，
+            # 右段保留原终点（计算时各自再动态前插 node_index-1 的位置作为 [0]）。
+            effective_path = self._node_path_effective_path(node_index, path_info)
+            left_path = []
+            right_path = path_info.get('path')
+            mid = self._sample_position_along_path(effective_path, 0.5)
+            if mid is not None:
+                left_path = [mid]
+            left_entry = {
+                'type': path_info['type'],
+                "anchor_id": path_info['anchor_id'],
+                "path": left_path,
+                "members": path_info['members'],
+            }
+            right_entry = {
+                'type': path_info['type'],
+                "anchor_id": path_info['anchor_id'],
+                "path": right_path,
+                "members": path_info['members'],
+            }
+            left_entry["interval"] = (path_info['interval'][0], 0)
+            right_entry["interval"] = (0, path_info['interval'][1])
+            return left_entry, right_entry
+
+        # forward/follow 的 path 不保存前一张图位置，拆分前先以 node_index-1 的锚点位置重建 [0]，
+        # 保证拆分中点与有效路径一致。
+        path = self._node_path_effective_path(node_index, path_info)
         if len(path) < 2:
             left_path = list(path)
             right_path = list(path)
@@ -273,6 +313,9 @@ class SchemeSceneData:
             left_path = []
             right_path = []
 
+        # 存储时剔除重建的 [0]（前一张图锚点位置），计算阶段按 node_index-1 动态补齐
+        left_path = left_path[1:]
+
         left_entry = {
             'type': path_info['type'],
             "anchor_id": path_info['anchor_id'],
@@ -288,9 +331,6 @@ class SchemeSceneData:
         if path_info['type'] == 'follow':
             left_entry["leaders"] = path_info['leaders']
             right_entry["leaders"] = path_info['leaders']
-        elif path_info['type'] == 'interval':
-            left_entry["interval"] = (path_info['interval'][0], 0)
-            right_entry["interval"] = (0, path_info['interval'][1])
         return left_entry, right_entry
 
     def on_node_inserted(self, inserted_index: int):
@@ -327,7 +367,7 @@ class SchemeSceneData:
                 left_paths = []
                 split_right_paths = []
                 for path_info in self.node_paths[right_idx]:
-                    left_entry, right_entry = self._split_node_path_entry_at_midpoint(path_info)
+                    left_entry, right_entry = self._split_node_path_entry_at_midpoint(inserted_index, path_info)
                     left_paths.append(left_entry)
                     split_right_paths.append(right_entry)
                 self.node_paths[inserted_index] = left_paths
@@ -452,7 +492,7 @@ class SchemeSceneData:
             
             if ref_entry.get("type") == 'follow':
             # follow （跟随）：以第一组 leader 为参考路径，其他组 leader 按初始偏移平移，组内其他点沿各自 leader 的相对偏移移动。
-                path = ref_entry.get("path", [])
+                path = self._node_path_effective_path(node_index, ref_entry)
                 if not path:
                     return None
 
@@ -556,7 +596,7 @@ class SchemeSceneData:
 
             elif ref_entry.get("type") == 'interval':
                 # interval （间隔行进）：按拍数精确控制落后启动与提前/滞后停止
-                path = ref_entry.get("path", [])
+                path = self._node_path_effective_path(node_index, ref_entry)
                 if not path or len(path) < 2:
                     return None
                 interval_cfg = ref_entry.get("interval", (2, 0))
@@ -639,7 +679,7 @@ class SchemeSceneData:
 
             elif ref_entry.get("type") == 'forward':
                 # forward （路径）
-                sampled = self._sample_position_along_path(ref_entry.get("path", []), progress)
+                sampled = self._sample_position_along_path(self._node_path_effective_path(node_index, ref_entry), progress)
                 if sampled is None:
                     return None
                 offset = self._node_path_member_offset(node_index, ref_entry, int(point_id))

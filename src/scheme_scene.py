@@ -2264,8 +2264,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                     active_members.append(pid)
 
         # 存储路径（锚点原始位置到新位置），仅含活跃成员
-        path = [(float(orig['x']), float(orig['y'])),
-                (float(anchor_fx), float(anchor_fy))]
+        path = [(float(anchor_fx), float(anchor_fy))]
 
         self._upsert_node_path_entry(
             self.active_node,
@@ -4166,11 +4165,12 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                             point["y"] = float(preview["y"])
                             
                         # 记录路径信息：只保存锚点ID、路径点和成员点ID，成员偏移在插值时根据当前节点现算。
+                        # path 不保存前一张图位置（[0] 由插值时经 _find_point_in_node 动态补齐）。
                         self._upsert_node_path_entry(
                             node_index=self.active_node,
                             path_type='forward',
                             anchor_id=anchor_id,
-                            path=[[float(px), float(py)] for px, py in path_points],
+                            path=[[float(px), float(py)] for px, py in path_points[1:]],
                             members=[int(p.get("id", -1)) for p in selected_points],
                         )
                         self.sync_sampling_values_from_selection(tool_name)
@@ -4224,12 +4224,13 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                                 if lid not in leaders_union:
                                     leaders_union.append(lid)
 
-                        # 保存 follow 路径定义（需先注册，后续 _sample_point_from_node_path 依赖此数据）
+                        # 保存 follow 路径定义（需先注册，后续 _sample_point_from_node_path 依赖此数据）。
+                        # path 不保存前一张图位置（[0] 由插值时经 _find_point_in_node 动态补齐）。
                         self._upsert_node_path_entry(
                             self.active_node,
                             'follow',
                             anchor_id,
-                            path_points,
+                            path_points[1:],
                             members_union,
                             leaders=leaders_union,
                         )
