@@ -272,7 +272,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         for point in current_points:
             self._draw_point_item(point, pre_view=False, draw_label=True)
 
-        self._draw_textbox_items()
+        # self._draw_textbox_items()
 
     def load_confirmed_state(self, data: dict, node_count: int | None = None):
         """恢复已确认的方案图数据，并清理当前编辑中的临时状态。"""
@@ -296,9 +296,6 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
         self._arrow_pending_points = []
         self._clear_arrow_items()
         self._clear_overlay_items()
-
-    def _copy_textboxes_for_node(self, node_index: int) -> list[dict]:
-        return [dict(tb) for tb in self.node_textboxes.get(int(node_index), [])]
 
     def _ensure_textbox_ids(self, textboxes: list[dict]):
         for tb in textboxes:
@@ -443,7 +440,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
                 break
 
     def _enter_textbox_mode(self):
-        self._textbox_preview = self._copy_textboxes_for_node(self.active_node)
+        self._textbox_preview = [dict(tb) for tb in self.node_textboxes.get(int(self.active_node), [])]
         self._ensure_textbox_ids(self._textbox_preview)
         self._textbox_pending_points = []
         self._textbox_hover_scene_pos = None
@@ -498,7 +495,7 @@ class SchemeScene(SchemeSceneData, QGraphicsScene):
     def cancel_textbox_preview(self):
         if self.active_tool != "文本":
             return
-        self._textbox_preview = self._copy_textboxes_for_node(self.active_node)
+        self._textbox_preview = [dict(tb) for tb in self.node_textboxes.get(int(self.active_node), [])]
         self._textbox_pending_points = []
         self._set_selected_textbox_id(None)
         self._render_points_for_active_node()
