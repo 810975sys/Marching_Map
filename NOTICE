@@ -1,0 +1,22 @@
+Third-Party Licenses and Notices
+
+This project is licensed under the GNU General Public License v3.0.
+It contains or depends on the following third-party components:
+
+---
+
+1. PyQt6
+
+Copyright (c) Riverbank Computing Limited.
+Licensed under the GNU General Public License v3.0.
+For more details, see: https://www.riverbankcomputing.com/software/pyqt/
+
+---
+
+2. FFmpeg / FFprobe
+
+Copyright (c) the FFmpeg developers.
+This product uses software from the FFmpeg project (https://ffmpeg.org/).
+Licensed under the GNU Lesser General Public License v2.1 or later 
+(or under the GNU General Public License v2.0 or later, depending on build configuration).
+For more details, see: https://ffmpeg.org/legal.html
