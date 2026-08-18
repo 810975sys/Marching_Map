@@ -1296,9 +1296,9 @@ class TimelineWidget(QWidget):
         if total_duration_ms <= 0:
             return False
 
-        # 底轨统一为 44.1kHz 立体声：各音频段在叠加前也会被转换到该格式，
+        # 底轨统一为 22.05kHz 单声道：各音频段在叠加前也会被转换到该格式，
         # 保证不同采样率/声道的段可正常叠加，且导出的整轨保持较高音质。
-        out = PydubSegment.silent(duration=total_duration_ms, frame_rate=44100).set_channels(2)
+        out = PydubSegment.silent(duration=total_duration_ms, frame_rate=22050).set_channels(1)
         n = len(self.audio_segments)
         for i, seg in enumerate(self.audio_segments):
             if progress_cb is not None:
@@ -1324,7 +1324,7 @@ class TimelineWidget(QWidget):
                 out = out.overlay(clip, position=pos_ms)
 
         try:
-            out.export(str(output_path), format="wav")
+            out.export(str(output_path), format="MP3")
         except Exception:
             return False
         return True

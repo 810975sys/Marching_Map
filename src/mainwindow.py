@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QLabel, QLineEdit, QSlider, QButtonGroup, QDialog, QSpinBox,
     QMessageBox, QProgressDialog, QTextEdit, QPlainTextEdit, QComboBox,
 )
-from PyQt6.QtCore import Qt, QTimer, QElapsedTimer, QUrl
+from PyQt6.QtCore import Qt, QTimer, QElapsedTimer, QUrl, QEventLoop
 from PyQt6.QtGui import QIcon, QShortcut, QKeySequence
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from pathlib import Path
@@ -76,7 +76,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
         # 合成整轨播放：音频/速度/时间轴变化后置为 True，播放前据此重新合成
         self._audio_dirty = False
         self._playback_synth_path: str | None = None   # 当前播放使用的合成整轨音频文件路径
-        self._playback_use_synth = False               # 当前播放是否使用合成整轨（否则无音频）
         # 工具栏按钮映射：工具名 -> QToolButton
         self.toolButtons = {}   # 保存工具按钮引用，便于根据工具名更新按钮状态
         self.activeToolName = "框选"
@@ -189,15 +188,11 @@ class MainWindow(MainWindowNotice, QMainWindow):
             return
         self._scheme_dirty = bool(dirty)
 
-    # def _mark_audio_dirty(self, *args):
-    #     """标记音频（或其轴对齐依据：时间轴/速度）已变化，需重新合成整轨音频。"""
-    #     self._audio_dirty = True
-
     def _on_audio_changed(self):
         """音频段数据变化：标记未保存且需重新合成；若正在播放，已加载的合成整轨失效，停止播放。"""
         self._audio_dirty = True
         self._set_scheme_dirty()
-        if self._playback_active and self._playback_use_synth:
+        if self._playback_active:
             # 合成整轨在播放中发生变化：已加载的合成文件失效，停止播放，下次播放重新合成
             self._stop_playback()
 
@@ -429,7 +424,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self._scheme_file_path = None
             self.scene.load_confirmed_state({})
             self.timelineMainWidget.load_from_dict({})
-            self._audio_dirty = True
+            self._audio_dirty = False
             self._apply_active_tool("框选")
             self._configure_drawing_control_dock("框选")
             self.drawingControlDock.hide()
@@ -939,8 +934,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
         """绑定时间轴、场景和控制台信号。"""
         self.timelineMainWidget.nodeSelected.connect(self.onTimelineNodeSelected)
         self.timelineMainWidget.timelineChanged.connect(self._set_scheme_dirty)
-        # self.timelineMainWidget.timelineChanged.connect(self._mark_audio_dirty)
-        self.timelineMainWidget.tempoChanged.connect(self._on_tempo_changed)
         self.timelineMainWidget.expandedChanged.connect(self._on_timeline_expanded_changed)
         self.timelineMainWidget.audioChanged.connect(self._on_audio_changed)
         self.timelineMainWidget.importAudioRequested.connect(self._import_audio)
@@ -1693,15 +1686,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.timelineMainWidget.set_tempo_at_beat(0, Tempo(start_bpm=int(value)))
         self.timelineMainWidget.update()
 
-    def _on_tempo_changed(self):
-        """速度数据变化时，同步 BPM 输入框显示（仅反映 beat_tempo[0]），并标记需重新合成音频。"""
-        # self._audio_dirty = True   # 轴对齐依赖 beat_tempo，速度变化后合成整轨需更新
-        tempo0 = self.timelineMainWidget.beat_tempo.get(0, None)
-        if tempo0 is not None:
-            self.bpmSpinBox.blockSignals(True)
-            self.bpmSpinBox.setValue(int(round(tempo0.start_bpm)))
-            self.bpmSpinBox.blockSignals(False)
-
     # ──────────────── 音频导入 ────────────────
     def _import_audio(self):
         """导入音频文件，追加到现有波形右侧（首尾相连）。
@@ -1759,7 +1743,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         else:
             base_dir = scheme_default_dir()
             stem = "marching_map_scheme"
-        return base_dir / f"{stem}_合成音频.wav"
+        return base_dir / f"{stem}_合成音频.mp3"
 
     def _ensure_synthesized_audio(self) -> str | None:
         """若音频自上次合成后发生变化，则重新合成整轨音频（无音频段处为静音）并保存；返回合成文件路径（失败返回 None）。
@@ -1801,7 +1785,52 @@ class MainWindow(MainWindowNotice, QMainWindow):
             self._show_menu_notice("音频合成失败，将无音频播放（按经过时间推算）。", failed=True)
             return None
         self._audio_dirty = False
+        # 合成后立即将整轨设为播放源并等待加载完成，保证 _audio_start_synth_playback
+        # 定位播放时媒体已就绪（否则 LoadingMedia 状态下 setPosition 会被忽略）。
+        self._preload_audio_source(str(out_path))
         return str(out_path)
+
+    def _preload_audio_source(self, path: str):
+        """将合成整轨设为 QMediaPlayer 播放源，并等待媒体加载完成（带超时保护）。
+
+        若不预先加载完成，_audio_start_synth_playback 在 LoadingMedia 状态下
+        调用 setPosition 会被 QMediaPlayer 忽略，导致无法从指定拍开始播放。
+        加载时显示进度提示框
+        """
+        url = QUrl.fromLocalFile(path)
+        player = self._audio_player
+        ready_states = (
+            QMediaPlayer.MediaStatus.LoadedMedia,
+            QMediaPlayer.MediaStatus.BufferedMedia,
+        )
+        # source 相同且媒体已就绪：无需重新加载
+        if player.source() == url and player.mediaStatus() in ready_states:
+            return
+        player.setSource(url)
+        # 进度提示框：样式与音频导入一致（无取消按钮、模态，防止加载期间误操作）；
+        # 采用 busy 模式（range 0,0）表示进度未知；setMinimumDuration(500) 保证
+        # 加载超过 0.5 秒才显示，加载较快时界面不弹出、不打扰用户。
+        progress = QProgressDialog("正在加载音频...", "", 0, 0, self)
+        progress.setWindowTitle("加载音频")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setCancelButton(None)
+        progress.setMinimumWidth(320)
+        progress.show()
+        # 等待媒体加载完成；加载失败或超时也退出（播放时由 QMediaPlayer 自行处理）
+        loop = QEventLoop(self)
+        def _on_media_status(status):
+            if status in ready_states or status in (
+                QMediaPlayer.MediaStatus.InvalidMedia,
+                QMediaPlayer.MediaStatus.NoMedia,
+                QMediaPlayer.MediaStatus.UnknownMediaStatus,
+            ):
+                loop.quit()
+        player.mediaStatusChanged.connect(_on_media_status)
+        QTimer.singleShot(15000, loop.quit)   # 15 秒超时保护，避免长时间阻塞
+        loop.exec()
+        player.mediaStatusChanged.disconnect(_on_media_status)
+        progress.close()
 
     # ──────────────── 播放演示 ────────────────
     def _start_playback(self):
@@ -1815,12 +1844,10 @@ class MainWindow(MainWindowNotice, QMainWindow):
         if total_beats <= 0:
             return
 
-        self._playback_use_synth = False
         self._playback_synth_path = None
         if self.timelineMainWidget.audio_segments:
             synth_path = self._ensure_synthesized_audio()
             if synth_path is not None:
-                self._playback_use_synth = True
                 self._playback_synth_path = synth_path
 
         self._playback_active = True
@@ -1830,9 +1857,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self._playback_start_beat = start_beat
         self._playback_elapsed.restart()
         self._playback_elapsed.start()
-        if self._playback_use_synth:
-            # 合成整轨：定位到起始拍对应的轨道时间并播放（动画由音频位置驱动）
-            self._audio_start_synth_playback(start_beat)
+        # 合成整轨：定位到起始拍对应的轨道时间并播放（动画由音频位置驱动）
+        self._audio_start_synth_playback(start_beat)
         # 无合成音频（无音频段或合成失败）：不播放音频，点位按经过时间推算
         # 以约 60fps 刷新，点位移动向音频对齐（无音频时按设置速度平滑演示）
         self._playback_timer.start(60)
@@ -1858,14 +1884,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
         total_beats = float(self.timelineMainWidget.total_beats())
         min_beat = float(self.timelineMainWidget._min_axis_beat())
         beat = max(min_beat, min(float(beat), total_beats))
-        if self._playback_use_synth:
-            # 合成整轨：定位到新拍位对应的轨道时间并继续播放（音轨同步）
-            self._audio_start_synth_playback(beat)
-        else:
-            # 无音频：重置计时基准，从新拍位继续按设置速度推进
-            self._playback_start_beat = beat
-            self._playback_elapsed.restart()
-            self._playback_elapsed.start()
+        # 合成整轨：定位到新拍位对应的轨道时间并继续播放（音轨同步）
+        self._audio_start_synth_playback(beat)
         self.timelineMainWidget.current_beat = beat
         self.timelineMainWidget.update()
 
@@ -1879,7 +1899,6 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self._playback_timer.stop()
         self._audio_player.stop()
         self._playback_active = False
-        self._playback_use_synth = False
         self._playback_synth_path = None
         self.btnPlayPause.setText("▶")
         # 若当前拍位与选中节点不在同一节点才切换
@@ -1895,12 +1914,11 @@ class MainWindow(MainWindowNotice, QMainWindow):
         合成整轨播放：用合成音频实际播放位置反推拍位（点位向音频对齐）；
         否则回退到“经过时间 × 设置的速度”推算（_beat_from_elapsed）。
         """
-        if self._playback_use_synth:
-            player = self._audio_player
-            if player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
-                pos_ms = player.position()
-                if pos_ms >= 0:
-                    return self.timelineMainWidget.audio_beat_at_time(pos_ms / 1000.0)
+        player = self._audio_player
+        if player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            pos_ms = player.position()
+            if pos_ms >= 0:
+                return self.timelineMainWidget.audio_beat_at_time(pos_ms / 1000.0)
 
         elapsed_ms = self._playback_elapsed.elapsed()
         elapsed_minutes = elapsed_ms / 60000.0
@@ -1923,30 +1941,22 @@ class MainWindow(MainWindowNotice, QMainWindow):
             return
 
         # 整轨结束拍（合成音频延伸到超出最后节点的部分；无音频时为总拍数）
-        end_beat = self.timelineMainWidget.audio_end_beat()
+        # end_beat = self.timelineMainWidget.audio_end_beat()
 
-        if self._playback_use_synth:
-            player = self._audio_player
-            dur = player.duration()
-            pos = player.position()
-            # 合成整轨播到末尾即停止（含超出最后节点的部分）
-            if dur > 0 and pos >= dur - 50:
-                self._stop_playback()
-                return
-            beat_float = self._playback_beat()
-        else:
-            # 无音频（或合成失败）：按经过时间推算，到整轨结束（无音频即总拍数）停止
-            beat_float = self._playback_beat()
-            if beat_float >= end_beat:
-                self._stop_playback()
-                return
+        player = self._audio_player
+        dur = player.duration()
+        pos = player.position()
+        # 合成整轨播到末尾即停止（含超出最后节点的部分）
+        if dur > 0 and pos >= dur - 50:
+            self._stop_playback()
+            return
+        beat_float = self._playback_beat()
 
         self._update_playback_display(beat_float)   # 点位移动 / 时间轴游标
-        if self._playback_use_synth:
-            # 合成整轨为单一连续文件：无需段切换/预加载，仅确保正在播放
-            player = self._audio_player
-            if player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
-                player.play()
+        # 合成整轨为单一连续文件：无需段切换/预加载，仅确保正在播放
+        player = self._audio_player
+        if player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+            player.play()
 
     def _update_playback_display(self, beat_float: float):
         """按浮点拍位同步时间轴游标（自动滚动）与场景 sub-beat 动画。"""
