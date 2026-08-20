@@ -36,6 +36,7 @@ from src.drawing_control_dock import DrawingControlDock
 from src.app_settings_dock import AppSettingsDock
 from src.mainwindow_notice import MainWindowNotice
 from src.tip_window import TipWindow
+from src.video_export import VideoExportDialog, export_video, VIEW_CONDUCTOR
 
 
 def scheme_default_dir() -> Path:
@@ -134,6 +135,8 @@ class MainWindow(MainWindowNotice, QMainWindow):
         fileMenu.addSeparator()
         export_pdf = fileMenu.addAction("保存并导出为PDF")
         export_pdf.triggered.connect(self._export_pdf)
+        export_video = fileMenu.addAction("导出为视频")
+        export_video.triggered.connect(self._export_video)
         fileMenu.addSeparator()
         self.actionAppSettings = fileMenu.addAction("设置")  # 设置字号、点位大小、颜色、拖动框等全局设置
         self.actionAppSettings.setCheckable(True)
@@ -439,6 +442,67 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self._show_menu_notice("已新建空白方案")
         self.setWindowTitle("Marching Map Editor - 未命名方案")
         return True
+
+    # ──────────────── 视频导出 ────────────────
+    def _export_video(self):
+        """导出为视频：弹窗设置参数，按“完整播放演示”一致渲染动画并合成音频。
+
+        默认保存到方案文件所在文件夹，默认命名为“方案名称_视角.mp4”；
+        无方案文件时回退到默认方案目录。
+        """
+        self._stop_playback()
+        if self._scheme_file_path is not None:
+            base_dir = self._scheme_file_path.parent
+            stem = self._scheme_file_path.stem
+        else:
+            base_dir = scheme_default_dir()
+            stem = "marching_map_scheme"
+        default_path = base_dir / f"{stem}_{VIEW_CONDUCTOR}.mp4"
+
+        dialog = VideoExportDialog(self, default_path)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        settings = dialog.result_settings()
+        if not settings:
+            return
+
+        # 进度提示框：模态、可取消，导出（合成音频/渲染帧）期间禁止误操作。
+        progress = QProgressDialog("正在准备导出…", "取消", 0, 100, self)
+        progress.setWindowTitle("导出视频")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(True)
+        progress.setAutoReset(False)
+        progress.setMinimumWidth(360)
+        progress.show()
+        QApplication.processEvents()
+
+        def _on_export_progress(done: int, total: int, label: str):
+            progress.setMaximum(max(1, int(total)))
+            progress.setValue(int(done))
+            progress.setLabelText(str(label))
+            QApplication.processEvents()
+
+        def _export_canceled() -> bool:
+            QApplication.processEvents()
+            return progress.wasCanceled()
+
+        try:
+            result = export_video(
+                self,
+                self.scene,
+                self.timelineMainWidget,
+                settings,
+                progress_cb=_on_export_progress,
+                is_canceled=_export_canceled,
+            )
+        finally:
+            progress.close()
+
+        if result:
+            self._show_menu_notice(f"视频已导出：{Path(result).name}")
+        else:
+            self._show_menu_notice("视频导出已取消或失败。", failed=True)
 
     # ──────────────── 历史文件管理 ────────────────
     def _save_last_scheme_path(self):
@@ -764,7 +828,7 @@ class MainWindow(MainWindowNotice, QMainWindow):
         self.viewModeCombo.addItem("指挥视角")
         self.viewModeCombo.addItem("表演者视角")
         self.viewModeCombo.setCurrentText("指挥视角")   # 默认为指挥视角
-        self.viewModeCombo.setToolTip("选择编辑视角：仅影响 PDF 导出文件名")
+        self.viewModeCombo.setToolTip("选择编辑视角：仅影响 PDF 导出时的点位绘制")
         self.viewModeCombo.currentIndexChanged.connect(lambda idx: self._set_scheme_dirty())  # 视角切换时标记方案未保存
         h_layout.addWidget(self.viewModeCombo)
 

@@ -1144,22 +1144,6 @@ class TimelineWidget(QWidget):
                 return i, seg
         return None
 
-    # def audio_source_to_beat(self, seg_idx: int, src_time: float) -> float:
-    #     """把段内源时间（秒）映射为时间轴拍位（播放同步用，依据 beat_tempo）。"""
-    #     if not (0 <= seg_idx < len(self.audio_segments)):
-    #         return 0.0
-    #     seg = self.audio_segments[seg_idx]
-    #     track_time = self.audio_time_at_beat(seg.start_beat) + (src_time - seg.src_start)
-    #     return self.audio_beat_at_time(track_time)
-
-    # def audio_beat_to_source(self, beat: float):
-    #     """把时间轴拍位映射为 (段索引, 段, 源时间秒)；无覆盖返回 None。"""
-    #     found = self.audio_segment_at_beat(beat)
-    #     if found is None:
-    #         return None
-    #     idx, seg = found
-    #     return idx, seg, self._audio_source_time_at_beat(seg, beat)
-
     def audio_to_dict(self) -> dict:
         """导出音频段数据（file 为原始文件绝对路径）。"""
         return {
