@@ -16,8 +16,12 @@ from pathlib import Path
 # logger = logging.getLogger(__name__)
 
 # 打包后随 binaries 放到 sys._MEIPASS 下的文件名
-_BUNDLED_FFMPEG_NAME = "ffmpeg.exe"
-_BUNDLED_FFPROBE_NAME = "ffprobe.exe"
+if sys.platform == "win32":
+    _BUNDLED_FFMPEG_NAME = "ffmpeg.exe"
+    _BUNDLED_FFPROBE_NAME = "ffprobe.exe"
+else:
+    _BUNDLED_FFMPEG_NAME = "ffmpeg"
+    _BUNDLED_FFPROBE_NAME = "ffprobe"
 
 # 开发环境候选路径（与 MarchingMap.spec 中 binaries 的来源保持一致）
 _DEV_FFMPEG_CANDIDATES = [
